@@ -24,6 +24,14 @@ class PenggunaResponse(BaseSchema):
     created_at: datetime
 
 
+class PenggunaUpdate(BaseSchema):
+    nama_lengkap: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[RolePengguna] = None
+    status: Optional[str] = None
+
+
 # ... (biarkan kode yang lama tetap ada di atas) ...
 
 from pydantic import Field
