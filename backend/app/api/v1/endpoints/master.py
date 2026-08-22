@@ -8,16 +8,25 @@ from app.models.master.pengguna import Pengguna
 from app.models.master.pelanggan import Pelanggan
 from app.models.master.supplier import Supplier
 from app.models.master.barang import Barang
+from app.models.master.gudang import Gudang
+from app.models.master.syarat_bayar import SyaratBayar
+from app.models.master.kategori_aset import KategoriAset
+from app.models.master.kas_bank_akun import KasBankAkun
 from app.schemas.base import PaginatedResponse
 from app.schemas.master import (
     PelangganCreate, PelangganUpdate, PelangganResponse,
     SupplierCreate, SupplierUpdate, SupplierResponse,
     BarangCreate, BarangUpdate, BarangResponse,
-    KategoriBarangResponse, SatuanResponse
+    KategoriBarangResponse, SatuanResponse,
+    GudangCreate, GudangUpdate, GudangResponse,
+    SyaratBayarCreate, SyaratBayarUpdate, SyaratBayarResponse,
+    KategoriAsetCreate, KategoriAsetUpdate, KategoriAsetResponse,
+    KasBankAkunCreate, KasBankAkunUpdate, KasBankAkunResponse,
 )
 from app.services import master_service
 
 router = APIRouter()
+
 
 # ==========================================
 # PELANGGAN ENDPOINTS
@@ -163,6 +172,171 @@ def delete_barang(barang_id: UUID, db: Session = Depends(get_current_db), curren
     if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Barang sudah tidak aktif")
     master_service.soft_delete_master(db, item)
     return {"message": "Barang berhasil dinonaktifkan"}
+
+
+# ==========================================
+# GUDANG ENDPOINTS
+# ==========================================
+@router.get("/gudang", response_model=PaginatedResponse[GudangResponse])
+def get_gudang_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    data, total = master_service.get_master_list(db, Gudang, skip, limit, ["nama", "kode"], search)
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+@router.post("/gudang", response_model=GudangResponse, status_code=status.HTTP_201_CREATED)
+def create_gudang(
+    data_in: GudangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, Gudang, data_in)
+
+@router.get("/gudang/{gudang_id}", response_model=GudangResponse)
+def get_gudang_detail(gudang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Gudang, gudang_id)
+    if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+    return item
+
+@router.put("/gudang/{gudang_id}", response_model=GudangResponse)
+def update_gudang(gudang_id: UUID, data_in: GudangUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Gudang, gudang_id)
+    if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/gudang/{gudang_id}", status_code=status.HTTP_200_OK)
+def delete_gudang(gudang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Gudang, gudang_id)
+    if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Gudang sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Gudang berhasil dinonaktifkan"}
+
+
+# ==========================================
+# SYARAT BAYAR ENDPOINTS
+# ==========================================
+@router.get("/syarat-bayar", response_model=list[SyaratBayarResponse])
+def get_syarat_bayar_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(SyaratBayar).order_by(SyaratBayar.nama).all()
+
+@router.post("/syarat-bayar", response_model=SyaratBayarResponse, status_code=status.HTTP_201_CREATED)
+def create_syarat_bayar(
+    data_in: SyaratBayarCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, SyaratBayar, data_in)
+
+@router.get("/syarat-bayar/{syarat_bayar_id}", response_model=SyaratBayarResponse)
+def get_syarat_bayar_detail(syarat_bayar_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, SyaratBayar, syarat_bayar_id)
+    if not item: raise HTTPException(status_code=404, detail="Syarat Bayar tidak ditemukan")
+    return item
+
+@router.put("/syarat-bayar/{syarat_bayar_id}", response_model=SyaratBayarResponse)
+def update_syarat_bayar(syarat_bayar_id: UUID, data_in: SyaratBayarUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, SyaratBayar, syarat_bayar_id)
+    if not item: raise HTTPException(status_code=404, detail="Syarat Bayar tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/syarat-bayar/{syarat_bayar_id}", status_code=status.HTTP_200_OK)
+def delete_syarat_bayar(syarat_bayar_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, SyaratBayar, syarat_bayar_id)
+    if not item: raise HTTPException(status_code=404, detail="Syarat Bayar tidak ditemukan")
+    db.delete(item)
+    db.commit()
+    return {"message": "Syarat Bayar berhasil dihapus"}
+
+
+# ==========================================
+# KATEGORI ASET ENDPOINTS
+# ==========================================
+@router.get("/kategori-aset", response_model=list[KategoriAsetResponse])
+def get_kategori_aset_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(KategoriAset).filter(KategoriAset.status == "AKTIF").order_by(KategoriAset.nama).all()
+
+@router.post("/kategori-aset", response_model=KategoriAsetResponse, status_code=status.HTTP_201_CREATED)
+def create_kategori_aset(
+    data_in: KategoriAsetCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, KategoriAset, data_in)
+
+@router.get("/kategori-aset/{kategori_aset_id}", response_model=KategoriAsetResponse)
+def get_kategori_aset_detail(kategori_aset_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KategoriAset, kategori_aset_id)
+    if not item: raise HTTPException(status_code=404, detail="Kategori Aset tidak ditemukan")
+    return item
+
+@router.put("/kategori-aset/{kategori_aset_id}", response_model=KategoriAsetResponse)
+def update_kategori_aset(kategori_aset_id: UUID, data_in: KategoriAsetUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KategoriAset, kategori_aset_id)
+    if not item: raise HTTPException(status_code=404, detail="Kategori Aset tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/kategori-aset/{kategori_aset_id}", status_code=status.HTTP_200_OK)
+def delete_kategori_aset(kategori_aset_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KategoriAset, kategori_aset_id)
+    if not item: raise HTTPException(status_code=404, detail="Kategori Aset tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Kategori Aset sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Kategori Aset berhasil dinonaktifkan"}
+
+
+# ==========================================
+# KAS BANK AKUN ENDPOINTS
+# ==========================================
+@router.get("/kas-bank-akun", response_model=PaginatedResponse[KasBankAkunResponse])
+def get_kas_bank_akun_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    data, total = master_service.get_master_list(db, KasBankAkun, skip, limit, ["nama", "kode"], search)
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+@router.post("/kas-bank-akun", response_model=KasBankAkunResponse, status_code=status.HTTP_201_CREATED)
+def create_kas_bank_akun(
+    data_in: KasBankAkunCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, KasBankAkun, data_in)
+
+@router.get("/kas-bank-akun/{kas_bank_akun_id}", response_model=KasBankAkunResponse)
+def get_kas_bank_akun_detail(kas_bank_akun_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
+    if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
+    return item
+
+@router.put("/kas-bank-akun/{kas_bank_akun_id}", response_model=KasBankAkunResponse)
+def update_kas_bank_akun(kas_bank_akun_id: UUID, data_in: KasBankAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
+    if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/kas-bank-akun/{kas_bank_akun_id}", status_code=status.HTTP_200_OK)
+def delete_kas_bank_akun(kas_bank_akun_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
+    if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Kas Bank Akun sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Kas Bank Akun berhasil dinonaktifkan"}
+
 
 # ==========================================
 # ENDPOINT DROPDOWN (Untuk Form Barang)
