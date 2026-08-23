@@ -22,7 +22,31 @@ from app.schemas.master import (
     SyaratBayarCreate, SyaratBayarUpdate, SyaratBayarResponse,
     KategoriAsetCreate, KategoriAsetUpdate, KategoriAsetResponse,
     KasBankAkunCreate, KasBankAkunUpdate, KasBankAkunResponse,
+    COASimpleResponse,
 )
+
+# Simple schemas for dropdown
+from app.schemas.base import BaseSchema
+
+
+class BarangSimpleResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+
+
+class PelangganSimpleResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+
+
+class SupplierSimpleResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+
+
 from app.services import master_service
 
 router = APIRouter()
@@ -177,16 +201,12 @@ def delete_barang(barang_id: UUID, db: Session = Depends(get_current_db), curren
 # ==========================================
 # GUDANG ENDPOINTS
 # ==========================================
-@router.get("/gudang", response_model=PaginatedResponse[GudangResponse])
+@router.get("/gudang", response_model=list[GudangResponse])
 def get_gudang_list(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1),
-    search: Optional[str] = Query(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    data, total = master_service.get_master_list(db, Gudang, skip, limit, ["nama", "kode"], search)
-    return {"data": data, "total": total, "skip": skip, "limit": limit}
+    return db.query(Gudang).filter(Gudang.status == "AKTIF").order_by(Gudang.nama).all()
 
 @router.post("/gudang", response_model=GudangResponse, status_code=status.HTTP_201_CREATED)
 def create_gudang(
@@ -298,16 +318,12 @@ def delete_kategori_aset(kategori_aset_id: UUID, db: Session = Depends(get_curre
 # ==========================================
 # KAS BANK AKUN ENDPOINTS
 # ==========================================
-@router.get("/kas-bank-akun", response_model=PaginatedResponse[KasBankAkunResponse])
+@router.get("/kas-bank-akun", response_model=list[KasBankAkunResponse])
 def get_kas_bank_akun_list(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1),
-    search: Optional[str] = Query(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    data, total = master_service.get_master_list(db, KasBankAkun, skip, limit, ["nama", "kode"], search)
-    return {"data": data, "total": total, "skip": skip, "limit": limit}
+    return db.query(KasBankAkun).filter(KasBankAkun.status == "AKTIF").order_by(KasBankAkun.nama).all()
 
 @router.post("/kas-bank-akun", response_model=KasBankAkunResponse, status_code=status.HTTP_201_CREATED)
 def create_kas_bank_akun(
@@ -358,3 +374,53 @@ def get_satuan_list(
     """Get semua satuan untuk dropdown"""
     from app.models.master.satuan import Satuan
     return db.query(Satuan).order_by(Satuan.nama).all()
+
+
+# ==========================================
+# ENDPOINT DROPDOWN (Untuk Form Transaksi)
+# ==========================================
+@router.get("/coa-dropdown", response_model=list[COASimpleResponse])
+def get_coa_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown COA ringan (id, kode, nama) — hanya akun DETAIL yang AKTIF"""
+    from app.models.akun_perkiraan import AkunPerkiraan
+    from app.models.akun_perkiraan import TingkatAkun
+    return db.query(AkunPerkiraan).filter(
+        AkunPerkiraan.status == "AKTIF",
+        AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
+    ).order_by(AkunPerkiraan.kode).all()
+
+
+@router.get("/barang-dropdown", response_model=list[BarangSimpleResponse])
+def get_barang_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown Barang ringan (id, kode, nama)"""
+    return db.query(Barang).filter(
+        Barang.status == "AKTIF"
+    ).order_by(Barang.nama).all()
+
+
+@router.get("/pelanggan-dropdown", response_model=list[PelangganSimpleResponse])
+def get_pelanggan_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown Pelanggan ringan (id, kode, nama)"""
+    return db.query(Pelanggan).filter(
+        Pelanggan.status == "AKTIF"
+    ).order_by(Pelanggan.nama).all()
+
+
+@router.get("/supplier-dropdown", response_model=list[SupplierSimpleResponse])
+def get_supplier_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown Supplier ringan (id, kode, nama)"""
+    return db.query(Supplier).filter(
+        Supplier.status == "AKTIF"
+    ).order_by(Supplier.nama).all()
