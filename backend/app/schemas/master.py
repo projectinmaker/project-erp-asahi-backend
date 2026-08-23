@@ -51,7 +51,7 @@ class PelangganResponse(PelangganBase):
     status: str
     created_at: datetime
     updated_at: datetime
-    akun_piutang: COASimpleResponse  # <-- DITAMBAHKAN
+    akun_piutang: COASimpleResponse
 
 # ==========================================
 # 2. SUPPLIER
@@ -83,7 +83,7 @@ class SupplierResponse(SupplierBase):
     status: str
     created_at: datetime
     updated_at: datetime
-    akun_hutang: COASimpleResponse  # <-- DITAMBAHKAN
+    akun_hutang: COASimpleResponse
 
 # ==========================================
 # 3. BARANG
@@ -112,11 +112,11 @@ class BarangResponse(BarangBase):
     status: str
     created_at: datetime
     updated_at: datetime
-    kategori: KategoriSimpleResponse  # <-- DITAMBAHKAN
-    satuan: SatuanSimpleResponse      # <-- DITAMBAHKAN
+    kategori: KategoriSimpleResponse
+    satuan: SatuanSimpleResponse
 
 # ==========================================
-# 4. KATEGORI & SATUAN (BARU)
+# 4. KATEGORI & SATUAN
 # ==========================================
 class KategoriBarangResponse(BaseSchema):
     id: UUID
@@ -127,3 +127,87 @@ class KategoriBarangResponse(BaseSchema):
 class SatuanResponse(BaseSchema):
     id: UUID
     nama: str
+
+# ==========================================
+# 5. GUDANG
+# ==========================================
+class GudangBase(BaseSchema):
+    kode: str
+    nama: str
+    alamat: Optional[str] = None
+
+class GudangCreate(GudangBase): pass
+
+class GudangUpdate(BaseSchema):
+    nama: Optional[str] = None
+    alamat: Optional[str] = None
+    status: Optional[str] = None
+
+class GudangResponse(GudangBase):
+    id: UUID
+    total_barang: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+# ==========================================
+# 6. SYARAT BAYAR
+# ==========================================
+class SyaratBayarBase(BaseSchema):
+    nama: str
+    hari: Optional[int] = None
+
+class SyaratBayarCreate(SyaratBayarBase): pass
+
+class SyaratBayarUpdate(BaseSchema):
+    nama: Optional[str] = None
+    hari: Optional[int] = None
+
+class SyaratBayarResponse(SyaratBayarBase):
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+# ==========================================
+# 7. KATEGORI ASET
+# ==========================================
+class KategoriAsetBase(BaseSchema):
+    kode: str
+    nama: str
+
+class KategoriAsetCreate(KategoriAsetBase): pass
+
+class KategoriAsetUpdate(BaseSchema):
+    nama: Optional[str] = None
+    status: Optional[str] = None
+
+class KategoriAsetResponse(KategoriAsetBase):
+    id: UUID
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+# ==========================================
+# 8. KAS BANK AKUN
+# ==========================================
+class KasBankAkunBase(BaseSchema):
+    kode: str
+    nama: str
+    jenis: str  # KAS / BANK
+    akun_perkiraan_id: UUID
+    saldo: Decimal = Decimal("0")
+
+class KasBankAkunCreate(KasBankAkunBase): pass
+
+class KasBankAkunUpdate(BaseSchema):
+    nama: Optional[str] = None
+    jenis: Optional[str] = None
+    akun_perkiraan_id: Optional[UUID] = None
+    status: Optional[str] = None
+
+class KasBankAkunResponse(KasBankAkunBase):
+    id: UUID
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    akun_perkiraan: COASimpleResponse
