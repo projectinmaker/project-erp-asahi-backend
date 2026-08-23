@@ -1,5 +1,6 @@
 from typing import List, Optional
 from uuid import UUID
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -33,6 +34,8 @@ class BarangSimpleResponse(BaseSchema):
     id: UUID
     kode: str
     nama: str
+    harga_pokok: Decimal = Decimal("0")
+    stok: int = 0
 
 
 class PelangganSimpleResponse(BaseSchema):
