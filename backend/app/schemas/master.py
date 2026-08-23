@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional, List
 
 from app.schemas.base import BaseSchema
+from app.models.akun_perkiraan import HeaderCOA, TingkatAkun
 
 # ==========================================
 # HELPER SCHEMAS (Untuk Nested Response)
@@ -12,6 +13,9 @@ class COASimpleResponse(BaseSchema):
     id: UUID
     kode: str
     nama: str
+    header: Optional[HeaderCOA] = None
+    tingkat: Optional[TingkatAkun] = None
+    status: Optional[str] = None
 
 class KategoriSimpleResponse(BaseSchema):
     id: UUID
