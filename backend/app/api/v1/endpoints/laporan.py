@@ -11,6 +11,7 @@ from app.schemas.laporan import (
     NeracaResponse,
     ArusKasResponse,
     BukuBesarResponse,
+    MutasiKasBankResponse,
     RekapKasBankResponse,
 )
 from app.services import laporan_service
@@ -100,7 +101,7 @@ def get_buku_besar(
 # KAS & BANK
 # ==========================================
 
-@router.get("/mutasi-kas")
+@router.get("/mutasi-kas", response_model=MutasiKasBankResponse)
 def get_mutasi_kas(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
@@ -117,7 +118,7 @@ def get_mutasi_kas(
     return laporan_service.get_mutasi_kas_bank(db, date_from, date_to, jenis="KAS")
 
 
-@router.get("/mutasi-bank")
+@router.get("/mutasi-bank", response_model=MutasiKasBankResponse)
 def get_mutasi_bank(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
