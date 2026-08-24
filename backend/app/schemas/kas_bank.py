@@ -14,14 +14,6 @@ from app.schemas.base import BaseSchema
 # ==========================================
 # HELPER: Nested response untuk relasi
 # ==========================================
-class KasBankSimpleResponse(BaseSchema):
-    id: UUID
-    kode: str
-    nama: str
-    jenis: str
-    akun_perkiraan: AkunPerkiraanSimpleResponse
-
-
 class AkunPerkiraanSimpleResponse(BaseSchema):
     id: UUID
     kode: str
@@ -31,6 +23,14 @@ class AkunPerkiraanSimpleResponse(BaseSchema):
 class PenggunaSimpleResponse(BaseSchema):
     id: UUID
     nama: str
+
+
+class KasBankSimpleResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+    jenis: str
+    akun_perkiraan: AkunPerkiraanSimpleResponse
 
 
 # ==========================================
