@@ -19,6 +19,7 @@ class KasBankSimpleResponse(BaseSchema):
     kode: str
     nama: str
     jenis: str
+    akun_perkiraan: AkunPerkiraanSimpleResponse
 
 
 class AkunPerkiraanSimpleResponse(BaseSchema):
