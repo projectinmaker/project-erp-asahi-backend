@@ -122,15 +122,32 @@ class BarangResponse(BarangBase):
 # ==========================================
 # 4. KATEGORI & SATUAN
 # ==========================================
+class KategoriBarangCreate(BaseSchema):
+    kode: str
+    nama: str
+
+class KategoriBarangUpdate(BaseSchema):
+    kode: Optional[str] = None
+    nama: Optional[str] = None
+    status: Optional[str] = None
+
 class KategoriBarangResponse(BaseSchema):
     id: UUID
     kode: str
     nama: str
     status: str
 
+class SatuanCreate(BaseSchema):
+    nama: str
+
+class SatuanUpdate(BaseSchema):
+    nama: Optional[str] = None
+    status: Optional[str] = None
+
 class SatuanResponse(BaseSchema):
     id: UUID
     nama: str
+    status: str
 
 # ==========================================
 # 5. GUDANG
