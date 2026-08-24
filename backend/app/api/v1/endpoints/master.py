@@ -13,12 +13,15 @@ from app.models.master.gudang import Gudang
 from app.models.master.syarat_bayar import SyaratBayar
 from app.models.master.kategori_aset import KategoriAset
 from app.models.master.kas_bank_akun import KasBankAkun
+from app.models.master.kategori_barang import KategoriBarang
+from app.models.master.satuan import Satuan
 from app.schemas.base import PaginatedResponse
 from app.schemas.master import (
     PelangganCreate, PelangganUpdate, PelangganResponse,
     SupplierCreate, SupplierUpdate, SupplierResponse,
     BarangCreate, BarangUpdate, BarangResponse,
-    KategoriBarangResponse, SatuanResponse,
+    KategoriBarangCreate, KategoriBarangUpdate, KategoriBarangResponse,
+    SatuanCreate, SatuanUpdate, SatuanResponse,
     GudangCreate, GudangUpdate, GudangResponse,
     SyaratBayarCreate, SyaratBayarUpdate, SyaratBayarResponse,
     KategoriAsetCreate, KategoriAsetUpdate, KategoriAsetResponse,
@@ -358,25 +361,117 @@ def delete_kas_bank_akun(kas_bank_akun_id: UUID, db: Session = Depends(get_curre
 
 
 # ==========================================
-# ENDPOINT DROPDOWN (Untuk Form Barang)
+# KATEGORI BARANG ENDPOINTS
 # ==========================================
 @router.get("/kategori-barang", response_model=list[KategoriBarangResponse])
 def get_kategori_list(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    """Get semua kategori barang untuk dropdown"""
-    from app.models.master.kategori_barang import KategoriBarang
+    """Get semua kategori barang AKTIF"""
     return db.query(KategoriBarang).filter(KategoriBarang.status == "AKTIF").order_by(KategoriBarang.nama).all()
 
+@router.post("/kategori-barang", response_model=KategoriBarangResponse, status_code=status.HTTP_201_CREATED)
+def create_kategori_barang(
+    data_in: KategoriBarangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, KategoriBarang, data_in)
+
+@router.get("/kategori-barang/{kategori_id}", response_model=KategoriBarangResponse)
+def get_kategori_barang_detail(
+    kategori_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, KategoriBarang, kategori_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Kategori Barang tidak ditemukan")
+    return item
+
+@router.put("/kategori-barang/{kategori_id}", response_model=KategoriBarangResponse)
+def update_kategori_barang(
+    kategori_id: UUID,
+    data_in: KategoriBarangUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, KategoriBarang, kategori_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Kategori Barang tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/kategori-barang/{kategori_id}", status_code=status.HTTP_200_OK)
+def delete_kategori_barang(
+    kategori_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, KategoriBarang, kategori_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Kategori Barang tidak ditemukan")
+    if item.status == "NONAKTIF":
+        raise HTTPException(status_code=400, detail="Kategori Barang sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Kategori Barang berhasil dinonaktifkan"}
+
+
+# ==========================================
+# SATUAN ENDPOINTS
+# ==========================================
 @router.get("/satuan", response_model=list[SatuanResponse])
 def get_satuan_list(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    """Get semua satuan untuk dropdown"""
-    from app.models.master.satuan import Satuan
-    return db.query(Satuan).order_by(Satuan.nama).all()
+    """Get semua satuan AKTIF"""
+    return db.query(Satuan).filter(Satuan.status == "AKTIF").order_by(Satuan.nama).all()
+
+@router.post("/satuan", response_model=SatuanResponse, status_code=status.HTTP_201_CREATED)
+def create_satuan(
+    data_in: SatuanCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, Satuan, data_in)
+
+@router.get("/satuan/{satuan_id}", response_model=SatuanResponse)
+def get_satuan_detail(
+    satuan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Satuan, satuan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
+    return item
+
+@router.put("/satuan/{satuan_id}", response_model=SatuanResponse)
+def update_satuan(
+    satuan_id: UUID,
+    data_in: SatuanUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Satuan, satuan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/satuan/{satuan_id}", status_code=status.HTTP_200_OK)
+def delete_satuan(
+    satuan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Satuan, satuan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
+    if item.status == "NONAKTIF":
+        raise HTTPException(status_code=400, detail="Satuan sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Satuan berhasil dinonaktifkan"}
 
 
 # ==========================================
