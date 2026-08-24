@@ -427,3 +427,53 @@ def get_supplier_dropdown(
     return db.query(Supplier).filter(
         Supplier.status == "AKTIF"
     ).order_by(Supplier.nama).all()
+
+
+@router.get("/kas-bank-dropdown", response_model=list[KasBankAkunResponse])
+def get_kas_bank_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah group 'KAS DAN SETARA KAS'.
+    Menggunakan recursive CTE untuk mencari semua akun DETAIL yang merupakan
+    anak/cucu dari group COA 'KAS DAN SETARA KAS'.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+
+    # 1. Cari group COA "KAS DAN SETARA KAS"
+    kas_group_id = db.query(AkunPerkiraan.id).filter(
+        AkunPerkiraan.nama == "KAS DAN SETARA KAS",
+        AkunPerkiraan.tingkat == TingkatAkun.GROUP,
+    ).scalar()
+
+    if not kas_group_id:
+        return []
+
+    # 2. Recursive CTE: cari semua descendant (anak, cucu, dst)
+    base = db.query(AkunPerkiraan.id).filter(
+        AkunPerkiraan.induk_id == kas_group_id
+    ).cte(name="coa_children", recursive=True)
+
+    recursive = db.query(AkunPerkiraan.id).join(
+        base, AkunPerkiraan.induk_id == base.c.id
+    )
+
+    all_descendants = base.union(recursive)
+
+    # 3. Ambil hanya akun DETAIL
+    detail_ids = [
+        row[0] for row in db.query(AkunPerkiraan.id).filter(
+            AkunPerkiraan.id.in_(db.query(all_descendants.c.id)),
+            AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
+        ).all()
+    ]
+
+    if not detail_ids:
+        return []
+
+    # 4. Filter KasBankAkun yang terhubung ke akun-akun DETAIL tersebut
+    return db.query(KasBankAkun).filter(
+        KasBankAkun.akun_perkiraan_id.in_(detail_ids),
+        KasBankAkun.status == "AKTIF",
+    ).order_by(KasBankAkun.nama).all()
