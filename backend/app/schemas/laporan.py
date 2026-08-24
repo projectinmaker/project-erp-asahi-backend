@@ -90,6 +90,22 @@ class BukuBesarResponse(BaseSchema):
     saldo_akhir: Decimal = Decimal("0")
 
 
+# --- Mutasi Kas / Bank ---
+class MutasiKasBankTransaksi(BaseSchema):
+    tanggal: str
+    no_jurnal: str
+    deskripsi: str
+    debit: Decimal = Decimal("0")
+    kredit: Decimal = Decimal("0")
+    saldo: Decimal = Decimal("0")
+    akun: str = ""
+
+
+class MutasiKasBankResponse(BaseSchema):
+    periode: Periode
+    transaksi: List[MutasiKasBankTransaksi] = []
+
+
 # --- Rekap Kas & Bank ---
 class RekapKasBankItem(BaseSchema):
     kode: str
