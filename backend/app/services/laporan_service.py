@@ -133,15 +133,13 @@ def get_dashboard_cashflow(
         date_to = datetime(tahun, bulan + 1, 1) - timedelta(seconds=1)
 
     # Saldo awal = sum kas_bank_akun.saldo at start of month (from jurnal before this month)
-    saldo_awal_q = (
+    # Subquery: hitung net saldo per akun kas/bank sebelum bulan ini
+    subq = (
         db.query(
-            func.sum(
-                case(
-                    (AkunPerkiraan.saldo_normal == SaldoNormal.DEBIT,
-                     func.coalesce(func.sum(JurnalDetail.debit), 0) - func.coalesce(func.sum(JurnalDetail.kredit), 0)),
-                    else_=func.coalesce(func.sum(JurnalDetail.kredit), 0) - func.coalesce(func.sum(JurnalDetail.debit), 0),
-                )
-            )
+            AkunPerkiraan.id,
+            AkunPerkiraan.saldo_normal,
+            func.coalesce(func.sum(JurnalDetail.debit), 0).label("td"),
+            func.coalesce(func.sum(JurnalDetail.kredit), 0).label("tk"),
         )
         .join(JurnalDetail, JurnalDetail.akun_perkiraan_id == AkunPerkiraan.id)
         .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
@@ -150,8 +148,20 @@ def get_dashboard_cashflow(
             JurnalUmum.status == StatusJurnal.POSTED,
             JurnalUmum.tanggal < date_from,
         )
+        .group_by(AkunPerkiraan.id, AkunPerkiraan.saldo_normal)
+        .subquery()
     )
-    saldo_awal = Decimal(str(saldo_awal_q.scalar() or 0))
+
+    rows = db.query(subq).all()
+    saldo_awal = Decimal("0")
+    for r in rows:
+        td = Decimal(str(r.td))
+        tk = Decimal(str(r.tk))
+        if r.saldo_normal == SaldoNormal.DEBIT:
+            saldo_awal += td - tk
+        else:
+            saldo_awal += tk - td
+
 
     # Penerimaan kas bulan ini
     penerimaan_q = (
