@@ -44,7 +44,7 @@ def get_pembayaran_list(
 ) -> Tuple[List[PembayaranKas], int]:
     """Ambil daftar pembayaran kas dengan filter & pagination."""
     query = db.query(PembayaranKas).options(
-        joinedload(PembayaranKas.kas_bank),
+        joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
         joinedload(PembayaranKas.creator),
         joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
     )
@@ -76,7 +76,7 @@ def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[Pembayara
     return (
         db.query(PembayaranKas)
         .options(
-            joinedload(PembayaranKas.kas_bank),
+            joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(PembayaranKas.creator),
             joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
         )
@@ -247,7 +247,7 @@ def get_penerimaan_list(
 ) -> Tuple[List[PenerimaanKas], int]:
     """Ambil daftar penerimaan kas dengan filter & pagination."""
     query = db.query(PenerimaanKas).options(
-        joinedload(PenerimaanKas.kas_bank),
+        joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
         joinedload(PenerimaanKas.creator),
         joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
     )
@@ -279,7 +279,7 @@ def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[Penerimaa
     return (
         db.query(PenerimaanKas)
         .options(
-            joinedload(PenerimaanKas.kas_bank),
+            joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(PenerimaanKas.creator),
             joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
         )
@@ -438,8 +438,8 @@ def get_transfer_list(
 ) -> Tuple[List[TransferBank], int]:
     """Ambil daftar transfer bank dengan filter & pagination."""
     query = db.query(TransferBank).options(
-        joinedload(TransferBank.dari_kas_bank),
-        joinedload(TransferBank.ke_kas_bank),
+        joinedload(TransferBank.dari_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+        joinedload(TransferBank.ke_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
         joinedload(TransferBank.creator),
     )
 
@@ -464,8 +464,8 @@ def get_transfer_by_id(db: Session, transfer_id: UUID) -> Optional[TransferBank]
     return (
         db.query(TransferBank)
         .options(
-            joinedload(TransferBank.dari_kas_bank),
-            joinedload(TransferBank.ke_kas_bank),
+            joinedload(TransferBank.dari_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+            joinedload(TransferBank.ke_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(TransferBank.creator),
         )
         .filter(TransferBank.id == transfer_id)
