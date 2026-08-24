@@ -435,24 +435,23 @@ def get_kas_bank_dropdown(
     current_user: Pengguna = Depends(get_current_user)
 ):
     """
-    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah group 'KAS DAN SETARA KAS'.
-    Menggunakan recursive CTE untuk mencari semua akun DETAIL yang merupakan
-    anak/cucu dari group COA 'KAS DAN SETARA KAS'.
+    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'KAS DAN SETARA KAS'.
+    Mencari semua akun DETAIL yang merupakan anak/cucu dari COA 'KAS DAN SETARA KAS'.
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
-    # 1. Cari group COA "KAS DAN SETARA KAS"
-    kas_group_id = db.query(AkunPerkiraan.id).filter(
+    # 1. Cari COA "KAS DAN SETARA KAS" (bisa HEADER atau GROUP)
+    kas_root_id = db.query(AkunPerkiraan.id).filter(
         AkunPerkiraan.nama == "KAS DAN SETARA KAS",
-        AkunPerkiraan.tingkat == TingkatAkun.GROUP,
+        AkunPerkiraan.tingkat.in_([TingkatAkun.HEADER, TingkatAkun.GROUP]),
     ).scalar()
 
-    if not kas_group_id:
+    if not kas_root_id:
         return []
 
     # 2. Recursive CTE: cari semua descendant (anak, cucu, dst)
     base = db.query(AkunPerkiraan.id).filter(
-        AkunPerkiraan.induk_id == kas_group_id
+        AkunPerkiraan.induk_id == kas_root_id
     ).cte(name="coa_children", recursive=True)
 
     recursive = db.query(AkunPerkiraan.id).join(
