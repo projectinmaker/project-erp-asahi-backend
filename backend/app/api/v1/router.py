@@ -20,7 +20,7 @@ async def ping():
 
 
 # Import dan daftarkan router baru
-from app.api.v1.endpoints import coa, auth, master, kas_bank, penjualan, pembelian, persediaan, aset_tetap, jurnal, pengguna, karyawan
+from app.api.v1.endpoints import coa, auth, master, kas_bank, penjualan, pembelian, persediaan, aset_tetap, jurnal, pengguna, karyawan, dashboard, laporan
 
 api_router.include_router(coa.router, prefix="/coa", tags=["Chart of Accounts"])
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
@@ -33,6 +33,8 @@ api_router.include_router(aset_tetap.router, prefix="/aset-tetap", tags=["Aset T
 api_router.include_router(jurnal.router, prefix="/jurnal", tags=["Jurnal Umum"])
 api_router.include_router(pengguna.router, prefix="/pengguna", tags=["Pengguna"])
 api_router.include_router(karyawan.router, prefix="/karyawan", tags=["Karyawan"])
+api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
+api_router.include_router(laporan.router, prefix="/laporan", tags=["Laporan"])
 
 # ==========================================
 # Placeholder endpoints untuk verifikasi setup
