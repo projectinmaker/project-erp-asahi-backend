@@ -15,11 +15,13 @@ from app.models.master.kategori_aset import KategoriAset
 from app.models.master.kas_bank_akun import KasBankAkun
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
+from app.models.detail.barang_satuan import BarangSatuan
 from app.schemas.base import PaginatedResponse
 from app.schemas.master import (
     PelangganCreate, PelangganUpdate, PelangganResponse,
     SupplierCreate, SupplierUpdate, SupplierResponse,
     BarangCreate, BarangUpdate, BarangResponse,
+    BarangSatuanCreate, BarangSatuanUpdate, BarangSatuanResponse,
     KategoriBarangCreate, KategoriBarangUpdate, KategoriBarangResponse,
     SatuanCreate, SatuanUpdate, SatuanResponse,
     GudangCreate, GudangUpdate, GudangResponse,
@@ -202,6 +204,64 @@ def delete_barang(barang_id: UUID, db: Session = Depends(get_current_db), curren
     if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Barang sudah tidak aktif")
     master_service.soft_delete_master(db, item)
     return {"message": "Barang berhasil dinonaktifkan"}
+
+
+# ==========================================
+# BARANG SATUAN ENDPOINTS (Multi-satuan)
+# ==========================================
+@router.get("/barang/{barang_id}/satuan", response_model=list[BarangSatuanResponse])
+def get_barang_satuan_list(
+    barang_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Get daftar satuan untuk suatu barang (termasuk satuan utama dari barang.satuan_id)."""
+    barang = master_service.get_master_by_id(db, Barang, barang_id)
+    if not barang:
+        raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+    return db.query(BarangSatuan).filter(
+        BarangSatuan.barang_id == barang_id
+    ).order_by(BarangSatuan.is_utama.desc()).all()
+
+
+@router.post("/barang/{barang_id}/satuan", response_model=BarangSatuanResponse, status_code=status.HTTP_201_CREATED)
+def add_barang_satuan(
+    barang_id: UUID,
+    data_in: BarangSatuanCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Tambah satuan ke daftar satuan barang."""
+    barang = master_service.get_master_by_id(db, Barang, barang_id)
+    if not barang:
+        raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+    if barang_id != data_in.barang_id:
+        raise HTTPException(status_code=400, detail="barang_id di path dan body tidak cocok")
+    # Cek duplikat satuan
+    existing = db.query(BarangSatuan).filter(
+        BarangSatuan.barang_id == barang_id,
+        BarangSatuan.satuan_id == data_in.satuan_id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Satuan ini sudah terdaftar untuk barang tersebut")
+    return master_service.create_master(db, BarangSatuan, data_in)
+
+
+@router.delete("/barang-satuan/{barang_satuan_id}", status_code=status.HTTP_200_OK)
+def delete_barang_satuan(
+    barang_satuan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Hapus satuan dari daftar satuan barang."""
+    item = db.query(BarangSatuan).filter(BarangSatuan.id == barang_satuan_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Barang Satuan tidak ditemukan")
+    if item.is_utama:
+        raise HTTPException(status_code=400, detail="Satuan utama tidak bisa dihapus")
+    db.delete(item)
+    db.commit()
+    return {"message": "Satuan berhasil dihapus dari barang"}
 
 
 # ==========================================
