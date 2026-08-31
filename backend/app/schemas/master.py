@@ -35,7 +35,7 @@ class PelangganBase(BaseSchema):
     telepon: Optional[str] = None
     email: Optional[str] = None
     kontak_person: Optional[str] = None
-    akun_piutang_id: UUID
+    npwp: Optional[str] = None
     syarat_bayar_default: Optional[str] = "Tunai"
 
 class PelangganCreate(PelangganBase): pass
@@ -46,7 +46,7 @@ class PelangganUpdate(BaseSchema):
     telepon: Optional[str] = None
     email: Optional[str] = None
     kontak_person: Optional[str] = None
-    akun_piutang_id: Optional[UUID] = None
+    npwp: Optional[str] = None
     syarat_bayar_default: Optional[str] = None
     status: Optional[str] = None
 
@@ -55,7 +55,6 @@ class PelangganResponse(PelangganBase):
     status: str
     created_at: datetime
     updated_at: datetime
-    akun_piutang: COASimpleResponse
 
 # ==========================================
 # 2. SUPPLIER
@@ -67,7 +66,7 @@ class SupplierBase(BaseSchema):
     telepon: Optional[str] = None
     email: Optional[str] = None
     kontak_person: Optional[str] = None
-    akun_hutang_id: UUID
+    npwp: Optional[str] = None
     syarat_bayar_default: Optional[str] = None
 
 class SupplierCreate(SupplierBase): pass
@@ -78,7 +77,7 @@ class SupplierUpdate(BaseSchema):
     telepon: Optional[str] = None
     email: Optional[str] = None
     kontak_person: Optional[str] = None
-    akun_hutang_id: Optional[UUID] = None
+    npwp: Optional[str] = None
     syarat_bayar_default: Optional[str] = None
     status: Optional[str] = None
 
@@ -87,7 +86,6 @@ class SupplierResponse(SupplierBase):
     status: str
     created_at: datetime
     updated_at: datetime
-    akun_hutang: COASimpleResponse
 
 # ==========================================
 # 3. BARANG
@@ -216,7 +214,6 @@ class KasBankAkunBase(BaseSchema):
     nama: str
     jenis: str  # KAS / BANK
     akun_perkiraan_id: UUID
-    saldo: Decimal = Decimal("0")
 
 class KasBankAkunCreate(KasBankAkunBase): pass
 
@@ -228,6 +225,7 @@ class KasBankAkunUpdate(BaseSchema):
 
 class KasBankAkunResponse(KasBankAkunBase):
     id: UUID
+    saldo: Decimal
     status: str
     created_at: datetime
     updated_at: datetime

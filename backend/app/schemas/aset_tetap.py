@@ -36,9 +36,6 @@ class AsetTetapBase(BaseSchema):
     akun_akumulasi_id: UUID
     akun_beban_id: UUID
     kuantitas: int = 1
-    umur_aset: int = 0
-    metode_penyusutan: str = "GARIS_LURUS"
-    nilai_gisa: Decimal = Decimal("0")
     nilai_perolehan: Decimal = Decimal("0")
     tanggal_mulai: datetime
     catatan: Optional[str] = None
@@ -57,9 +54,6 @@ class AsetTetapUpdate(BaseSchema):
     akun_akumulasi_id: Optional[UUID] = None
     akun_beban_id: Optional[UUID] = None
     kuantitas: Optional[int] = None
-    umur_aset: Optional[int] = None
-    metode_penyusutan: Optional[str] = None
-    nilai_gisa: Optional[Decimal] = None
     nilai_perolehan: Optional[Decimal] = None
     tanggal_mulai: Optional[datetime] = None
     catatan: Optional[str] = None
@@ -68,9 +62,6 @@ class AsetTetapUpdate(BaseSchema):
 
 class AsetTetapResponse(AsetTetapBase):
     id: UUID
-    nilai_buku: Decimal
-    akumulasi_penyusutan: Decimal
-    penyusutan_per_bulan: Decimal
     status: str
     created_by: UUID
     created_at: datetime
