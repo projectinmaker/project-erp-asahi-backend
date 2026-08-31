@@ -116,6 +116,28 @@ class BarangResponse(BarangBase):
     updated_at: datetime
     kategori: KategoriSimpleResponse
     satuan: SatuanSimpleResponse
+    # Multi-satuan: daftar satuan tambahan (selain satuan utama)
+    daftar_satuan: List['BarangSatuanResponse'] = []
+
+
+# ==========================================
+# 3a. BARANG SATUAN (Multi-satuan)
+# ==========================================
+class BarangSatuanBase(BaseSchema):
+    barang_id: UUID
+    satuan_id: UUID
+    is_utama: bool = False
+
+class BarangSatuanCreate(BarangSatuanBase):
+    pass
+
+class BarangSatuanUpdate(BaseSchema):
+    satuan_id: Optional[UUID] = None
+    is_utama: Optional[bool] = None
+
+class BarangSatuanResponse(BarangSatuanBase):
+    id: UUID
+    satuan: SatuanSimpleResponse
 
 # ==========================================
 # 4. KATEGORI & SATUAN

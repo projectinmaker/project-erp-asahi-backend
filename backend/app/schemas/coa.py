@@ -19,9 +19,15 @@ class COABase(BaseSchema):
 
 
 class COACreate(COABase):
-    """Schema untuk membuat COA baru (tidak butuh ID dan Timestamp)"""
+    """Schema untuk membuat COA baru (tidak butuh ID dan Timestamp).
 
-    pass
+    Field tambahan (opsional):
+    - jenis_kas_bank: Jika COA detail di bawah header AKTIVA (Kas dan Setara Kas),
+      isi 'KAS' atau 'BANK' untuk auto-membuat KasBankAkun.
+      Frontend menampilkan opsi ini hanya jika parent adalah GROUP di bawah
+      akun Kas dan Setara Kas.
+    """
+    jenis_kas_bank: Optional[str] = None  # 'KAS' atau 'BANK', opsional
 
 
 class COAUpdate(BaseSchema):
@@ -35,27 +41,30 @@ class COAUpdate(BaseSchema):
 
 
 class COAResponse(COABase):
-    """Schema untuk response API ke Frontend"""
+    """Schema untuk response API ke Frontend."""
 
     id: UUID
     saldo: Decimal
     created_at: datetime
     updated_at: datetime
+    # Opsi kas/bank info (hanya diisi jika COA ini punya relasi KasBankAkun)
+    jenis_kas_bank: Optional[str] = None
 
     class Config:
         # Alias spesifik jika ada penamaan yang tidak standar
         json_schema_extra = {
             "example": {
                 "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-                "kode": "100000001",
-                "nama": "Kas Kecil",
+                "kode": "110.000.001",
+                "nama": "Bank BNI",
                 "header": "AKTIVA",
                 "tingkat": "DETAIL",
                 "indukId": "ec35cd2a-0bc9-4dd7-bded-c2930e895c41",
-                "indukKode": "100000000",
+                "indukKode": "110.000.000",
                 "saldoNormal": "DEBIT",
                 "saldo": 5000000,
                 "status": "AKTIF",
+                "jenisKasBank": "BANK",
                 "createdAt": "2026-08-11T16:00:00.000000",
                 "updatedAt": "2026-08-11T16:00:00.000000",
             }
