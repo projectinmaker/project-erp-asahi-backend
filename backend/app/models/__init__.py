@@ -1,7 +1,7 @@
 # Import base terlebih dahulu
 from app.database import BaseModel
 
-# Import Models
+# Master Data
 from app.models.akun_perkiraan import AkunPerkiraan
 
 from app.models.master.kategori_barang import KategoriBarang
@@ -59,6 +59,7 @@ from app.models.detail.purchase_order_detail import PurchaseOrderDetail
 from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
 from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
 from app.models.detail.purchase_retur_detail import PurchaseReturDetail
+from app.models.detail.barang_satuan import BarangSatuan
 
 __all__ = [
     # Master
@@ -111,6 +112,7 @@ __all__ = [
     "PenerimaanBarangDetail",
     "PurchaseInvoiceDetail",
     "PurchaseReturDetail",
+    "BarangSatuan",
     # Enums
     "StatusTransaksi",
     "StatusPenjualan",
@@ -120,6 +122,6 @@ __all__ = [
     "MetodePenyusutan",
     "StatusAsetTetap",
     "RefModule",
-    "StatusJurnal"
+    "StatusJurnal",
     "TipeMutasiStok",
 ]
