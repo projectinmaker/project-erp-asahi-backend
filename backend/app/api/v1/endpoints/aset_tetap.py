@@ -1,4 +1,4 @@
-"""
+ """
 Aset Tetap Endpoints.
 CRUD + status management (hapus, perbaikan, aktifkan kembali).
 """
@@ -48,7 +48,7 @@ def create_aset(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat Aset Tetap baru (auto-hitung penyusutan per bulan & nilai buku)."""
+    """Buat Aset Tetap baru."""
     try:
         return svc.create_aset(
             db=db,
@@ -60,9 +60,6 @@ def create_aset(
             akun_beban_id=data_in.akun_beban_id,
             tanggal_mulai=data_in.tanggal_mulai,
             kuantitas=data_in.kuantitas,
-            umur_aset=data_in.umur_aset,
-            metode_penyusutan=data_in.metode_penyusutan,
-            nilai_gisa=data_in.nilai_gisa,
             nilai_perolehan=data_in.nilai_perolehan,
             catatan=data_in.catatan,
             auto_post_jurnal=data_in.auto_post_jurnal,
@@ -92,7 +89,7 @@ def update_aset(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update data Aset Tetap (re-calculate penyusutan jika parameter berubah)."""
+    """Update data Aset Tetap."""
     item = svc.get_aset_by_id(db, aset_id)
     if not item:
         raise HTTPException(status_code=404, detail="Aset Tetap tidak ditemukan")

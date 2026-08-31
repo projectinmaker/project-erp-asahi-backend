@@ -530,14 +530,16 @@ def get_kas_bank_dropdown(
     current_user: Pengguna = Depends(get_current_user)
 ):
     """
-    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'KAS DAN SETARA KAS'.
-    Mencari semua akun DETAIL yang merupakan anak/cucu dari COA 'KAS DAN SETARA KAS'.
+    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'Kas dan Setara Kas'.
+    Mencari semua akun DETAIL yang merupakan anak/cucu dari COA tersebut.
+    Menggunakan ilike (case-insensitive) supaya tidak bergantung pada huruf besar/kecil.
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
-    # 1. Cari COA "KAS DAN SETARA KAS" (bisa HEADER atau GROUP)
+    # 1. Cari COA root "Kas dan Setara Kas" (bisa HEADER atau GROUP)
+    #    Pakai ilike supaya case-insensitive (cocokkan "Kas dan Setara Kas" / "KAS DAN SETARA KAS" / dll)
     kas_root_id = db.query(AkunPerkiraan.id).filter(
-        AkunPerkiraan.nama == "KAS DAN SETARA KAS",
+        AkunPerkiraan.nama.ilike("%KAS%DAN%SETARA%KAS%"),
         AkunPerkiraan.tingkat.in_([TingkatAkun.HEADER, TingkatAkun.GROUP]),
     ).scalar()
 
