@@ -13,7 +13,8 @@ class Pelanggan(BaseModel, BaseMixin):
     telepon = Column(String(30), nullable=True)
     email = Column(String(100), nullable=True)
     kontak_person = Column(String(150), nullable=True)
-    akun_piutang_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=False)
+    akun_piutang_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=True)
+    npwp = Column(String(50), nullable=True)
     syarat_bayar_default = Column(String(50), nullable=True, default="Tunai")
     status = Column(String(20), default="AKTIF", nullable=False)
 
