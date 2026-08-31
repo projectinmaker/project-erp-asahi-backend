@@ -29,6 +29,7 @@ from app.models.transaksi.transaksi_biaya import TransaksiBiaya
 from app.models.master.pelanggan import Pelanggan
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
+from app.services.stok_service import update_stok_barang
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
 
@@ -229,7 +230,8 @@ def create_sales_order(
         _create_biaya_tambahan(db, so, biaya_data, "sales_order_id")
 
         # Auto-post jurnal (piutang dagang D, pendapatan penjualan K)
-        if auto_post_jurnal and grand_total > 0:
+        # Guard: skip jika pelanggan belum punya akun piutang (Phase 3 akan ganti mekanisme COA)
+        if auto_post_jurnal and grand_total > 0 and pelanggan.akun_piutang_id:
             dasar_pajak = sub_total - total_diskon
             entries = [
                 # Debit: Piutang Dagang (akun piutang pelanggan)
@@ -501,7 +503,8 @@ def create_sales_invoice(
         _create_biaya_tambahan(db, inv, biaya_data, "sales_invoice_id")
 
         # Auto-post jurnal (piutang dagang D, pendapatan penjualan K)
-        if auto_post_jurnal and grand_total > 0:
+        # Guard: skip jika pelanggan belum punya akun piutang (Phase 3 akan ganti mekanisme COA)
+        if auto_post_jurnal and grand_total > 0 and pelanggan.akun_piutang_id:
             dasar_pajak = sub_total - total_diskon
             entries = [
                 JurnalEntryItem(
@@ -749,7 +752,8 @@ def create_sales_retur(
             db.add(detail)
 
         # Auto-post jurnal (D: Retur Penjualan, K: Piutang Dagang)
-        if auto_post_jurnal and grand_total > 0:
+        # Guard: skip jika pelanggan belum punya akun piutang (Phase 3 akan ganti mekanisme COA)
+        if auto_post_jurnal and grand_total > 0 and pelanggan.akun_piutang_id:
             entries = [
                 # Debit: Retur Penjualan
                 JurnalEntryItem(
@@ -1016,4 +1020,60 @@ def cancel_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
     db.commit()
     db.refresh(db_obj)
     logger.info(f"PengirimanBarang cancelled: {db_obj.no_surat_jalan}")
+    return db_obj
+
+
+def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang:
+    """Finalisasi pengiriman barang — status SELESAI + kurangi stok barang."""
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Pengiriman yang sudah dibatalkan tidak bisa difinalisasi")
+    if db_obj.status == StatusPenjualan.SELESAI:
+        raise ValueError("Pengiriman sudah selesai")
+
+    # Kurangi stok untuk setiap detail barang
+    for detail in db_obj.details:
+        update_stok_barang(
+            db=db,
+            barang_id=detail.barang_id,
+            qty_change=detail.qty,
+            mode="KURANGI",
+            deskripsi=f"Pengiriman {db_obj.no_surat_jalan}",
+            ref_module=RefModule.SALES_INVOICE,
+            ref_no=db_obj.no_surat_jalan,
+            ref_id=db_obj.id,
+        )
+
+    db_obj.status = StatusPenjualan.SELESAI
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"PengirimanBarang finished: {db_obj.no_surat_jalan} | stok dikurangi")
+    return db_obj
+
+
+def finish_sales_retur(db: Session, db_obj: SalesRetur) -> SalesRetur:
+    """Finalisasi sales retur — status SELESAI + tambah stok barang kembali."""
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Sales Retur yang sudah dibatalkan tidak bisa difinalisasi")
+    if db_obj.status == StatusPenjualan.SELESAI:
+        raise ValueError("Sales Retur sudah selesai")
+
+    # Tambah stok untuk setiap detail barang yang dikembalikan
+    for detail in db_obj.details:
+        update_stok_barang(
+            db=db,
+            barang_id=detail.barang_id,
+            qty_change=detail.qty,
+            mode="TAMBAH",
+            deskripsi=f"Retur Penjualan {db_obj.no_retur}",
+            ref_module=RefModule.SALES_RETUR,
+            ref_no=db_obj.no_retur,
+            ref_id=db_obj.id,
+        )
+
+    db_obj.status = StatusPenjualan.SELESAI
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"SalesRetur finished: {db_obj.no_retur} | stok ditambahkan")
     return db_obj
