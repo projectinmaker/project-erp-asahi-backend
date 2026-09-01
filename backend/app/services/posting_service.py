@@ -32,6 +32,30 @@ class JurnalEntryItem:
         self.keterangan = keterangan
 
 
+def _generate_no_jurnal(db: Session, prefix: str, tanggal: datetime) -> str:
+    """Generate nomor jurnal auto-increment per bulan.
+    Format: JV-YYYYMM-NNN
+    """
+    year_month = tanggal.strftime("%Y%m")
+    pattern = f"{prefix}-{year_month}%"
+
+    last = (
+        db.query(JurnalUmum)
+        .filter(JurnalUmum.no_jurnal.like(pattern))
+        .order_by(JurnalUmum.no_jurnal.desc())
+        .first()
+    )
+
+    if last:
+        # Extract angka terakhir dan increment
+        last_num = int(last.no_jurnal.split("-")[-1])
+        next_num = last_num + 1
+    else:
+        next_num = 1
+
+    return f"{prefix}-{year_month}-{next_num:03d}"
+
+
 def auto_posting_jurnal(
     db: Session,
     ref_module: RefModule,
@@ -52,7 +76,7 @@ def auto_posting_jurnal(
         db: SQLAlchemy Session
         ref_module: Enum RefModule (SALES_INVOICE, PEMBAYARAN, dll)
         ref_no: Nomor dokumen sumber (misal INV-2026-08-001)
-        entries: List of JurnalEntryItem — baris-baris jurnal (debit & kredit)
+        entries: List of JurnalEntryItem -- baris-baris jurnal (debit & kredit)
         keterangan: Keterangan umum jurnal
         ref_id: UUID dokumen sumber (opsional)
         tanggal: Tanggal jurnal (default: sekarang)
@@ -62,7 +86,7 @@ def auto_posting_jurnal(
         no_jurnal: Nomor jurnal (jika None, akan digenerate otomatis)
 
     Return:
-        JurnalUmum object yang sudah di-commit ke database
+        JurnalUmum object (flushed, belum committed — caller harus commit)
     """
     try:
         # Validasi: pastikan entries tidak kosong
@@ -77,16 +101,13 @@ def auto_posting_jurnal(
                 f"Jurnal tidak balance: total debit={total_debit}, total_kredit={total_kredit}"
             )
 
-        # Generate nomor jurnal jika tidak diberikan
-        if no_jurnal is None:
-            now = tanggal or datetime.now(timezone.utc)
-            prefix = "JV"
-            # Format: JV-YYYYMM-NNN (counter per bulan disederhanakan)
-            no_jurnal = f"{prefix}-{now.strftime('%Y%m')}-001"
-
         # Default tanggal
         if tanggal is None:
             tanggal = datetime.now(timezone.utc)
+
+        # Generate nomor jurnal jika tidak diberikan
+        if no_jurnal is None:
+            no_jurnal = _generate_no_jurnal(db, "JV", tanggal)
 
         # Buat header Jurnal Umum
         jurnal = JurnalUmum(
@@ -116,16 +137,21 @@ def auto_posting_jurnal(
             )
             db.add(detail)
 
-        db.commit()
+        # Flush (bukan commit) agar jurnal.id tersedia untuk caller.
+        # Caller bertanggung jawab atas commit/rollback transaksi.
+        # Ini mencegah rollback di sini menghancurkan transaksi parent
+        # saat caller menandai jurnal gagal sebagai "non-fatal".
+        db.flush()
         db.refresh(jurnal)
 
         logger.info(
-            f"Jurnal posted: {jurnal.no_jurnal} | ref={ref_no} | "
+            f"Jurnal prepared: {jurnal.no_jurnal} | ref={ref_no} | "
             f"D={total_debit} K={total_kredit} | {len(entries)} details"
         )
         return jurnal
 
     except Exception as e:
-        db.rollback()
+        # Tidak ada db.rollback() di sini — caller bertanggung jawab.
+        # Hanya log error dan re-raise agar caller bisa memutuskan.
         logger.error(f"Error auto-posting jurnal: {e}")
         raise

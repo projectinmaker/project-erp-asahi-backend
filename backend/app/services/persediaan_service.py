@@ -22,7 +22,7 @@ from app.models.transaksi.persediaan.permintaan_barang import PermintaanBarang, 
 from app.models.master.barang import Barang
 from app.models.master.gudang import Gudang
 from app.models.transaksi.jurnal import RefModule
-from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
+from app.services.stok_service import update_stok_barang
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
 
@@ -91,13 +91,13 @@ def create_penyesuaian(
     qty: int,
     biaya_satuan: Decimal = Decimal("0"),
     alasan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
 ) -> PenyesuaianStok:
     """Buat PenyesuaianStok baru.
     - Generate no_adj otomatis (ADJ-YYYY-MM-NNN)
     - Hitung total = qty * biaya_satuan
-    - Auto-post jurnal jika auto_post_jurnal=True
+    - Auto-post jurnal jika auto_post_jurnal=True (default False karena COA mapping per barang belum siap)
     """
     try:
         # Validasi barang
@@ -133,52 +133,14 @@ def create_penyesuaian(
         db.flush()
 
         # Auto-post jurnal
+        # NOTE: Default auto_post_jurnal=False karena belum ada mapping barang -> COA persediaan.
+        #       Butuh: kategori barang (Bahan Baku/WIP/Barang Jadi) -> KEY_PERSEDIAAN_* dari setting_akun,
+        #       serta akun 'Selisih Persediaan' yang belum ada di setting_akun.
         if auto_post_jurnal and total > 0:
-            # TODO: ambil akun persediaan dan selisih persediaan dari config
-            entries = []
-            if tipe_enum == TipePenyesuaian.TAMBAH:
-                # D: Persediaan, K: Selisih Persediaan
-                entries = [
-                    JurnalEntryItem(
-                        akun_perkiraan_id=barang.id,  # TODO: akun persediaan dari config
-                        debit=total,
-                        keterangan=f"Penyesuaian Stok + {no_adj} - {barang.nama}",
-                    ),
-                    JurnalEntryItem(
-                        akun_perkiraan_id=barang.id,  # TODO: akun selisih persediaan dari config
-                        kredit=total,
-                        keterangan=f"Selisih Penyesuaian {no_adj}",
-                    ),
-                ]
-            else:  # KURANG
-                # D: Selisih Persediaan / HPP, K: Persediaan
-                entries = [
-                    JurnalEntryItem(
-                        akun_perkiraan_id=barang.id,  # TODO: akun selisih/HPP dari config
-                        debit=total,
-                        keterangan=f"Selisih Penyesuaian {no_adj}",
-                    ),
-                    JurnalEntryItem(
-                        akun_perkiraan_id=barang.id,  # TODO: akun persediaan dari config
-                        kredit=total,
-                        keterangan=f"Penyesuaian Stok - {no_adj} - {barang.nama}",
-                    ),
-                ]
-
-            try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.PENYESUAIAN_STOK,
-                    ref_no=no_adj,
-                    entries=entries,
-                    keterangan=f"Penyesuaian Stok {no_adj} ({tipe})",
-                    ref_id=adj.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                adj.jurnal_umum_id = jurnal.id
-            except Exception as e:
-                logger.warning(f"Jurnal Penyesuaian gagal diposting (non-fatal): {e}")
+            raise NotImplementedError(
+                "Auto-posting jurnal penyesuaian stok belum diimplementasikan. "
+                "Butuh mapping kategori barang -> COA persediaan + akun selisih persediaan."
+            )
 
         db.commit()
         db.refresh(adj)
@@ -231,14 +193,28 @@ def update_penyesuaian(
 
 
 def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok:
-    """Setujui penyesuaian stok."""
+    """Setujui penyesuaian stok + update stok barang + catat StokMutasi."""
     if db_obj.status != StatusPersediaan.DIAJUKAN:
         raise ValueError(f"Penyesuaian Stok dengan status {db_obj.status.value} tidak bisa disetujui")
+
+    # Update stok barang
+    mode = "TAMBAH" if db_obj.tipe.value == "TAMBAH" else "KURANGI"
+    update_stok_barang(
+        db=db,
+        barang_id=db_obj.barang_id,
+        qty_change=db_obj.qty,
+        mode=mode,
+        deskripsi=f"Penyesuaian Stok {db_obj.no_adj} ({mode})",
+        ref_module=RefModule.PENYESUAIAN_STOK,
+        ref_no=db_obj.no_adj,
+        ref_id=db_obj.id,
+    )
+
     db_obj.status = StatusPersediaan.DISETUJUI
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
-    logger.info(f"PenyesuaianStok approved: {db_obj.no_adj}")
+    logger.info(f"PenyesuaianStok approved: {db_obj.no_adj} | stok {mode} {db_obj.qty}")
     return db_obj
 
 
@@ -377,36 +353,12 @@ def create_pemindahan(
         db.flush()
 
         # Auto-post jurnal (D: Persediaan Gudang Tujuan, K: Persediaan Gudang Asal)
+        # NOTE: Default auto_post_jurnal=False karena belum ada mapping gudang -> COA persediaan.
         if auto_post_jurnal and qty > 0:
-            total = Decimal(str(qty)) * barang.harga_pokok
-            # TODO: ambil akun persediaan per gudang dari config
-            entries = [
-                JurnalEntryItem(
-                    akun_perkiraan_id=barang.id,  # TODO: akun persediaan gudang tujuan
-                    debit=total,
-                    keterangan=f"Pemindahan masuk {no_pemindahan} - {ke_gudang.nama}",
-                ),
-                JurnalEntryItem(
-                    akun_perkiraan_id=barang.id,  # TODO: akun persediaan gudang asal
-                    kredit=total,
-                    keterangan=f"Pemindahan keluar {no_pemindahan} - {dari_gudang.nama}",
-                ),
-            ]
-
-            try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.PENYESUAIAN_STOK,  # Reuse PENYESUAIAN_STOK (closest match)
-                    ref_no=no_pemindahan,
-                    entries=entries,
-                    keterangan=f"Pemindahan Barang {no_pemindahan}",
-                    ref_id=pb.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                pb.jurnal_umum_id = jurnal.id
-            except Exception as e:
-                logger.warning(f"Jurnal Pemindahan gagal diposting (non-fatal): {e}")
+            raise NotImplementedError(
+                "Auto-posting jurnal pemindahan barang belum diimplementasikan. "
+                "Butuh mapping gudang -> COA persediaan per gudang."
+            )
 
         db.commit()
         db.refresh(pb)
@@ -463,14 +415,42 @@ def update_pemindahan(
 
 
 def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBarang:
-    """Setujui pemindahan barang."""
+    """Setujui pemindahan barang + update stok (kurangi dari asal, tambah ke tujuan)."""
     if db_obj.status != StatusPersediaan.DIAJUKAN:
         raise ValueError(f"Pemindahan Barang dengan status {db_obj.status.value} tidak bisa disetujui")
+
+    if db_obj.dari_gudang_id == db_obj.ke_gudang_id:
+        raise ValueError("Gudang asal dan tujuan tidak boleh sama")
+
+    # Kurangi stok dari gudang asal
+    update_stok_barang(
+        db=db,
+        barang_id=db_obj.barang_id,
+        qty_change=db_obj.qty,
+        mode="KURANGI",
+        deskripsi=f"Pemindahan keluar {db_obj.no_pemindahan}",
+        ref_no=db_obj.no_pemindahan,
+        ref_id=db_obj.id,
+        gudang_id=db_obj.dari_gudang_id,
+    )
+
+    # Tambah stok ke gudang tujuan
+    update_stok_barang(
+        db=db,
+        barang_id=db_obj.barang_id,
+        qty_change=db_obj.qty,
+        mode="TAMBAH",
+        deskripsi=f"Pemindahan masuk {db_obj.no_pemindahan}",
+        ref_no=db_obj.no_pemindahan,
+        ref_id=db_obj.id,
+        gudang_id=db_obj.ke_gudang_id,
+    )
+
     db_obj.status = StatusPersediaan.DISETUJUI
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
-    logger.info(f"PemindahanBarang approved: {db_obj.no_pemindahan}")
+    logger.info(f"PemindahanBarang approved: {db_obj.no_pemindahan} | qty={db_obj.qty}")
     return db_obj
 
 
