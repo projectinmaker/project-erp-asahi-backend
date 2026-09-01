@@ -47,6 +47,7 @@ def get_pembayaran_list(
         joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
         joinedload(PembayaranKas.creator),
         joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
+        joinedload(PembayaranKas.jurnal),
     )
 
     if search:
@@ -79,6 +80,7 @@ def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[Pembayara
             joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(PembayaranKas.creator),
             joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
+            joinedload(PembayaranKas.jurnal),
         )
         .filter(PembayaranKas.id == pembayaran_id)
         .first()
@@ -250,6 +252,7 @@ def get_penerimaan_list(
         joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
         joinedload(PenerimaanKas.creator),
         joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
+        joinedload(PenerimaanKas.jurnal),
     )
 
     if search:
@@ -282,6 +285,7 @@ def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[Penerimaa
             joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(PenerimaanKas.creator),
             joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
+            joinedload(PenerimaanKas.jurnal),
         )
         .filter(PenerimaanKas.id == penerimaan_id)
         .first()
@@ -441,6 +445,7 @@ def get_transfer_list(
         joinedload(TransferBank.dari_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
         joinedload(TransferBank.ke_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
         joinedload(TransferBank.creator),
+        joinedload(TransferBank.jurnal),
     )
 
     if search:
@@ -467,6 +472,7 @@ def get_transfer_by_id(db: Session, transfer_id: UUID) -> Optional[TransferBank]
             joinedload(TransferBank.dari_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(TransferBank.ke_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(TransferBank.creator),
+            joinedload(TransferBank.jurnal),
         )
         .filter(TransferBank.id == transfer_id)
         .first()
