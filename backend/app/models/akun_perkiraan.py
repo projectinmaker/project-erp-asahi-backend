@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Numeric, Integer, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, Numeric, Integer, ForeignKey, Enum as SQLEnum, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -21,10 +21,10 @@ class SaldoNormal(str, enum.Enum):
     KREDIT = "KREDIT"
 
 
-class TingkatAkun(str, enum.Enum):  # <-- Ubah int jadi str
-    HEADER = "HEADER"  # <-- Ubah 1 jadi "HEADER"
-    GROUP = "GROUP"  # <-- Ubah 2 jadi "GROUP"
-    DETAIL = "DETAIL"  # <-- Ubah 3 jadi "DETAIL"
+class TingkatAkun(str, enum.Enum):
+    HEADER = "HEADER"
+    GROUP = "GROUP"
+    DETAIL = "DETAIL"
 
 
 class AkunPerkiraan(BaseModel, BaseMixin):
@@ -41,6 +41,7 @@ class AkunPerkiraan(BaseModel, BaseMixin):
 
     saldo_normal = Column(SQLEnum(SaldoNormal), nullable=False)
     saldo = Column(Numeric(18, 2), default=0, nullable=False)
+    tanggal = Column(DateTime(timezone=True), nullable=True)  # Tanggal mulai aktif / penempatan saldo awal
     status = Column(String(20), default="AKTIF", nullable=False)
 
     # Relationships
