@@ -16,6 +16,7 @@ from app.models.master.supplier import Supplier
 from app.models.master.barang import Barang
 from app.models.master.kas_bank_akun import KasBankAkun
 from app.models.master.biaya_tambahan import BiayaTambahan
+from app.models.master.setting_akun import SettingAkun
 
 # Transaksi - Kas & Bank
 from app.models.transaksi.kas_bank.pembayaran import PembayaranKas, StatusTransaksi
@@ -76,6 +77,7 @@ __all__ = [
     "Barang",
     "KasBankAkun",
     "BiayaTambahan",
+    "SettingAkun",
     # Transaksi - Kas & Bank
     "PembayaranKas",
     "PenerimaanKas",
