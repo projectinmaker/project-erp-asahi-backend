@@ -1,4 +1,4 @@
-"""
+ """
 Pembelian Endpoints.
 PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang.
 """
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
+from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 from app.schemas.base import PaginatedResponse
 from app.schemas.pembelian import (
     PurchaseOrderCreate, PurchaseOrderUpdate, PurchaseOrderResponse,
@@ -418,3 +419,59 @@ def cancel_penerimaan(
         return svc.cancel_penerimaan(db, db_obj=item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
+# INVOICE BELUM BAYAR (untuk Pembayaran Kas)
+# ==========================================
+
+@router.get("/invoice-belum-bayar/{supplier_id}")
+def get_invoice_belum_bayar(
+    supplier_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """List invoice pembelian yang belum dibayar penuh untuk suatu supplier.
+
+    Digunakan di form Pembayaran Kas untuk cascade dropdown:
+    Pilih Hutang -> Pilih Supplier -> muncul list invoice.
+
+    Return list sederhana dengan field tambahan `sisaTagihan`.
+    """
+    from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
+    from app.models.master.supplier import Supplier
+    from decimal import Decimal
+
+    # Validasi supplier
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
+
+    # Ambil semua invoice aktif (bukan BATAL) untuk supplier ini
+    invoices = (
+        db.query(PurchaseInvoice)
+        .filter(
+            PurchaseInvoice.supplier_id == supplier_id,
+            PurchaseInvoice.status != StatusPenjualan.DIBATALKAN,
+        )
+        .order_by(PurchaseInvoice.tanggal.desc())
+        .all()
+    )
+
+    result = []
+    for inv in invoices:
+        # NOTE: Untuk tracking per-invoice yang lebih akurat, perlu
+        # relasi langsung antara pembayaran dan invoice (Phase 4).
+        # Untuk sekarang, sisaTagihan = grand_total.
+        result.append({
+            "id": inv.id,
+            "no_form": inv.no_form,
+            "no_faktur": inv.no_faktur,
+            "tanggal": inv.tanggal,
+            "grand_total": inv.grand_total,
+            "total_ppn": inv.total_ppn,
+            "sisa_tagihan": inv.grand_total,  # grand_total karena tracking pembayaran per-invoice belum ada
+            "status": inv.status.value if inv.status else "DRAFT",
+        })
+
+    return result
