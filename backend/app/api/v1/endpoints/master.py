@@ -56,6 +56,7 @@ class SupplierSimpleResponse(BaseSchema):
 
 
 from app.services import master_service
+from app.services.coa_linkage_service import auto_create_piutang_coa, auto_create_hutang_coa
 
 router = APIRouter()
 
@@ -80,7 +81,15 @@ def create_pelanggan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    return master_service.create_master(db, Pelanggan, data_in)
+    pelanggan = master_service.create_master(db, Pelanggan, data_in)
+    # Auto-buat COA detail Piutang Usaha untuk pelanggan ini
+    piutang_coa_id = auto_create_piutang_coa(db, pelanggan)
+    if piutang_coa_id:
+        pelanggan.akun_piutang_id = piutang_coa_id
+        db.add(pelanggan)
+        db.commit()
+        db.refresh(pelanggan)
+    return pelanggan
 
 @router.get("/pelanggan/{pelanggan_id}", response_model=PelangganResponse)
 def get_pelanggan_detail(
@@ -140,7 +149,15 @@ def create_supplier(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    return master_service.create_master(db, Supplier, data_in)
+    supplier = master_service.create_master(db, Supplier, data_in)
+    # Auto-buat COA detail Hutang Usaha untuk supplier ini
+    hutang_coa_id = auto_create_hutang_coa(db, supplier)
+    if hutang_coa_id:
+        supplier.akun_hutang_id = hutang_coa_id
+        db.add(supplier)
+        db.commit()
+        db.refresh(supplier)
+    return supplier
 
 @router.get("/supplier/{supplier_id}", response_model=SupplierResponse)
 def get_supplier_detail(supplier_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):

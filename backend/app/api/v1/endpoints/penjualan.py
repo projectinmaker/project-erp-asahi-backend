@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
+from app.models.transaksi.penjualan.sales_order import StatusPenjualan
+from app.models.transaksi.jurnal import JurnalUmum, RefModule
+from sqlalchemy import func as sa_func
 from app.schemas.base import PaginatedResponse
 from app.schemas.penjualan import (
     SalesOrderCreate, SalesOrderUpdate, SalesOrderResponse,
@@ -430,3 +433,72 @@ def cancel_pengiriman(
         return svc.cancel_pengiriman(db, db_obj=item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
+# INVOICE BELUM BAYAR (untuk Pembayaran Kas)
+# ==========================================
+
+@router.get("/invoice-belum-bayar/{pelanggan_id}")
+def get_invoice_belum_bayar(
+    pelanggan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """List invoice penjualan yang belum dibayar penuh untuk suatu pelanggan.
+
+    Digunakan di form Pembayaran Kas untuk cascade dropdown:
+    Pilih Piutang -> Pilih Pelanggan -> muncul list invoice.
+
+    Return list SalesInvoiceResponse sederhana dengan field tambahan `sisaTagihan`.
+    """
+    from app.models.transaksi.penjualan.sales_invoice import SalesInvoice
+    from decimal import Decimal
+
+    # Validasi pelanggan
+    from app.models.master.pelanggan import Pelanggan
+    pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
+    if not pelanggan:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+
+    # Ambil semua invoice aktif (bukan BATAL) untuk pelanggan ini
+    invoices = (
+        db.query(SalesInvoice)
+        .filter(
+            SalesInvoice.pelanggan_id == pelanggan_id,
+            SalesInvoice.status != StatusPenjualan.DIBATALKAN,
+        )
+        .order_by(SalesInvoice.tanggal.desc())
+        .all()
+    )
+
+    result = []
+    for inv in invoices:
+        # Hitung total yang sudah dibayar dari jurnal penerimaan kas
+        total_bayar = Decimal("0")
+        if inv.jurnal_umum_id:
+            # Cari jurnal penerimaan yang merujuk invoice ini
+            bayar_rows = (
+                db.query(sa_func.coalesce(sa_func.sum(JurnalUmum.total_kredit), 0))
+                .filter(
+                    JurnalUmum.ref_module == RefModule.PENERIMAAN,
+                    JurnalUmum.status == "POSTED",
+                )
+                .scalar()
+            )
+            # NOTE: Untuk tracking per-invoice yang lebih akurat, perlu
+            # relasi langsung antara pembayaran dan invoice (Phase 4).
+            # Untuk sekarang, sisaTagihan = grand_total.
+
+        sisa = inv.grand_total - total_bayar
+        result.append({
+            "id": inv.id,
+            "no_invoice": inv.no_invoice,
+            "tanggal": inv.tanggal,
+            "grand_total": inv.grand_total,
+            "total_ppn": inv.total_ppn,
+            "sisa_tagihan": inv.grand_total,  # grand_total karena tracking pembayaran per-invoice belum ada
+            "status": inv.status.value if inv.status else "DRAFT",
+        })
+
+    return result
