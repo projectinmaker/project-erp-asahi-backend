@@ -8,6 +8,8 @@ from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
 
+from pydantic import computed_field
+
 from app.schemas.base import BaseSchema
 
 
@@ -132,6 +134,12 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     details: List[PurchaseOrderDetailResponse] = []
     biaya_tambahan: List[TransaksiBiayaResponse] = []
 
+    @computed_field  # type: ignore[misc]
+    @property
+    def dasar_pajak(self) -> Decimal:
+        """DPP (Dasar Pengenaan Pajak) = sub_total - total_diskon."""
+        return self.sub_total - self.total_diskon
+
 
 # ==========================================
 # PURCHASE INVOICE DETAIL
@@ -202,6 +210,12 @@ class PurchaseInvoiceResponse(PurchaseInvoiceBase):
     details: List[PurchaseInvoiceDetailResponse] = []
     biaya_tambahan: List[TransaksiBiayaResponse] = []
 
+    @computed_field  # type: ignore[misc]
+    @property
+    def dasar_pajak(self) -> Decimal:
+        """DPP (Dasar Pengenaan Pajak) = sub_total - total_diskon."""
+        return self.sub_total - self.total_diskon
+
 
 # ==========================================
 # PURCHASE RETUR DETAIL
@@ -265,6 +279,12 @@ class PurchaseReturResponse(PurchaseReturBase):
     creator: Optional[PenggunaSimpleResponse] = None
     jurnal: Optional[JurnalSimpleResponse] = None
     details: List[PurchaseReturDetailResponse] = []
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def dasar_pajak(self) -> Decimal:
+        """DPP (Dasar Pengenaan Pajak) = sub_total (retur tanpa diskon)."""
+        return self.sub_total
 
 
 # ==========================================
