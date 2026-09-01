@@ -1,6 +1,7 @@
 """
 Schemas untuk modul Kas & Bank.
 PembayaranKas, PenerimaanKas, TransferBank + Detail tabel.
+FIX v2: Tambah JurnalSimpleResponse + relasi jurnal di 3 Response class.
 """
 
 from datetime import datetime
@@ -23,6 +24,12 @@ class AkunPerkiraanSimpleResponse(BaseSchema):
 class PenggunaSimpleResponse(BaseSchema):
     id: UUID
     nama: str
+
+
+# FIX v2: Definisikan JurnalSimpleResponse
+class JurnalSimpleResponse(BaseSchema):
+    id: UUID
+    no_jurnal: str
 
 
 class KasBankSimpleResponse(BaseSchema):
@@ -86,6 +93,7 @@ class PembayaranKasResponse(PembayaranKasBase):
     kas_bank: Optional[KasBankSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     rincian: List[PembayaranRincianResponse] = []
+    jurnal: Optional[JurnalSimpleResponse] = None
 
 
 # ==========================================
@@ -141,6 +149,7 @@ class PenerimaanKasResponse(PenerimaanKasBase):
     kas_bank: Optional[KasBankSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     rincian: List[PenerimaanRincianResponse] = []
+    jurnal: Optional[JurnalSimpleResponse] = None
 
 
 # ==========================================
@@ -181,3 +190,4 @@ class TransferBankResponse(TransferBankBase):
     dari_kas_bank: Optional[KasBankSimpleResponse] = None
     ke_kas_bank: Optional[KasBankSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
+    jurnal: Optional[JurnalSimpleResponse] = None
