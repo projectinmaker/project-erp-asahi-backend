@@ -20,7 +20,9 @@ _UTANG_SALDO_NORMAL = SaldoNormal.KREDIT
 
 
 def _find_group_coa(db: Session, keywords: list[str], header: HeaderCOA) -> Optional[AkunPerkiraan]:
-    """Cari COA GROUP berdasarkan nama yang mengandung keyword."""
+    """Cari COA GROUP berdasarkan nama yang mengandung keyword.
+    Prioritas: GROUP dulu, lalu HEADER.
+    """
     query = db.query(AkunPerkiraan).filter(
         AkunPerkiraan.header == header,
         AkunPerkiraan.status == "AKTIF",
@@ -28,7 +30,6 @@ def _find_group_coa(db: Session, keywords: list[str], header: HeaderCOA) -> Opti
     for kw in keywords:
         query = query.filter(AkunPerkiraan.nama.ilike(f"%{kw}%"))
 
-    # Prioritas: GROUP dulu, lalu HEADER
     group = query.filter(AkunPerkiraan.tingkat == TingkatAkun.GROUP).first()
     if group:
         return group
@@ -39,27 +40,39 @@ def _find_group_coa(db: Session, keywords: list[str], header: HeaderCOA) -> Opti
 def _generate_next_detail_kode(db: Session, parent: AkunPerkiraan) -> str:
     """Generate kode detail berikutnya di bawah parent.
 
-    Contoh: parent kode 130.000.000 -> children 130.000.001, 130.000.002, ...
-    """
-    parent_parts = parent.kode.split(".")
-    prefix = ".".join(parent_parts[:-1])  # "130.000"
+    Format FLAT 9-digit sesuai seed data: 111101001, 111101002, ...
+    Parent kode 111000000 -> children 111101001, 111101002, ...
 
+    Logic:
+    1. Cari semua child langsung dari parent (induk_id == parent.id)
+    2. Ambil kode terbesar, increment 3 digit terakhir
+    3. Jika belum ada child, mulai dari parent.kode dengan 3 digit terakhir = 001
+    """
+    parent_kode = parent.kode  # e.g. "111000000"
+
+    # Cari child terakhir di bawah parent ini
     last = (
         db.query(AkunPerkiraan)
-        .filter(AkunPerkiraan.kode.like(f"{prefix}.%"))
+        .filter(AkunPerkiraan.induk_id == parent.id)
         .order_by(AkunPerkiraan.kode.desc())
         .first()
     )
 
     if last:
+        # Ambil 3 digit terakhir dan increment
         try:
-            last_seq = int(last.kode.split(".")[-1])
+            last_seq = int(last.kode[-3:])
         except (IndexError, ValueError):
             last_seq = 0
+        next_seq = last_seq + 1
     else:
-        last_seq = 0
+        # Belum ada child, mulai dari 001
+        # Ganti 3 digit terakhir parent kode jadi 001
+        next_seq = 1
 
-    return f"{prefix}.{last_seq + 1:03d}"
+    # Bangun kode baru: ambil 6 digit depan parent, tambahkan 3 digit sequence
+    prefix_6 = parent_kode[:6]  # "111000"
+    return f"{prefix_6}{next_seq:03d}"
 
 
 def _create_detail_coa(
