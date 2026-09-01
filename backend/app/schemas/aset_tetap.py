@@ -66,6 +66,14 @@ class AsetTetapResponse(AsetTetapBase):
     created_by: UUID
     created_at: datetime
     updated_at: datetime
+    # Field depresiasi (ada di model DB, sebelumnya tidak di-deklarasikan di schema)
+    umur_aset: int = 0
+    metode_penyusutan: str = "GARIS_LURUS"
+    nilai_sisa: Decimal = Decimal("0")
+    nilai_buku: Decimal = Decimal("0")
+    akumulasi_penyusutan: Decimal = Decimal("0")
+    penyusutan_per_bulan: Decimal = Decimal("0")
+    # Relasi
     kategori_aset: Optional[KategoriAsetSimpleResponse] = None
     akun_aset: Optional[AkunPerkiraanSimpleResponse] = None
     akun_akumulasi: Optional[AkunPerkiraanSimpleResponse] = None
