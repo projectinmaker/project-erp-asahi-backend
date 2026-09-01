@@ -19,24 +19,27 @@ class COABase(BaseSchema):
 
 
 class COACreate(COABase):
-    """Schema untuk membuat COA baru (tidak butuh ID dan Timestamp).
+    """Schema untuk membuat COA baru.
 
     Field tambahan (opsional):
-    - jenis_kas_bank: Jika COA detail di bawah header AKTIVA (Kas dan Setara Kas),
+    - jenis_kas_bank: Jika COA detail di bawah AKTIVA (Kas dan Setara Kas),
       isi 'KAS' atau 'BANK' untuk auto-membuat KasBankAkun.
-      Frontend menampilkan opsi ini hanya jika parent adalah GROUP di bawah
-      akun Kas dan Setara Kas.
+    - saldo: Saldo awal akun (default 0).
+    - tanggal: Tanggal mulai aktif / penempatan saldo awal.
     """
-    jenis_kas_bank: Optional[str] = None  # 'KAS' atau 'BANK', opsional
+    jenis_kas_bank: Optional[str] = None  # 'KAS' atau 'BANK'
+    saldo: Decimal = Decimal("0")
+    tanggal: Optional[datetime] = None
 
 
 class COAUpdate(BaseSchema):
-    """Schema untuk update COA (semua field opsional)"""
+    """Schema untuk update COA (semua field opsional)."""
 
     nama: Optional[str] = None
     induk_id: Optional[UUID] = None
     induk_kode: Optional[str] = None
     saldo: Optional[Decimal] = None
+    tanggal: Optional[datetime] = None
     status: Optional[str] = None
 
 
@@ -45,13 +48,13 @@ class COAResponse(COABase):
 
     id: UUID
     saldo: Decimal
+    tanggal: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     # Opsi kas/bank info (hanya diisi jika COA ini punya relasi KasBankAkun)
     jenis_kas_bank: Optional[str] = None
 
     class Config:
-        # Alias spesifik jika ada penamaan yang tidak standar
         json_schema_extra = {
             "example": {
                 "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
@@ -63,6 +66,7 @@ class COAResponse(COABase):
                 "indukKode": "110.000.000",
                 "saldoNormal": "DEBIT",
                 "saldo": 5000000,
+                "tanggal": "2026-01-01T00:00:00",
                 "status": "AKTIF",
                 "jenisKasBank": "BANK",
                 "createdAt": "2026-08-11T16:00:00.000000",

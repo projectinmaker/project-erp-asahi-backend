@@ -73,3 +73,16 @@ class JurnalUmumDetailResponse(BaseSchema):
     details: List[JurnalDetailItemResponse] = []
     created_at: datetime
     updated_at: datetime
+
+
+# ==========================================
+# JURNAL MANUAL - Create
+# ==========================================
+class JurnalManualCreate(BaseSchema):
+    """Schema untuk membuat jurnal manual (posting_type = MANUAL).
+
+    User input tanggal, keterangan, dan detail baris debit/kredit.
+    """
+    tanggal: datetime
+    keterangan: str
+    details: List[JurnalDetailItemCreate]
