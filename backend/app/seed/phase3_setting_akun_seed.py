@@ -15,7 +15,7 @@ from app.models.master.setting_akun import SettingAkun
 # ============================================================
 def _detect_format(db: Session) -> str:
     """
-    Deteksi apakah DB menggunakan format dotted (150.000.001)
+    Deteksi apakah DB menggunakan format dotted (150.000.001) 
     atau flat (150000001) berdasarkan sample data.
     """
     sample = db.query(AkunPerkiraan.kode).first()
@@ -214,6 +214,9 @@ def seed_phase3_coa_and_settings():
             ("600", "100", "009", "Beban Biaya Transfer Bank", HeaderCOA.BEBAN, SaldoNormal.DEBIT, "600"),
             ("600", "100", "010", "Beban Lain-lain", HeaderCOA.BEBAN, SaldoNormal.DEBIT, "600"),
             ("600", "100", "011", "Selisih Persediaan", HeaderCOA.BEBAN, SaldoNormal.DEBIT, "600"),
+
+            # -- MODAL --
+            ("310", "100", "001", "Laba Rugi Berjalan", HeaderCOA.MODAL, SaldoNormal.KREDIT, "310"),
         ]
 
         # Nama fallback untuk parent lookup (ketika kode parent tidak ketemu)
@@ -223,6 +226,7 @@ def seed_phase3_coa_and_settings():
             "230": "HUTANG PAJAK",
             "400": "PENDAPATAN",
             "500": "HARGA POKOK",
+            "310": "MODAL",
             "600": "BEBAN",
         }
 
@@ -303,6 +307,7 @@ def seed_phase3_coa_and_settings():
             ("HUTANG_USAHA", "Hutang Usaha", "220", "000", "000"),
             ("SELISIH_PERSEDIAAN", "Selisih Persediaan", "600", "100", "011"),
             ("PERSEDIAAN_BAHAN_PEMBANTU", "Persediaan Bahan Pembantu", "131", "100", "004"),
+            ("LABA_RUGI_BERJALAN", "Laba Rugi Berjalan", "310", "100", "001"),
         ]
 
         inserted_setting = 0
