@@ -1,13 +1,16 @@
 from typing import List, Optional, Tuple
 from uuid import UUID
 from decimal import Decimal
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from loguru import logger
 
-from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA, TingkatAkun
+from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA, TingkatAkun, SaldoNormal
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
+from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
+from app.models.detail.jurnal_detail import JurnalDetail
 from app.schemas.coa import COACreate, COAUpdate
 
 
@@ -143,3 +146,180 @@ def update_coa(db: Session, db_obj: AkunPerkiraan, obj_in: COAUpdate) -> AkunPer
     db.commit()
     db.refresh(db_obj)
     return db_obj
+
+
+# ============================================================
+# SALDO AWAL
+# ============================================================
+
+def get_saldo_awal(db: Session) -> dict:
+    """Cek apakah saldo awal sudah pernah diset.
+
+    Jika sudah, return jurnal SALDO_AWAL yang ada (bisa di-edit ulang).
+    Jika belum, return list kosong dengan sudah_diset=False.
+    """
+    existing = (
+        db.query(JurnalUmum)
+        .filter(JurnalUmum.ref_module == RefModule.SALDO_AWAL)
+        .order_by(JurnalUmum.created_at.desc())
+        .first()
+    )
+
+    if not existing:
+        return {
+            "sudah_diset": False,
+            "tanggal": None,
+            "items": [],
+            "total_debit": Decimal("0"),
+            "total_kredit": Decimal("0"),
+            "selisih": Decimal("0"),
+        }
+
+    # Ambil detail jurnal
+    details = (
+        db.query(
+            JurnalDetail.akun_perkiraan_id,
+            AkunPerkiraan.kode,
+            AkunPerkiraan.nama,
+            AkunPerkiraan.saldo_normal,
+            JurnalDetail.debit,
+            JurnalDetail.kredit,
+        )
+        .join(AkunPerkiraan, AkunPerkiraan.id == JurnalDetail.akun_perkiraan_id)
+        .filter(JurnalDetail.jurnal_umum_id == existing.id)
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+
+    items = []
+    total_debit = Decimal("0")
+    total_kredit = Decimal("0")
+    for d in details:
+        items.append({
+            "akun_perkiraan_id": d.akun_perkiraan_id,
+            "kode_akun": d.kode,
+            "nama_akun": d.nama,
+            "saldo_normal": d.saldo_normal.value if hasattr(d.saldo_normal, "value") else str(d.saldo_normal),
+            "debit": Decimal(str(d.debit)),
+            "kredit": Decimal(str(d.kredit)),
+        })
+        total_debit += Decimal(str(d.debit))
+        total_kredit += Decimal(str(d.kredit))
+
+    return {
+        "sudah_diset": True,
+        "tanggal": existing.tanggal.strftime("%Y-%m-%d") if existing.tanggal else None,
+        "items": items,
+        "total_debit": total_debit,
+        "total_kredit": total_kredit,
+        "selisih": total_debit - total_kredit,
+    }
+
+
+def save_saldo_awal(db: Session, items: list, tanggal_str: str, user_id: UUID) -> dict:
+    """Simpan saldo awal.
+
+    1. Hapus jurnal SALDO_AWAL lama jika ada (re-set).
+    2. Validasi total debit == total kredit.
+    3. Buat jurnal baru via posting_service (POSTED).
+    4. Update AkunPerkiraan.saldo dan .tanggal untuk setiap akun.
+    """
+    # 1. Hapus jurnal SALDO_AWAL lama jika ada
+    old_jurnals = (
+        db.query(JurnalUmum)
+        .filter(JurnalUmum.ref_module == RefModule.SALDO_AWAL)
+        .all()
+    )
+    for j in old_jurnals:
+        # Hapus detail dulu
+        db.query(JurnalDetail).filter(
+            JurnalDetail.jurnal_umum_id == j.id
+        ).delete()
+        db.delete(j)
+    db.flush()
+
+    # 2. Filter items yang debit/kredit != 0
+    active_items = [
+        i for i in items
+        if Decimal(str(i["debit"])) != Decimal("0") or Decimal(str(i["kredit"])) != Decimal("0")
+    ]
+
+    if not active_items:
+        return {
+            "sudah_diset": False,
+            "tanggal": None,
+            "items": [],
+            "total_debit": Decimal("0"),
+            "total_kredit": Decimal("0"),
+            "selisih": Decimal("0"),
+        }
+
+    # 3. Validasi balance
+    total_debit = sum(Decimal(str(i["debit"])) for i in active_items)
+    total_kredit = sum(Decimal(str(i["kredit"])) for i in active_items)
+    if total_debit != total_kredit:
+        raise ValueError(
+            f"Saldo awal tidak balance: total debit={total_debit}, total kredit={total_kredit}"
+        )
+
+    # 4. Buat jurnal via posting_service
+    from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal
+
+    tanggal = datetime.strptime(tanggal_str, "%Y-%m-%d")
+
+    entries = []
+    for i in active_items:
+        entries.append(JurnalEntryItem(
+            akun_perkiraan_id=i["akun_perkiraan_id"],
+            debit=Decimal(str(i["debit"])),
+            kredit=Decimal(str(i["kredit"])),
+            keterangan="Saldo awal",
+        ))
+
+    jurnal = auto_posting_jurnal(
+        db=db,
+        ref_module=RefModule.SALDO_AWAL,
+        ref_no="SA-INIT",
+        entries=entries,
+        keterangan="Saldo Awal Perusahaan",
+        tanggal=tanggal,
+        created_by=user_id,
+        status=StatusJurnal.POSTED,
+        no_jurnal="SA-INIT",
+    )
+
+    # 5. Update AkunPerkiraan.saldo dan .tanggal
+    for i in active_items:
+        akun = db.query(AkunPerkiraan).filter(
+            AkunPerkiraan.id == i["akun_perkiraan_id"]
+        ).first()
+        if akun:
+            d = Decimal(str(i["debit"]))
+            k = Decimal(str(i["kredit"]))
+            if akun.saldo_normal == SaldoNormal.DEBIT:
+                akun.saldo = d - k
+            else:
+                akun.saldo = k - d
+            akun.tanggal = tanggal
+
+    db.commit()
+    logger.info(f"Saldo awal diset: {len(active_items)} akun, D={total_debit} K={total_kredit}")
+
+    return {
+        "sudah_diset": True,
+        "tanggal": tanggal_str,
+        "items": [
+            {
+                "akun_perkiraan_id": i["akun_perkiraan_id"],
+                "kode_akun": i["kode_akun"],
+                "nama_akun": i["nama_akun"],
+                "saldo_normal": i["saldo_normal"],
+                "debit": Decimal(str(i["debit"])),
+                "kredit": Decimal(str(i["kredit"])),
+            }
+            for i in active_items
+        ],
+        "total_debit": total_debit,
+        "total_kredit": total_kredit,
+        "selisih": Decimal("0"),
+    }
