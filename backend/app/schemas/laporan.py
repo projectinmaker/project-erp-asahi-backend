@@ -37,6 +37,7 @@ class NeracaSaldoResponse(BaseSchema):
     total_kredit: Decimal = Decimal("0")
     selisih: Decimal = Decimal("0")  # harus 0 jika balance
 
+
 # --- Perubahan Modal (Statement of Changes in Equity) ---
 class PerubahanModalItem(BaseSchema):
     kode_akun: str
@@ -140,6 +141,48 @@ class MutasiKasBankTransaksi(BaseSchema):
 class MutasiKasBankResponse(BaseSchema):
     periode: Periode
     transaksi: List[MutasiKasBankTransaksi] = []
+
+
+# --- Umur Piutang / Hutang (Aging) ---
+class UmurInvoice(BaseSchema):
+    no_dokumen: str
+    tanggal: str
+    jatuh_tempo: str
+    nilai: Decimal = Decimal("0")
+    umur_hari: int = 0  # negatif = belum jatuh tempo
+
+
+class UmurItem(BaseSchema):
+    nama: str
+    total: Decimal = Decimal("0")
+    belum_jatuh_tempo: Decimal = Decimal("0")
+    umur_1_30: Decimal = Decimal("0")
+    umur_31_60: Decimal = Decimal("0")
+    umur_61_90: Decimal = Decimal("0")
+    umur_91_plus: Decimal = Decimal("0")
+    rincian: List[UmurInvoice] = []
+
+
+class UmurPiutangResponse(BaseSchema):
+    as_of_date: str
+    items: List[UmurItem] = []
+    total: Decimal = Decimal("0")
+    total_belum_jatuh_tempo: Decimal = Decimal("0")
+    total_umur_1_30: Decimal = Decimal("0")
+    total_umur_31_60: Decimal = Decimal("0")
+    total_umur_61_90: Decimal = Decimal("0")
+    total_umur_91_plus: Decimal = Decimal("0")
+
+
+class UmurHutangResponse(BaseSchema):
+    as_of_date: str
+    items: List[UmurItem] = []
+    total: Decimal = Decimal("0")
+    total_belum_jatuh_tempo: Decimal = Decimal("0")
+    total_umur_1_30: Decimal = Decimal("0")
+    total_umur_31_60: Decimal = Decimal("0")
+    total_umur_61_90: Decimal = Decimal("0")
+    total_umur_91_plus: Decimal = Decimal("0")
 
 
 # --- Rekap Kas & Bank ---
