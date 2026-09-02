@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_db, get_current_user
 from app.models.akun_perkiraan import HeaderCOA, TingkatAkun
 from app.models.master.pengguna import Pengguna
-from app.schemas.coa import COACreate, COAUpdate, COAResponse
+from app.schemas.coa import COACreate, COAUpdate, COAResponse, SaldoAwalRequest, SaldoAwalResponse
 from app.services import coa_service
 from app.schemas.base import PaginatedResponse
 
@@ -93,6 +93,58 @@ def create_coa(
     coa = coa_service.create_coa(db, coa_in=coa_in)
     return _coa_to_dict(coa, coa_service._get_jenis_kas_bank_for_coa(db, coa.id))
 
+
+# ==========================================
+# SALDO AWAL (sebelum /{coa_id} supaya routing benar)
+# ==========================================
+
+@router.get("/saldo-awal", response_model=SaldoAwalResponse)
+def get_saldo_awal(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Cek dan ambil saldo awal yang sudah diset."""
+    return coa_service.get_saldo_awal(db)
+
+
+@router.post("/saldo-awal", response_model=SaldoAwalResponse)
+def save_saldo_awal(
+    req: SaldoAwalRequest,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Set/overwrite saldo awal perusahaan.
+
+    Membuat jurnal SALDO_AWAL (POSTED). Jika sudah pernah diset,
+    jurnal lama akan dihapus dan diganti yang baru.
+    """
+    from datetime import datetime as dt
+    try:
+        dt.strptime(req.tanggal, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
+
+    items = [
+        {
+            "akun_perkiraan_id": i.akun_perkiraan_id,
+            "kode_akun": i.kode_akun,
+            "nama_akun": i.nama_akun,
+            "saldo_normal": i.saldo_normal,
+            "debit": i.debit,
+            "kredit": i.kredit,
+        }
+        for i in req.items
+    ]
+
+    try:
+        return coa_service.save_saldo_awal(db, items, req.tanggal, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
+# DETAIL / UPDATE
+# ==========================================
 
 @router.get("/{coa_id}", response_model=COAResponse)
 def read_coa_detail(
