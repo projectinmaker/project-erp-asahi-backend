@@ -22,6 +22,7 @@ from app.models.transaksi.kas_bank.pembayaran import PembayaranKas, StatusTransa
 from app.models.transaksi.kas_bank.transfer_bank import TransferBank
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
 from app.models.master.pelanggan import Pelanggan
+from app.models.master.supplier import Supplier
 from app.models.master.syarat_bayar import SyaratBayar
 
 
@@ -410,6 +411,7 @@ def get_dashboard_aktivitas_terbaru(db: Session) -> dict:
 
     return {"items": top10}
 
+
 # ============================================================
 # LAPORAN: NERACA SALDO (TRIAL BALANCE)
 # ============================================================
@@ -488,6 +490,7 @@ def get_neraca_saldo(
         "total_kredit": grand_kredit,
         "selisih": grand_debit - grand_kredit,
     }
+
 
 # ============================================================
 # LAPORAN: PERUBAHAN MODAL (Statement of Changes in Equity)
@@ -920,6 +923,211 @@ def get_arus_kas(
         "net_change": net_change,
         "saldo_awal": saldo_awal,
         "saldo_akhir": saldo_akhir,
+    }
+
+
+# ============================================================
+# LAPORAN: UMUR PIUTANG (Aging Receivables)
+# ============================================================
+
+def get_umur_piutang(db: Session, as_of: datetime) -> dict:
+    """Umur Piutang: grouping invoice SELESAI per pelanggan,
+    bucket berdasarkan (as_of - jatuh_tempo).
+
+    Catatan MVP: menggunakan grand_total sebagai outstanding.
+    Ketika fitur payment allocation tersedia, sisa = grand_total - total_bayar.
+    """
+    invoices = (
+        db.query(
+            SalesInvoice.no_invoice,
+            SalesInvoice.tanggal,
+            SalesInvoice.grand_total,
+            SyaratBayar.hari.label("termin_hari"),
+            Pelanggan.nama.label("nama_pelanggan"),
+        )
+        .join(Pelanggan, Pelanggan.id == SalesInvoice.pelanggan_id)
+        .outerjoin(SyaratBayar, SyaratBayar.id == SalesInvoice.syarat_bayar_id)
+        .filter(SalesInvoice.status == StatusPenjualan.SELESAI)
+        .all()
+    )
+
+    # Group per pelanggan
+    by_pelanggan: dict = {}
+    for inv in invoices:
+        nama = inv.nama_pelanggan or ""
+        if nama not in by_pelanggan:
+            by_pelanggan[nama] = []
+
+        termin = inv.termin_hari if inv.termin_hari else 0
+        if termin > 0:
+            jt = inv.tanggal + timedelta(days=termin)
+        else:
+            jt = inv.tanggal
+
+        umur = (as_of - jt).days
+        nilai = Decimal(str(inv.grand_total))
+
+        by_pelanggan[nama].append({
+            "no_dokumen": inv.no_invoice,
+            "tanggal": inv.tanggal.strftime("%Y-%m-%d") if inv.tanggal else "",
+            "jatuh_tempo": jt.strftime("%Y-%m-%d") if jt else "",
+            "nilai": nilai,
+            "umur_hari": umur,
+        })
+
+    # Build response
+    items = []
+    grand = {
+        "total": Decimal("0"),
+        "belum_jatuh_tempo": Decimal("0"),
+        "umur_1_30": Decimal("0"),
+        "umur_31_60": Decimal("0"),
+        "umur_61_90": Decimal("0"),
+        "umur_91_plus": Decimal("0"),
+    }
+
+    for nama, invs in sorted(by_pelanggan.items()):
+        cust = {
+            "nama": nama,
+            "total": Decimal("0"),
+            "belum_jatuh_tempo": Decimal("0"),
+            "umur_1_30": Decimal("0"),
+            "umur_31_60": Decimal("0"),
+            "umur_61_90": Decimal("0"),
+            "umur_91_plus": Decimal("0"),
+            "rincian": [],
+        }
+        for inv in invs:
+            nilai = inv["nilai"]
+            umur = inv["umur_hari"]
+            cust["total"] += nilai
+
+            if umur <= 0:
+                cust["belum_jatuh_tempo"] += nilai
+            elif umur <= 30:
+                cust["umur_1_30"] += nilai
+            elif umur <= 60:
+                cust["umur_31_60"] += nilai
+            elif umur <= 90:
+                cust["umur_61_90"] += nilai
+            else:
+                cust["umur_91_plus"] += nilai
+
+            cust["rincian"].append(inv)
+
+        items.append(cust)
+        grand["total"] += cust["total"]
+        grand["belum_jatuh_tempo"] += cust["belum_jatuh_tempo"]
+        grand["umur_1_30"] += cust["umur_1_30"]
+        grand["umur_31_60"] += cust["umur_31_60"]
+        grand["umur_61_90"] += cust["umur_61_90"]
+        grand["umur_91_plus"] += cust["umur_91_plus"]
+
+    return {
+        "as_of_date": as_of.strftime("%Y-%m-%d"),
+        "items": items,
+        **grand,
+    }
+
+
+# ============================================================
+# LAPORAN: UMUR HUTANG (Aging Payables)
+# ============================================================
+
+def get_umur_hutang(db: Session, as_of: datetime) -> dict:
+    """Umur Hutang: grouping invoice SELESAI per supplier,
+    bucket berdasarkan (as_of - tanggal).
+
+    Catatan: PurchaseInvoice saat ini TIDAK punya syarat_bayar_id,
+    jadi jatuh_tempo = tanggal invoice. Saat field ditambahkan,
+    update logic ini untuk pakai syarat_bayar.hari.
+
+    Catatan MVP: menggunakan grand_total sebagai outstanding.
+    """
+    invoices = (
+        db.query(
+            PurchaseInvoice.no_form,
+            PurchaseInvoice.tanggal,
+            PurchaseInvoice.grand_total,
+            Supplier.nama.label("nama_supplier"),
+        )
+        .join(Supplier, Supplier.id == PurchaseInvoice.supplier_id)
+        .filter(PurchaseInvoice.status == StatusPenjualan.SELESAI)
+        .all()
+    )
+
+    # Group per supplier
+    by_supplier: dict = {}
+    for inv in invoices:
+        nama = inv.nama_supplier or ""
+        if nama not in by_supplier:
+            by_supplier[nama] = []
+
+        # Jatuh tempo = tanggal (karena tidak ada syarat_bayar_id)
+        jt = inv.tanggal
+        umur = (as_of - jt).days
+        nilai = Decimal(str(inv.grand_total))
+
+        by_supplier[nama].append({
+            "no_dokumen": inv.no_form,
+            "tanggal": inv.tanggal.strftime("%Y-%m-%d") if inv.tanggal else "",
+            "jatuh_tempo": jt.strftime("%Y-%m-%d") if jt else "",
+            "nilai": nilai,
+            "umur_hari": umur,
+        })
+
+    # Build response
+    items = []
+    grand = {
+        "total": Decimal("0"),
+        "belum_jatuh_tempo": Decimal("0"),
+        "umur_1_30": Decimal("0"),
+        "umur_31_60": Decimal("0"),
+        "umur_61_90": Decimal("0"),
+        "umur_91_plus": Decimal("0"),
+    }
+
+    for nama, invs in sorted(by_supplier.items()):
+        supp = {
+            "nama": nama,
+            "total": Decimal("0"),
+            "belum_jatuh_tempo": Decimal("0"),
+            "umur_1_30": Decimal("0"),
+            "umur_31_60": Decimal("0"),
+            "umur_61_90": Decimal("0"),
+            "umur_91_plus": Decimal("0"),
+            "rincian": [],
+        }
+        for inv in invs:
+            nilai = inv["nilai"]
+            umur = inv["umur_hari"]
+            supp["total"] += nilai
+
+            if umur <= 0:
+                supp["belum_jatuh_tempo"] += nilai
+            elif umur <= 30:
+                supp["umur_1_30"] += nilai
+            elif umur <= 60:
+                supp["umur_31_60"] += nilai
+            elif umur <= 90:
+                supp["umur_61_90"] += nilai
+            else:
+                supp["umur_91_plus"] += nilai
+
+            supp["rincian"].append(inv)
+
+        items.append(supp)
+        grand["total"] += supp["total"]
+        grand["belum_jatuh_tempo"] += supp["belum_jatuh_tempo"]
+        grand["umur_1_30"] += supp["umur_1_30"]
+        grand["umur_31_60"] += supp["umur_31_60"]
+        grand["umur_61_90"] += supp["umur_61_90"]
+        grand["umur_91_plus"] += supp["umur_91_plus"]
+
+    return {
+        "as_of_date": as_of.strftime("%Y-%m-%d"),
+        "items": items,
+        **grand,
     }
 
 
