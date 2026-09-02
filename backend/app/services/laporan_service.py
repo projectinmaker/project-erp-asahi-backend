@@ -410,6 +410,85 @@ def get_dashboard_aktivitas_terbaru(db: Session) -> dict:
 
     return {"items": top10}
 
+# ============================================================
+# LAPORAN: NERACA SALDO (TRIAL BALANCE)
+# ============================================================
+
+def get_neraca_saldo(
+    db: Session, date_from: datetime, date_to: datetime
+) -> dict:
+    """Neraca Saldo: semua akun DETAIL AKTIF, total debit & kredit POSTED.
+    Validasi total_debit == total_kredit (selisih = 0)."""
+    q = (
+        db.query(
+            AkunPerkiraan.kode,
+            AkunPerkiraan.nama,
+            AkunPerkiraan.saldo_normal,
+            func.coalesce(func.sum(JurnalDetail.debit), 0).label("total_debit"),
+            func.coalesce(func.sum(JurnalDetail.kredit), 0).label("total_kredit"),
+        )
+        .join(JurnalDetail, JurnalDetail.akun_perkiraan_id == AkunPerkiraan.id)
+        .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+        .filter(
+            AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
+            AkunPerkiraan.status == "AKTIF",
+            JurnalUmum.status == StatusJurnal.POSTED,
+            JurnalUmum.tanggal >= date_from,
+            JurnalUmum.tanggal <= date_to,
+        )
+        .group_by(
+            AkunPerkiraan.id,
+            AkunPerkiraan.kode,
+            AkunPerkiraan.nama,
+            AkunPerkiraan.saldo_normal,
+        )
+        .having(
+            or_(
+                func.coalesce(func.sum(JurnalDetail.debit), 0) != 0,
+                func.coalesce(func.sum(JurnalDetail.kredit), 0) != 0,
+            )
+        )
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+
+    items = []
+    grand_debit = Decimal("0")
+    grand_kredit = Decimal("0")
+
+    for r in q:
+        td = Decimal(str(r.total_debit))
+        tk = Decimal(str(r.total_kredit))
+        sn = r.saldo_normal
+
+        if sn == SaldoNormal.DEBIT:
+            saldo = td - tk
+        else:
+            saldo = tk - td
+
+        items.append({
+            "kode_akun": r.kode,
+            "nama_akun": r.nama,
+            "saldo_normal": sn.value if hasattr(sn, "value") else str(sn),
+            "total_debit": td,
+            "total_kredit": tk,
+            "saldo": saldo,
+        })
+
+        grand_debit += td
+        grand_kredit += tk
+
+    return {
+        "periode": {
+            "dari": date_from.strftime("%Y-%m-%d"),
+            "sampai": date_to.strftime("%Y-%m-%d"),
+        },
+        "akun": items,
+        "total_debit": grand_debit,
+        "total_kredit": grand_kredit,
+        "selisih": grand_debit - grand_kredit,
+    }
+
 
 # ============================================================
 # LAPORAN: LABA RUGI
