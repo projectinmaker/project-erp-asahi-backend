@@ -23,7 +23,45 @@ from app.models.master.barang import Barang
 from app.models.master.gudang import Gudang
 from app.models.transaksi.jurnal import RefModule
 from app.services.stok_service import update_stok_barang
+from app.services import setting_akun_service as sa_cfg
+from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal
 from app.utils.nomor_dokumen import get_nomor_dokumen
+
+# ==========================================
+# HELPER: Mapping kategori barang -> COA persediaan
+# ==========================================
+
+def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
+    """Tentukan COA persediaan berdasarkan kategori barang.
+
+    Mapping keyword pada nama kategori:
+    - 'Bahan Baku' / 'BAKU' -> PERSEDIAAN_BAHAN_BAKU
+    - 'WIP' / 'Dalam Proses' -> PERSEDIAAN_WIP
+    - 'Barang Jadi' / 'JADI' -> PERSEDIAAN_BARANG_JADI
+    - 'Bahan Pembantu' / 'PEMBANTU' -> PERSEDIAAN_BAHAN_PEMBANTU
+    - lainnya -> fallback ke PERSEDIAAN_BAHAN_BAKU (dengan warning)
+    """
+    if not barang.kategori:
+        raise ValueError(f"Barang {barang.kode} tidak memiliki kategori")
+
+    nama_upper = barang.kategori.nama.upper()
+
+    if "BAHAN BAKU" in nama_upper or "BAHANBAKU" in nama_upper:
+        key = sa_cfg.KEY_PERSEDIAAN_BAHAN_BAKU
+    elif "WIP" in nama_upper or "DALAM PROSES" in nama_upper:
+        key = sa_cfg.KEY_PERSEDIAAN_WIP
+    elif "BARANG JADI" in nama_upper or "JADI" in nama_upper:
+        key = sa_cfg.KEY_PERSEDIAAN_BARANG_JADI
+    elif "BAHAN PEMBANTU" in nama_upper or "PEMBANTU" in nama_upper:
+        key = sa_cfg.KEY_PERSEDIAAN_BAHAN_PEMBANTU
+    else:
+        logger.warning(
+            f"Kategori '{barang.kategori.nama}' tidak dikenali untuk mapping persediaan, "
+            f"default ke PERSEDIAAN_BAHAN_BAKU"
+        )
+        key = sa_cfg.KEY_PERSEDIAAN_BAHAN_BAKU
+
+    return sa_cfg.get_akun_id_or_raise(db, key, f"Barang {barang.kode} ({barang.kategori.nama})")
 
 
 # ==========================================
@@ -91,13 +129,13 @@ def create_penyesuaian(
     qty: int,
     biaya_satuan: Decimal = Decimal("0"),
     alasan: Optional[str] = None,
-    auto_post_jurnal: bool = False,
+    auto_post_jurnal: bool = True,
     created_by: Optional[UUID] = None,
 ) -> PenyesuaianStok:
     """Buat PenyesuaianStok baru.
     - Generate no_adj otomatis (ADJ-YYYY-MM-NNN)
     - Hitung total = qty * biaya_satuan
-    - Auto-post jurnal jika auto_post_jurnal=True (default False karena COA mapping per barang belum siap)
+    - Flag auto_post_jurnal disimpan; jurnal diposting saat approve
     """
     try:
         # Validasi barang
@@ -133,14 +171,14 @@ def create_penyesuaian(
         db.flush()
 
         # Auto-post jurnal
-        # NOTE: Default auto_post_jurnal=False karena belum ada mapping barang -> COA persediaan.
+        # NOTEd: Default auto_post_jurnal=False karena belum ada mapping barang -> COA persediaan.
         #       Butuh: kategori barang (Bahan Baku/WIP/Barang Jadi) -> KEY_PERSEDIAAN_* dari setting_akun,
         #       serta akun 'Selisih Persediaan' yang belum ada di setting_akun.
-        if auto_post_jurnal and total > 0:
-            raise NotImplementedError(
-                "Auto-posting jurnal penyesuaian stok belum diimplementasikan. "
-                "Butuh mapping kategori barang -> COA persediaan + akun selisih persediaan."
-            )
+        #if auto_post_jurnal and total > 0:
+        #    raise NotImplementedError(
+        #        "Auto-posting jurnal penyesuaian stok belum diimplementasikan. "
+        #        "Butuh mapping kategori barang -> COA persediaan + akun selisih persediaan."
+        #    )
 
         db.commit()
         db.refresh(adj)
@@ -193,11 +231,11 @@ def update_penyesuaian(
 
 
 def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok:
-    """Setujui penyesuaian stok + update stok barang + catat StokMutasi."""
+    """Setujui penyesuaian stok + update stok barang + auto-post jurnal + catat StokMutasi."""
     if db_obj.status != StatusPersediaan.DIAJUKAN:
         raise ValueError(f"Penyesuaian Stok dengan status {db_obj.status.value} tidak bisa disetujui")
 
-    # Update stok barang
+    # 1. Update stok barang
     mode = "TAMBAH" if db_obj.tipe.value == "TAMBAH" else "KURANGI"
     update_stok_barang(
         db=db,
@@ -210,6 +248,62 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
         ref_id=db_obj.id,
     )
 
+    # 2. Auto-post jurnal (non-fatal: jika gagal, stok tetap diupdate)
+    if db_obj.auto_post_jurnal and db_obj.total > 0:
+        try:
+            akun_persediaan_id = _get_akun_persediaan_id(db, db_obj.barang)
+            akun_selisih_id = sa_cfg.get_akun_id_or_raise(
+                db, sa_cfg.KEY_SELISIH_PERSEDIAAN, f"Penyesuaian {db_obj.no_adj}"
+            )
+
+            if db_obj.tipe == TipePenyesuaian.TAMBAH:
+                # D: Persediaan (naik), K: Selisih Persediaan
+                entries = [
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_persediaan_id,
+                        debit=db_obj.total,
+                        keterangan=f"Penyesuaian Stok + {db_obj.barang.nama}",
+                    ),
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_selisih_id,
+                        kredit=db_obj.total,
+                        keterangan=f"Selisih Penyesuaian Stok {db_obj.no_adj}",
+                    ),
+                ]
+            else:
+                # KURANG: D: Selisih Persediaan, K: Persediaan (turun)
+                entries = [
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_selisih_id,
+                        debit=db_obj.total,
+                        keterangan=f"Selisih Penyesuaian Stok {db_obj.no_adj}",
+                    ),
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_persediaan_id,
+                        kredit=db_obj.total,
+                        keterangan=f"Penyesuaian Stok - {db_obj.barang.nama}",
+                    ),
+                ]
+
+            jurnal = auto_posting_jurnal(
+                db=db,
+                ref_module=RefModule.PENYESUAIAN_STOK,
+                ref_no=db_obj.no_adj,
+                entries=entries,
+                keterangan=f"Penyesuaian Stok {db_obj.no_adj} ({db_obj.tipe.value})",
+                ref_id=db_obj.id,
+                tanggal=db_obj.tanggal,
+                created_by=db_obj.created_by,
+            )
+            db_obj.jurnal_umum_id = jurnal.id
+            logger.info(
+                f"Jurnal penyesuaian stok posted: {jurnal.no_jurnal} | "
+                f"{db_obj.tipe.value} | total={db_obj.total}"
+            )
+        except Exception as e:
+            logger.warning(f"Jurnal penyesuaian stok gagal diposting (non-fatal): {e}")
+
+    # 3. Set status + commit
     db_obj.status = StatusPersediaan.DISETUJUI
     db.add(db_obj)
     db.commit()
