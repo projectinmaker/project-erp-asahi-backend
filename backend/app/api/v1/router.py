@@ -7,11 +7,6 @@ from fastapi import APIRouter
 
 api_router = APIRouter()
 
-# ==========================================
-# Import dan include endpoint routers
-# Akan ditambahkan di phase selanjutnya:
-# ==========================================
-
 
 # System Check
 @api_router.get("/ping", tags=["System"])
@@ -19,8 +14,16 @@ async def ping():
     return {"message": "pong", "version": "v1"}
 
 
-# Import dan daftarkan router baru
-from app.api.v1.endpoints import coa, auth, master, kas_bank, penjualan, pembelian, persediaan, aset_tetap, jurnal, pengguna, karyawan, dashboard, laporan
+# ==========================================
+# Endpoint routers
+# ==========================================
+from app.api.v1.endpoints import (
+    coa, auth, master,
+    kas_bank, penjualan, pembelian,
+    persediaan, aset_tetap,
+    jurnal, pengguna, karyawan,
+    dashboard, laporan, penutupan_periode,
+)
 
 api_router.include_router(coa.router, prefix="/coa", tags=["Chart of Accounts"])
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
@@ -35,7 +38,4 @@ api_router.include_router(pengguna.router, prefix="/pengguna", tags=["Pengguna"]
 api_router.include_router(karyawan.router, prefix="/karyawan", tags=["Karyawan"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 api_router.include_router(laporan.router, prefix="/laporan", tags=["Laporan"])
-
-# ==========================================
-# Placeholder endpoints untuk verifikasi setup
-# ==========================================
+api_router.include_router(penutupan_periode.router, prefix="/periode", tags=["Penutupan Periode"])
