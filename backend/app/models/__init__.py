@@ -47,6 +47,7 @@ from app.models.transaksi.aset_tetap.aset_tetap import AsetTetap, MetodePenyusut
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.transaksi.stok_mutasi import StokMutasi, TipeMutasiStok
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
+from app.models.transaksi.penutupan_periode import PenutupanPeriode, StatusPeriode
 
 # Detail / Child Tables
 from app.models.detail.jurnal_detail import JurnalDetail
@@ -102,6 +103,7 @@ __all__ = [
     "JurnalUmum",
     "StokMutasi",
     "TransaksiBiaya",
+    "PenutupanPeriode",
     # Detail / Child
     "JurnalDetail",
     "PembayaranRincian",
@@ -126,4 +128,5 @@ __all__ = [
     "RefModule",
     "StatusJurnal",
     "TipeMutasiStok",
+    "StatusPeriode",
 ]
