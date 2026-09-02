@@ -15,6 +15,8 @@ from app.schemas.laporan import (
     BukuBesarResponse,
     MutasiKasBankResponse,
     RekapKasBankResponse,
+    UmurPiutangResponse,
+    UmurHutangResponse,
 )
 from app.services import laporan_service
 
@@ -41,6 +43,7 @@ def get_neraca_saldo(
 
     return laporan_service.get_neraca_saldo(db, date_from, date_to)
 
+
 @router.get("/perubahan-modal", response_model=PerubahanModalResponse)
 def get_perubahan_modal(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -56,6 +59,7 @@ def get_perubahan_modal(
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
     return laporan_service.get_perubahan_modal(db, date_from, date_to)
+
 
 @router.get("/laba-rugi", response_model=LabaRugiResponse)
 def get_laba_rugi(
@@ -104,6 +108,40 @@ def get_arus_kas(
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
     return laporan_service.get_arus_kas(db, date_from, date_to)
+
+
+# ==========================================
+# UMUR PIUTANG / HUTANG
+# ==========================================
+
+@router.get("/umur-piutang", response_model=UmurPiutangResponse)
+def get_umur_piutang(
+    as_of: str = Query(..., description="Tanggal posisi (YYYY-MM-DD)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Laporan Umur Piutang (Aging Receivables)."""
+    try:
+        dt = datetime.strptime(as_of, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
+
+    return laporan_service.get_umur_piutang(db, dt)
+
+
+@router.get("/umur-hutang", response_model=UmurHutangResponse)
+def get_umur_hutang(
+    as_of: str = Query(..., description="Tanggal posisi (YYYY-MM-DD)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Laporan Umur Hutang (Aging Payables)."""
+    try:
+        dt = datetime.strptime(as_of, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
+
+    return laporan_service.get_umur_hutang(db, dt)
 
 
 # ==========================================
