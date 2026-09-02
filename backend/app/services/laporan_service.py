@@ -489,6 +489,167 @@ def get_neraca_saldo(
         "selisih": grand_debit - grand_kredit,
     }
 
+# ============================================================
+# LAPORAN: PERUBAHAN MODAL (Statement of Changes in Equity)
+# ============================================================
+
+def get_perubahan_modal(
+    db: Session, date_from: datetime, date_to: datetime
+) -> dict:
+    """Perubahan Modal: saldo awal, mutasi, dan saldo akhir per akun MODAL,
+    ditambah laba/rugi berjalan periode ini.
+
+    Akun MODAL saldo_normal = KREDIT, jadi:
+      saldo_awal  = kumulatif (kredit - debit) sebelum date_from
+      perubahan   = kredit - debit dalam periode
+      saldo_akhir = saldo_awal + perubahan
+
+    Laba/rugi berjalan = Pendapatan - HPP - Beban (dalam periode).
+    """
+    # --- 1. Ambil semua akun MODAL DETAIL AKTIF ---
+    modal_akun = (
+        db.query(
+            AkunPerkiraan.id,
+            AkunPerkiraan.kode,
+            AkunPerkiraan.nama,
+            AkunPerkiraan.saldo_normal,
+        )
+        .filter(
+            AkunPerkiraan.header == HeaderCOA.MODAL,
+            AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
+            AkunPerkiraan.status == "AKTIF",
+        )
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+
+    if not modal_akun:
+        # Tidak ada akun MODAL, tetap hitung laba/rugi
+        laba_rugi = (
+            _total_by_header(db, HeaderCOA.PENDAPATAN, date_from, date_to)
+            - _total_by_header(db, HeaderCOA.HPP, date_from, date_to)
+            - _total_by_header(db, HeaderCOA.BEBAN, date_from, date_to)
+        )
+        return {
+            "periode": {
+                "dari": date_from.strftime("%Y-%m-%d"),
+                "sampai": date_to.strftime("%Y-%m-%d"),
+            },
+            "akun_modal": [],
+            "laba_rugi_berjalan": laba_rugi,
+            "total_modal_awal": Decimal("0"),
+            "total_modal_akhir": laba_rugi,
+        }
+
+    modal_ids = [m.id for m in modal_akun]
+
+    # --- 2. Saldo awal: kumulatif SEBELUM periode ---
+    awal_rows = (
+        db.query(
+            JurnalDetail.akun_perkiraan_id,
+            func.coalesce(func.sum(JurnalDetail.debit), 0).label("td"),
+            func.coalesce(func.sum(JurnalDetail.kredit), 0).label("tk"),
+        )
+        .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id.in_(modal_ids),
+            JurnalUmum.status == StatusJurnal.POSTED,
+            JurnalUmum.tanggal < date_from,
+        )
+        .group_by(JurnalDetail.akun_perkiraan_id)
+        .all()
+    )
+    saldo_awal_map = {}
+    for r in awal_rows:
+        td = Decimal(str(r.td))
+        tk = Decimal(str(r.tk))
+        # MODAL normal = KREDIT, tapi kita respect saldo_normal masing-masing akun
+        akun_obj = next((m for m in modal_akun if m.id == r.akun_perkiraan_id), None)
+        sn = akun_obj.saldo_normal if akun_obj else SaldoNormal.KREDIT
+        if sn == SaldoNormal.KREDIT:
+            saldo_awal_map[r.akun_perkiraan_id] = tk - td
+        else:
+            saldo_awal_map[r.akun_perkiraan_id] = td - tk
+
+    # --- 3. Mutasi dalam periode ---
+    mutasi_rows = (
+        db.query(
+            JurnalDetail.akun_perkiraan_id,
+            func.coalesce(func.sum(JurnalDetail.debit), 0).label("td"),
+            func.coalesce(func.sum(JurnalDetail.kredit), 0).label("tk"),
+        )
+        .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id.in_(modal_ids),
+            JurnalUmum.status == StatusJurnal.POSTED,
+            JurnalUmum.tanggal >= date_from,
+            JurnalUmum.tanggal <= date_to,
+        )
+        .group_by(JurnalDetail.akun_perkiraan_id)
+        .all()
+    )
+    mutasi_map = {}
+    for r in mutasi_rows:
+        mutasi_map[r.akun_perkiraan_id] = {
+            "debit": Decimal(str(r.td)),
+            "kredit": Decimal(str(r.tk)),
+        }
+
+    # --- 4. Gabungkan ---
+    items = []
+    total_modal_awal = Decimal("0")
+    total_modal_akhir = Decimal("0")
+
+    for m in modal_akun:
+        sa = saldo_awal_map.get(m.id, Decimal("0"))
+        mut = mutasi_map.get(m.id, {"debit": Decimal("0"), "kredit": Decimal("0")})
+        md = mut["debit"]
+        mk = mut["kredit"]
+
+        # Perubahan = kredit - debit (sesuai saldo_normal KREDIT)
+        if m.saldo_normal == SaldoNormal.KREDIT:
+            perubahan = mk - md
+        else:
+            perubahan = md - mk
+
+        saldo_akhir = sa + perubahan
+
+        # Hanya tampilkan yang ada perubahannya atau saldo awalnya != 0
+        if sa != Decimal("0") or perubahan != Decimal("0"):
+            items.append({
+                "kode_akun": m.kode,
+                "nama_akun": m.nama,
+                "saldo_awal": sa,
+                "mutasi_debit": md,
+                "mutasi_kredit": mk,
+                "perubahan": perubahan,
+                "saldo_akhir": saldo_akhir,
+            })
+
+        total_modal_awal += sa
+        total_modal_akhir += saldo_akhir
+
+    # --- 5. Laba/rugi berjalan periode ini ---
+    laba_rugi_berjalan = (
+        _total_by_header(db, HeaderCOA.PENDAPATAN, date_from, date_to)
+        - _total_by_header(db, HeaderCOA.HPP, date_from, date_to)
+        - _total_by_header(db, HeaderCOA.BEBAN, date_from, date_to)
+    )
+
+    # Laba/rugi berjalan masuk ke total_modal_akhir
+    grand_modal_akhir = total_modal_akhir + laba_rugi_berjalan
+
+    return {
+        "periode": {
+            "dari": date_from.strftime("%Y-%m-%d"),
+            "sampai": date_to.strftime("%Y-%m-%d"),
+        },
+        "akun_modal": items,
+        "laba_rugi_berjalan": laba_rugi_berjalan,
+        "total_modal_awal": total_modal_awal,
+        "total_modal_akhir": grand_modal_akhir,
+    }
+
 
 # ============================================================
 # LAPORAN: LABA RUGI
