@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.detail.jurnal_detail import JurnalDetail
+from app.models.transaksi.penutupan_periode import PenutupanPeriode, StatusPeriode
 
 
 class JurnalEntryItem:
@@ -89,6 +90,23 @@ def auto_posting_jurnal(
         JurnalUmum object (flushed, belum committed — caller harus commit)
     """
     try:
+        # Validasi: cek periode tidak ditutup (inline query untuk menghindari circular import)
+        if tanggal:
+            _periode_closed = (
+                db.query(PenutupanPeriode)
+                .filter(
+                    PenutupanPeriode.tahun == tanggal.year,
+                    PenutupanPeriode.bulan == tanggal.month,
+                    PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+                )
+                .first()
+            )
+            if _periode_closed:
+                raise ValueError(
+                    f"Periode {tanggal.strftime('%B %Y')} sudah ditutup. "
+                    f"Tidak bisa posting jurnal ({ref_no})."
+                )
+
         # Validasi: pastikan entries tidak kosong
         if not entries:
             raise ValueError("entries tidak boleh kosong, minimal 2 baris (debit & kredit)")
