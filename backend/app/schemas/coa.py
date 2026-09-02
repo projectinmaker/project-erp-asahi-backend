@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, List
 
 from app.models.akun_perkiraan import HeaderCOA, SaldoNormal, TingkatAkun
 from app.schemas.base import BaseSchema
@@ -41,6 +41,30 @@ class COAUpdate(BaseSchema):
     saldo: Optional[Decimal] = None
     tanggal: Optional[datetime] = None
     status: Optional[str] = None
+
+
+# --- Saldo Awal ---
+class SaldoAwalItem(BaseSchema):
+    akun_perkiraan_id: UUID
+    kode_akun: str
+    nama_akun: str
+    saldo_normal: str  # "DEBIT" / "KREDIT"
+    debit: Decimal = Decimal("0")
+    kredit: Decimal = Decimal("0")
+
+
+class SaldoAwalRequest(BaseSchema):
+    tanggal: str  # YYYY-MM-DD
+    items: List[SaldoAwalItem]
+
+
+class SaldoAwalResponse(BaseSchema):
+    sudah_diset: bool
+    tanggal: Optional[str] = None
+    items: List[SaldoAwalItem] = []
+    total_debit: Decimal = Decimal("0")
+    total_kredit: Decimal = Decimal("0")
+    selisih: Decimal = Decimal("0")
 
 
 class COAResponse(COABase):
