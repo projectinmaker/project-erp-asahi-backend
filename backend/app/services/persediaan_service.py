@@ -27,6 +27,7 @@ from app.services import setting_akun_service as sa_cfg
 from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
+
 # ==========================================
 # HELPER: Mapping kategori barang -> COA persediaan
 # ==========================================
@@ -169,16 +170,6 @@ def create_penyesuaian(
         )
         db.add(adj)
         db.flush()
-
-        # Auto-post jurnal
-        # NOTEd: Default auto_post_jurnal=False karena belum ada mapping barang -> COA persediaan.
-        #       Butuh: kategori barang (Bahan Baku/WIP/Barang Jadi) -> KEY_PERSEDIAAN_* dari setting_akun,
-        #       serta akun 'Selisih Persediaan' yang belum ada di setting_akun.
-        #if auto_post_jurnal and total > 0:
-        #    raise NotImplementedError(
-        #        "Auto-posting jurnal penyesuaian stok belum diimplementasikan. "
-        #        "Butuh mapping kategori barang -> COA persediaan + akun selisih persediaan."
-        #    )
 
         db.commit()
         db.refresh(adj)
@@ -403,7 +394,9 @@ def create_pemindahan(
     """Buat PemindahanBarang baru.
     - Generate no_pemindahan otomatis (TRF-STK-YYYY-MM-NNN)
     - Validasi gudang asal != gudang tujuan
-    - Auto-post jurnal jika auto_post_jurnal=True
+    - Catatan: Pemindahan antar gudang TIDAK menghasilkan jurnal karena
+      total nilai persediaan tidak berubah (hanya pindah lokasi).
+      StokMutasi sudah mencatat audit trail pergerakan stok.
     """
     try:
         # Validasi
@@ -446,12 +439,17 @@ def create_pemindahan(
         db.add(pb)
         db.flush()
 
-        # Auto-post jurnal (D: Persediaan Gudang Tujuan, K: Persediaan Gudang Asal)
-        # NOTE: Default auto_post_jurnal=False karena belum ada mapping gudang -> COA persediaan.
+        # Catatan: Pemindahan antar gudang tidak menghasilkan jurnal.
+        # Alasan: total nilai persediaan tidak berubah (hanya pindah gudang),
+        # dan saat ini hanya ada 1 COA persediaan per kategori (bukan per gudang).
+        # D & K ke akun yang sama = entri yang meaningless.
+        # StokMutasi sudah mencatat audit trail pergerakan stok.
+        # Future: jika ditambahkan COA per gudang (gudang.coa_persediaan_id),
+        # maka bisa diimplementasikan D-Persediaan Tujuan / K-Persediaan Asal.
         if auto_post_jurnal and qty > 0:
-            raise NotImplementedError(
-                "Auto-posting jurnal pemindahan barang belum diimplementasikan. "
-                "Butuh mapping gudang -> COA persediaan per gudang."
+            logger.info(
+                f"Pemindahan {no_pemindahan}: auto_post_jurnal=True tetapi jurnal tidak diposting. "
+                f"Pemindahan antar gudang tidak mengubah total nilai persediaan."
             )
 
         db.commit()
