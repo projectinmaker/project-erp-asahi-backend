@@ -724,31 +724,27 @@ def get_neraca(db: Session, tanggal: datetime) -> dict:
 
 
 # ============================================================
-# LAPORAN: ARUS KAS
+# LAPORAN: ARUS KAS (jurnal-based classification)
 # ============================================================
 
 def get_arus_kas(
     db: Session, date_from: datetime, date_to: datetime
 ) -> dict:
-    # Operasional: jurnal yang terkait COA PENDAPATAN, HPP, BEBAN, PIUTANG, HUTANG
-    # Investasi: jurnal terkait ASET TETAP
-    # Pembiayaan: jurnal terkait MODAL
+    """Arus Kas: klasifikasi berdasarkan counter-account header.
 
-    # Simple approach: classify by header of akun_perkiraan in jurnal_detail
-    # where akun is under KAS DAN SETARA KAS (the cash account side)
-    # We look at the OTHER side of the journal entry to classify
-
-    # For demo, let's use a simpler approach:
-    # Query all jurnal entries that affect KAS accounts, classify by counter-account header
-
-    kas_coa_ids = [
+    Untuk setiap jurnal yang menyentuh akun KAS/BANK:
+      1. Hitung net cash effect (debit - kredit di sisi KAS/BANK)
+      2. Lihat akun counter (sisi non-KAS/BANK) → baca header-nya
+      3. Klasifikasi:
+         - PENDAPATAN / HPP / BEBAN   → Operasional
+         - AKTIVA (non-cash)           → Investasi
+         - MODAL / KEWAJIBAN           → Pembiayaan
+    """
+    # 1. Ambil KAS/BANK akun IDs dari master KasBankAkun
+    kas_akun_ids = [
         r[0] for r in
-        db.query(AkunPerkiraan.id)
-        .filter(
-            AkunPerkiraan.header == HeaderCOA.AKTIVA,
-            AkunPerkiraan.status == "AKTIF",
-            AkunPerkiraan.kode.like("1%"),
-        )
+        db.query(KasBankAkun.akun_perkiraan_id)
+        .filter(KasBankAkun.status == "AKTIF")
         .all()
     ]
 
@@ -756,64 +752,135 @@ def get_arus_kas(
     investasi = {"items": [], "total": Decimal("0")}
     pembiayaan = {"items": [], "total": Decimal("0")}
 
-    # Penerimaan kas
-    penerimaan_list = (
-        db.query(PenerimaanKas)
-        .filter(
-            PenerimaanKas.tanggal >= date_from,
-            PenerimaanKas.tanggal <= date_to,
-            PenerimaanKas.status == StatusTransaksi.SELESAI,
+    if kas_akun_ids:
+        # 2. Cari semua jurnal ID di periode yang menyentuh KAS/BANK
+        jurnal_ids_rows = (
+            db.query(JurnalDetail.jurnal_umum_id)
+            .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+            .filter(
+                JurnalDetail.akun_perkiraan_id.in_(kas_akun_ids),
+                JurnalUmum.status == StatusJurnal.POSTED,
+                JurnalUmum.tanggal >= date_from,
+                JurnalUmum.tanggal <= date_to,
+            )
+            .distinct()
+            .all()
         )
-        .all()
-    )
-    for p in penerimaan_list:
-        operasional["items"].append({
-            "nama": f"Penerimaan kas - {p.no_bukti}",
-            "jumlah": Decimal(str(p.total_nilai)),
-        })
-        operasional["total"] += Decimal(str(p.total_nilai))
+        jurnal_ids = [r[0] for r in jurnal_ids_rows]
 
-    # Pembayaran kas
-    pembayaran_list = (
-        db.query(PembayaranKas)
-        .filter(
-            PembayaranKas.tanggal >= date_from,
-            PembayaranKas.tanggal <= date_to,
-            PembayaranKas.status == StatusTransaksi.SELESAI,
-        )
-        .all()
-    )
-    for p in pembayaran_list:
-        operasional["items"].append({
-            "nama": f"Pembayaran kas - {p.no_bukti}",
-            "jumlah": -Decimal(str(p.total_nilai)),
-        })
-        operasional["total"] -= Decimal(str(p.total_nilai))
+        if jurnal_ids:
+            # 3. Net cash effect per jurnal (sisi KAS/BANK saja)
+            cash_rows = (
+                db.query(
+                    JurnalDetail.jurnal_umum_id,
+                    func.coalesce(func.sum(JurnalDetail.debit), 0).label("td"),
+                    func.coalesce(func.sum(JurnalDetail.kredit), 0).label("tk"),
+                )
+                .filter(
+                    JurnalDetail.jurnal_umum_id.in_(jurnal_ids),
+                    JurnalDetail.akun_perkiraan_id.in_(kas_akun_ids),
+                )
+                .group_by(JurnalDetail.jurnal_umum_id)
+                .all()
+            )
+            cash_map = {}
+            for r in cash_rows:
+                td = Decimal(str(r.td))
+                tk = Decimal(str(r.tk))
+                cash_map[r.jurnal_umum_id] = {
+                    "debit": td,
+                    "kredit": tk,
+                    "net": td - tk,  # positif = masuk, negatif = keluar
+                }
 
-    # Transfer (net effect on kas = biaya_transfer saja, transfer antar kas net 0)
-    transfer_list = (
-        db.query(TransferBank)
-        .filter(
-            TransferBank.tanggal >= date_from,
-            TransferBank.tanggal <= date_to,
-            TransferBank.status == StatusTransaksi.SELESAI,
-        )
-        .all()
-    )
-    for t in transfer_list:
-        if t.biaya_transfer and Decimal(str(t.biaya_transfer)) > 0:
-            operasional["items"].append({
-                "nama": f"Biaya transfer - {t.no_transfer}",
-                "jumlah": -Decimal(str(t.biaya_transfer)),
-            })
-            operasional["total"] -= Decimal(str(t.biaya_transfer))
+            # 4. Counter-account (sisi non-KAS/BANK) per jurnal
+            counter_rows = (
+                db.query(
+                    JurnalDetail.jurnal_umum_id,
+                    AkunPerkiraan.header,
+                    AkunPerkiraan.kode,
+                    AkunPerkiraan.nama,
+                    JurnalUmum.no_jurnal,
+                    JurnalUmum.tanggal,
+                    func.coalesce(func.sum(JurnalDetail.debit), 0).label("td"),
+                    func.coalesce(func.sum(JurnalDetail.kredit), 0).label("tk"),
+                )
+                .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+                .join(AkunPerkiraan, AkunPerkiraan.id == JurnalDetail.akun_perkiraan_id)
+                .filter(
+                    JurnalDetail.jurnal_umum_id.in_(jurnal_ids),
+                    JurnalDetail.akun_perkiraan_id.notin_(kas_akun_ids),
+                )
+                .group_by(
+                    JurnalDetail.jurnal_umum_id,
+                    AkunPerkiraan.id,
+                    AkunPerkiraan.header,
+                    AkunPerkiraan.kode,
+                    AkunPerkiraan.nama,
+                    JurnalUmum.no_jurnal,
+                    JurnalUmum.tanggal,
+                )
+                .all()
+            )
 
-    # Saldo awal kas
+            # Group counter-accounts per jurnal_id
+            counter_by_jurnal = {}
+            for r in counter_rows:
+                jid = r.jurnal_umum_id
+                if jid not in counter_by_jurnal:
+                    counter_by_jurnal[jid] = []
+                counter_by_jurnal[jid].append(r)
+
+            # 5. Klasifikasi per jurnal
+            OPERASIONAL = {HeaderCOA.PENDAPATAN, HeaderCOA.HPP, HeaderCOA.BEBAN}
+            INVESTASI = {HeaderCOA.AKTIVA}
+            PEMBIAYAAN = {HeaderCOA.MODAL, HeaderCOA.KEWAJIBAN}
+
+            for jid in jurnal_ids:
+                cash_info = cash_map.get(jid)
+                if not cash_info or cash_info["net"] == Decimal("0"):
+                    continue
+
+                net_cash = cash_info["net"]
+                counters = counter_by_jurnal.get(jid, [])
+                if not counters:
+                    continue
+
+                # Tentukan klasifikasi berdasarkan counter-account terbesar
+                best_header = None
+                best_amount = Decimal("0")
+                best_desc = ""
+                no_jurnal_str = counters[0].no_jurnal or ""
+
+                for c in counters:
+                    amt = max(Decimal(str(c.td)), Decimal(str(c.tk)))
+                    if amt > best_amount:
+                        best_amount = amt
+                        best_header = c.header
+                        best_desc = f"{c.kode} - {c.nama}"
+
+                if best_header is None:
+                    continue
+
+                item_name = f"{no_jurnal_str} ({best_desc})"
+                item = {"nama": item_name, "jumlah": net_cash}
+
+                if best_header in OPERASIONAL:
+                    operasional["items"].append(item)
+                    operasional["total"] += net_cash
+                elif best_header in INVESTASI:
+                    investasi["items"].append(item)
+                    investasi["total"] += net_cash
+                elif best_header in PEMBIAYAAN:
+                    pembiayaan["items"].append(item)
+                    pembiayaan["total"] += net_cash
+                else:
+                    # Fallback ke operasional jika header tidak dikenali
+                    operasional["items"].append(item)
+                    operasional["total"] += net_cash
+
+    # 6. Saldo awal kas (kumulatif sebelum periode)
     saldo_awal = Decimal("0")
-    kas_akun_ids = [
-        r[0] for r in
-        db.query(KasBankAkun.akun_perkiraan_id).filter(KasBankAkun.status == "AKTIF").all()
-    ]
     if kas_akun_ids:
         saldo_awal_rows = (
             db.query(
