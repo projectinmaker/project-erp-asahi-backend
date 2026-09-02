@@ -37,6 +37,24 @@ class NeracaSaldoResponse(BaseSchema):
     total_kredit: Decimal = Decimal("0")
     selisih: Decimal = Decimal("0")  # harus 0 jika balance
 
+# --- Perubahan Modal (Statement of Changes in Equity) ---
+class PerubahanModalItem(BaseSchema):
+    kode_akun: str
+    nama_akun: str
+    saldo_awal: Decimal = Decimal("0")
+    mutasi_debit: Decimal = Decimal("0")
+    mutasi_kredit: Decimal = Decimal("0")
+    perubahan: Decimal = Decimal("0")  # net: kredit - debit (KREDIT normal)
+    saldo_akhir: Decimal = Decimal("0")
+
+
+class PerubahanModalResponse(BaseSchema):
+    periode: Periode
+    akun_modal: List[PerubahanModalItem] = []
+    laba_rugi_berjalan: Decimal = Decimal("0")
+    total_modal_awal: Decimal = Decimal("0")
+    total_modal_akhir: Decimal = Decimal("0")
+
 
 # --- Laba Rugi ---
 class LabaRugiResponse(BaseSchema):
