@@ -20,6 +20,24 @@ class AkunItem(BaseSchema):
     total: Decimal = Decimal("0")
 
 
+# --- Neraca Saldo (Trial Balance) ---
+class NeracaSaldoItem(BaseSchema):
+    kode_akun: str
+    nama_akun: str
+    saldo_normal: str  # DEBIT / KREDIT
+    total_debit: Decimal = Decimal("0")
+    total_kredit: Decimal = Decimal("0")
+    saldo: Decimal = Decimal("0")  # net saldo sesuai saldo_normal
+
+
+class NeracaSaldoResponse(BaseSchema):
+    periode: Periode
+    akun: List[NeracaSaldoItem] = []
+    total_debit: Decimal = Decimal("0")
+    total_kredit: Decimal = Decimal("0")
+    selisih: Decimal = Decimal("0")  # harus 0 jika balance
+
+
 # --- Laba Rugi ---
 class LabaRugiResponse(BaseSchema):
     periode: Periode
