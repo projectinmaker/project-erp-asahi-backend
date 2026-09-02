@@ -8,6 +8,7 @@ from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
 from app.schemas.laporan import (
     NeracaSaldoResponse,
+    PerubahanModalResponse,
     LabaRugiResponse,
     NeracaResponse,
     ArusKasResponse,
@@ -40,6 +41,21 @@ def get_neraca_saldo(
 
     return laporan_service.get_neraca_saldo(db, date_from, date_to)
 
+@router.get("/perubahan-modal", response_model=PerubahanModalResponse)
+def get_perubahan_modal(
+    dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
+    sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Laporan Perubahan Modal (Statement of Changes in Equity)."""
+    try:
+        date_from = datetime.strptime(dari, "%Y-%m-%d")
+        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
+
+    return laporan_service.get_perubahan_modal(db, date_from, date_to)
 
 @router.get("/laba-rugi", response_model=LabaRugiResponse)
 def get_laba_rugi(
