@@ -19,7 +19,7 @@ async def ping():
 # ==========================================
 from app.api.v1.endpoints import (
     coa, auth, master,
-    kas_bank, penjualan, pembelian,
+    kas_bank, rekonsiliasi_bank, penjualan, pembelian,
     persediaan, aset_tetap,
     jurnal, pengguna, karyawan,
     dashboard, laporan, penutupan_periode,
@@ -29,6 +29,7 @@ api_router.include_router(coa.router, prefix="/coa", tags=["Chart of Accounts"])
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 api_router.include_router(master.router, prefix="/master", tags=["Master Data"])
 api_router.include_router(kas_bank.router, prefix="/kas-bank", tags=["Kas & Bank"])
+api_router.include_router(rekonsiliasi_bank.router, prefix="/kas-bank", tags=["Rekonsiliasi Bank"])
 api_router.include_router(penjualan.router, prefix="/penjualan", tags=["Penjualan"])
 api_router.include_router(pembelian.router, prefix="/pembelian", tags=["Pembelian"])
 api_router.include_router(persediaan.router, prefix="/persediaan", tags=["Persediaan"])
