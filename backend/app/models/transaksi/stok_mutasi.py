@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Text, Integer, ForeignKey, Enum as SQLEnum, DateTime
+from sqlalchemy import Column, String, Text, Integer, Numeric, ForeignKey, Enum as SQLEnum, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -29,6 +29,16 @@ class StokMutasi(BaseModel, BaseMixin):
     ref_id = Column(UUID(as_uuid=True), nullable=True)
     gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)
     keterangan = Column(Text, nullable=True)
+
+    # ---- GAP #6: Kolom valuasi stok ----
+    # Harga satuan yang digunakan dalam transaksi ini
+    harga_satuan = Column(Numeric(18, 2), nullable=True)
+    # Total nilai = qty * harga_satuan
+    total_nilai = Column(Numeric(18, 2), nullable=True)
+    # Total nilai stok sebelum transaksi ini
+    saldo_nilai_sebelum = Column(Numeric(18, 2), nullable=True)
+    # Total nilai stok sesudah transaksi ini
+    saldo_nilai_sesudah = Column(Numeric(18, 2), nullable=True)
 
     # Relationships
     barang = relationship("Barang")
