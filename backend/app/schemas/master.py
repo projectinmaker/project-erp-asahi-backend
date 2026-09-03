@@ -97,6 +97,7 @@ class BarangBase(BaseSchema):
     satuan_id: UUID
     harga_pokok: Decimal = 0
     stok_minimum: int = 0
+    metode_valuasi: str = "AVERAGE"
 
 class BarangCreate(BarangBase): pass
 
@@ -106,6 +107,7 @@ class BarangUpdate(BaseSchema):
     satuan_id: Optional[UUID] = None
     harga_pokok: Optional[Decimal] = None
     stok_minimum: Optional[int] = None
+    metode_valuasi: Optional[str] = None
     status: Optional[str] = None
 
 class BarangResponse(BarangBase):
