@@ -264,6 +264,28 @@ def add_barang_satuan(
     return master_service.create_master(db, BarangSatuan, data_in)
 
 
+@router.put("/barang-satuan/{barang_satuan_id}", response_model=BarangSatuanResponse)
+def update_barang_satuan(
+    barang_satuan_id: UUID,
+    data_in: BarangSatuanUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Update satuan pada daftar satuan barang (mis. ubah isi_satuan / faktor konversi)."""
+    item = db.query(BarangSatuan).filter(BarangSatuan.id == barang_satuan_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Barang Satuan tidak ditemukan")
+    # Cegah duplikat kalau satuan_id diganti ke satuan yang sudah dipakai barang ini
+    if data_in.satuan_id and data_in.satuan_id != item.satuan_id:
+        existing = db.query(BarangSatuan).filter(
+            BarangSatuan.barang_id == item.barang_id,
+            BarangSatuan.satuan_id == data_in.satuan_id,
+            BarangSatuan.id != barang_satuan_id,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Satuan ini sudah terdaftar untuk barang tersebut")
+    return master_service.update_master(db, item, data_in)
+
 @router.delete("/barang-satuan/{barang_satuan_id}", status_code=status.HTTP_200_OK)
 def delete_barang_satuan(
     barang_satuan_id: UUID,
