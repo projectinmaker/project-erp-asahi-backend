@@ -15,7 +15,7 @@ from app.api.v1.endpoints import (
     kas_bank, penjualan, pembelian,
     persediaan, aset_tetap,
     jurnal, pengguna, karyawan,
-    dashboard, laporan, penutupan_periode,
+    dashboard, laporan, penutupan_periode, rekonsiliasi_bank,
     stok_kartu,
 )
 
@@ -33,4 +33,5 @@ api_router.include_router(karyawan.router, prefix="/karyawan", tags=["Karyawan"]
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 api_router.include_router(laporan.router, prefix="/laporan", tags=["Laporan"])
 api_router.include_router(penutupan_periode.router, prefix="/periode", tags=["Penutupan Periode"])
+api_router.include_router(rekonsiliasi_bank.router, prefix="/kas-bank", tags=["Rekonsiliasi Bank"])
 api_router.include_router(stok_kartu.router, tags=["Stok Kartu"])
