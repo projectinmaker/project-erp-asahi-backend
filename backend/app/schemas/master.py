@@ -129,6 +129,7 @@ class BarangSatuanBase(BaseSchema):
     barang_id: UUID
     satuan_id: UUID
     is_utama: bool = False
+    isi_satuan: Optional[int] = 1
 
 class BarangSatuanCreate(BarangSatuanBase):
     pass
@@ -136,6 +137,7 @@ class BarangSatuanCreate(BarangSatuanBase):
 class BarangSatuanUpdate(BaseSchema):
     satuan_id: Optional[UUID] = None
     is_utama: Optional[bool] = None
+    isi_satuan: Optional[int] = None
 
 class BarangSatuanResponse(BarangSatuanBase):
     id: UUID
