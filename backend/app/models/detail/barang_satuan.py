@@ -18,6 +18,7 @@ class BarangSatuan(BaseModel, BaseMixin):
     barang_id = Column(UUID(as_uuid=True), ForeignKey("barang.id"), nullable=False, index=True)
     satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id"), nullable=False)
     is_utama = Column(Boolean, default=False, nullable=False)
+    isi_satuan = Column(Integer, default=1, nullable=False)
 
     # Relationships
     barang = relationship("Barang", backref="daftar_satuan")
