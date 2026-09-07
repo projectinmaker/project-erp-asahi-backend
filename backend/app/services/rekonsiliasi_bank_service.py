@@ -387,13 +387,14 @@ def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> 
     jurnal_penyesuaian_id = None
     if penyesuaian_items:
         try:
-            jurnal_penyesuaian_id = _create_adjustment_journal(
-                db=db,
-                rek=rek,
-                items=penyesuaian_items,
-                user_id=user_id,
-            )
-            rek.jurnal_penyesuaian_id = jurnal_penyesuaian_id
+            with db.begin_nested():
+                jurnal_penyesuaian_id = _create_adjustment_journal(
+                    db=db,
+                    rek=rek,
+                    items=penyesuaian_items,
+                    user_id=user_id,
+                )
+                rek.jurnal_penyesuaian_id = jurnal_penyesuaian_id
         except Exception as e:
             logger.warning(f"Jurnal penyesuaian rekonsiliasi gagal (non-fatal): {e}")
 

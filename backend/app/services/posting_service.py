@@ -143,6 +143,8 @@ def auto_posting_jurnal(
         )
 
         db.add(jurnal)
+        db.flush()  # jurnal.id (default=uuid.uuid4) baru terisi setelah flush,
+                    # harus di-flush dulu sebelum dipakai sebagai FK di JurnalDetail
 
         # Buat detail jurnal
         for entry in entries:
@@ -155,7 +157,7 @@ def auto_posting_jurnal(
             )
             db.add(detail)
 
-        # Flush (bukan commit) agar jurnal.id tersedia untuk caller.
+        # Flush lagi agar detail ikut ke DB (bukan commit) agar jurnal.id tersedia untuk caller.
         # Caller bertanggung jawab atas commit/rollback transaksi.
         # Ini mencegah rollback di sini menghancurkan transaksi parent
         # saat caller menandai jurnal gagal sebagai "non-fatal".

@@ -151,18 +151,19 @@ def tutup_periode(
     jurnal_penutupan_id = None
     if with_closing_entry:
         try:
-            jurnal_penutupan_id = _create_closing_entry(
-                db=db,
-                tahun=tahun,
-                bulan=bulan,
-                date_from=date_from,
-                date_to=date_to,
-                laba_rugi=laba_rugi,
-                pendapatan=pendapatan,
-                hpp=hpp,
-                beban=beban,
-                user_id=user_id,
-            )
+            with db.begin_nested():
+                jurnal_penutupan_id = _create_closing_entry(
+                    db=db,
+                    tahun=tahun,
+                    bulan=bulan,
+                    date_from=date_from,
+                    date_to=date_to,
+                    laba_rugi=laba_rugi,
+                    pendapatan=pendapatan,
+                    hpp=hpp,
+                    beban=beban,
+                    user_id=user_id,
+                )
         except Exception as e:
             logger.warning(f"Jurnal penutupan gagal dibuat (non-fatal): {e}")
 

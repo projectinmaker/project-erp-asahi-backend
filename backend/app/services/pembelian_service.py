@@ -263,17 +263,18 @@ def create_purchase_order(
                 )
 
             try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.PURCHASE_ORDER,
-                    ref_no=no_pesanan,
-                    entries=entries,
-                    keterangan=f"Purchase Order {no_pesanan}",
-                    ref_id=po.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                po.jurnal_umum_id = jurnal.id
+                with db.begin_nested():
+                    jurnal = auto_posting_jurnal(
+                        db=db,
+                        ref_module=RefModule.PURCHASE_ORDER,
+                        ref_no=no_pesanan,
+                        entries=entries,
+                        keterangan=f"Purchase Order {no_pesanan}",
+                        ref_id=po.id,
+                        tanggal=tanggal,
+                        created_by=created_by,
+                    )
+                    po.jurnal_umum_id = jurnal.id
             except Exception as e:
                 logger.warning(f"Jurnal PO gagal diposting (non-fatal): {e}")
 
@@ -501,17 +502,18 @@ def create_purchase_invoice(
                 )
 
             try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.PURCHASE_INVOICE,
-                    ref_no=no_form,
-                    entries=entries,
-                    keterangan=f"Purchase Invoice {no_form} (Faktur: {no_faktur})",
-                    ref_id=inv.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                inv.jurnal_umum_id = jurnal.id
+                with db.begin_nested():
+                    jurnal = auto_posting_jurnal(
+                        db=db,
+                        ref_module=RefModule.PURCHASE_INVOICE,
+                        ref_no=no_form,
+                        entries=entries,
+                        keterangan=f"Purchase Invoice {no_form} (Faktur: {no_faktur})",
+                        ref_id=inv.id,
+                        tanggal=tanggal,
+                        created_by=created_by,
+                    )
+                    inv.jurnal_umum_id = jurnal.id
             except Exception as e:
                 logger.warning(f"Jurnal PINV gagal diposting (non-fatal): {e}")
 
@@ -726,17 +728,18 @@ def create_purchase_retur(
                 )
 
             try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.PURCHASE_RETUR,
-                    ref_no=no_retur,
-                    entries=entries,
-                    keterangan=f"Purchase Retur {no_retur}",
-                    ref_id=retur.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                retur.jurnal_umum_id = jurnal.id
+                with db.begin_nested():
+                    jurnal = auto_posting_jurnal(
+                        db=db,
+                        ref_module=RefModule.PURCHASE_RETUR,
+                        ref_no=no_retur,
+                        entries=entries,
+                        keterangan=f"Purchase Retur {no_retur}",
+                        ref_id=retur.id,
+                        tanggal=tanggal,
+                        created_by=created_by,
+                    )
+                    retur.jurnal_umum_id = jurnal.id
             except Exception as e:
                 logger.warning(f"Jurnal Purchase Retur gagal diposting (non-fatal): {e}")
 

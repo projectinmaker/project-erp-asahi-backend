@@ -258,17 +258,18 @@ def create_sales_order(
                 )
 
             try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.SALES_ORDER,
-                    ref_no=no_pesanan,
-                    entries=entries,
-                    keterangan=f"Sales Order {no_pesanan}",
-                    ref_id=so.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                so.jurnal_umum_id = jurnal.id
+                with db.begin_nested():
+                    jurnal = auto_posting_jurnal(
+                        db=db,
+                        ref_module=RefModule.SALES_ORDER,
+                        ref_no=no_pesanan,
+                        entries=entries,
+                        keterangan=f"Sales Order {no_pesanan}",
+                        ref_id=so.id,
+                        tanggal=tanggal,
+                        created_by=created_by,
+                    )
+                    so.jurnal_umum_id = jurnal.id
             except Exception as e:
                 logger.warning(f"Jurnal SO gagal diposting (non-fatal): {e}")
 
@@ -528,17 +529,18 @@ def create_sales_invoice(
                 )
 
             try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.SALES_INVOICE,
-                    ref_no=no_invoice,
-                    entries=entries,
-                    keterangan=f"Sales Invoice {no_invoice}",
-                    ref_id=inv.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                inv.jurnal_umum_id = jurnal.id
+                with db.begin_nested():
+                    jurnal = auto_posting_jurnal(
+                        db=db,
+                        ref_module=RefModule.SALES_INVOICE,
+                        ref_no=no_invoice,
+                        entries=entries,
+                        keterangan=f"Sales Invoice {no_invoice}",
+                        ref_id=inv.id,
+                        tanggal=tanggal,
+                        created_by=created_by,
+                    )
+                    inv.jurnal_umum_id = jurnal.id
             except Exception as e:
                 logger.warning(f"Jurnal INV gagal diposting (non-fatal): {e}")
 
@@ -778,17 +780,18 @@ def create_sales_retur(
                 )
 
             try:
-                jurnal = auto_posting_jurnal(
-                    db=db,
-                    ref_module=RefModule.SALES_RETUR,
-                    ref_no=no_retur,
-                    entries=entries,
-                    keterangan=f"Sales Retur {no_retur}",
-                    ref_id=retur.id,
-                    tanggal=tanggal,
-                    created_by=created_by,
-                )
-                retur.jurnal_umum_id = jurnal.id
+                with db.begin_nested():
+                    jurnal = auto_posting_jurnal(
+                        db=db,
+                        ref_module=RefModule.SALES_RETUR,
+                        ref_no=no_retur,
+                        entries=entries,
+                        keterangan=f"Sales Retur {no_retur}",
+                        ref_id=retur.id,
+                        tanggal=tanggal,
+                        created_by=created_by,
+                    )
+                    retur.jurnal_umum_id = jurnal.id
             except Exception as e:
                 logger.warning(f"Jurnal Retur gagal diposting (non-fatal): {e}")
 

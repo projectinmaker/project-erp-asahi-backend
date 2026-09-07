@@ -276,17 +276,18 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
                     ),
                 ]
 
-            jurnal = auto_posting_jurnal(
-                db=db,
-                ref_module=RefModule.PENYESUAIAN_STOK,
-                ref_no=db_obj.no_adj,
-                entries=entries,
-                keterangan=f"Penyesuaian Stok {db_obj.no_adj} ({db_obj.tipe.value})",
-                ref_id=db_obj.id,
-                tanggal=db_obj.tanggal,
-                created_by=db_obj.created_by,
-            )
-            db_obj.jurnal_umum_id = jurnal.id
+            with db.begin_nested():
+                jurnal = auto_posting_jurnal(
+                    db=db,
+                    ref_module=RefModule.PENYESUAIAN_STOK,
+                    ref_no=db_obj.no_adj,
+                    entries=entries,
+                    keterangan=f"Penyesuaian Stok {db_obj.no_adj} ({db_obj.tipe.value})",
+                    ref_id=db_obj.id,
+                    tanggal=db_obj.tanggal,
+                    created_by=db_obj.created_by,
+                )
+                db_obj.jurnal_umum_id = jurnal.id
             logger.info(
                 f"Jurnal penyesuaian stok posted: {jurnal.no_jurnal} | "
                 f"{db_obj.tipe.value} | total={db_obj.total}"
