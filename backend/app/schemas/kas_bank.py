@@ -23,7 +23,8 @@ class AkunPerkiraanSimpleResponse(BaseSchema):
 
 class PenggunaSimpleResponse(BaseSchema):
     id: UUID
-    nama: str
+    username: str
+    nama_lengkap: str
 
 
 # FIX v2: Definisikan JurnalSimpleResponse
