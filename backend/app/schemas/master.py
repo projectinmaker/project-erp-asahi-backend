@@ -38,7 +38,8 @@ class PelangganBase(BaseSchema):
     npwp: Optional[str] = None
     syarat_bayar_default: Optional[str] = "Tunai"
 
-class PelangganCreate(PelangganBase): pass
+class PelangganCreate(PelangganBase):
+    akun_piutang_id: Optional[UUID] = None  # kalau diisi, skip auto-create COA (link ke COA existing)
 
 class PelangganUpdate(BaseSchema):
     nama: Optional[str] = None
@@ -53,8 +54,37 @@ class PelangganUpdate(BaseSchema):
 class PelangganResponse(PelangganBase):
     id: UUID
     status: str
+    akun_piutang: Optional[COASimpleResponse] = None
     created_at: datetime
     updated_at: datetime
+
+# Skenario B2: link COA Piutang existing (sudah di-import manual) ke data Pelanggan
+class PelangganFromCoaCreate(BaseSchema):
+    coa_id: UUID
+    kode: str
+    nama: str
+    alamat: Optional[str] = None
+    telepon: Optional[str] = None
+    email: Optional[str] = None
+    kontak_person: Optional[str] = None
+    npwp: Optional[str] = None
+    syarat_bayar_default: Optional[str] = "Tunai"
+
+class PelangganCoaResponse(BaseSchema):
+    coa_id: UUID
+    kode: str
+    nama: str
+    pelanggan_id: Optional[UUID] = None
+    kode_pelanggan: Optional[str] = None
+    nama_pelanggan: Optional[str] = None
+    alamat: Optional[str] = None
+    telepon: Optional[str] = None
+    email: Optional[str] = None
+    kontak_person: Optional[str] = None
+    npwp: Optional[str] = None
+    syarat_bayar_default: Optional[str] = None
+    status: str
+    is_linked: bool
 
 # ==========================================
 # 2. SUPPLIER
@@ -98,6 +128,7 @@ class BarangBase(BaseSchema):
     harga_pokok: Decimal = 0
     stok_minimum: int = 0
     metode_valuasi: str = "AVERAGE"
+    jenis_barang: Optional[str] = None
 
 class BarangCreate(BarangBase): pass
 
@@ -109,6 +140,7 @@ class BarangUpdate(BaseSchema):
     stok_minimum: Optional[int] = None
     metode_valuasi: Optional[str] = None
     status: Optional[str] = None
+    jenis_barang: Optional[str] = None
 
 class BarangResponse(BarangBase):
     id: UUID
