@@ -103,6 +103,30 @@ def _create_detail_coa(
     return coa
 
 
+def find_piutang_root_coa(db: Session) -> Optional[AkunPerkiraan]:
+    """Cari COA GROUP/HEADER root 'Piutang Usaha'. Wrapper publik dari _find_group_coa."""
+    return _find_group_coa(db, _PIUTANG_KEYWORDS, _PIUTANG_HEADER)
+
+
+def get_coa_detail_ids_under(db: Session, root_id: UUID) -> list[UUID]:
+    """Ambil semua id COA level DETAIL yang merupakan descendant (anak/cucu/dst) dari root_id."""
+    base = db.query(AkunPerkiraan.id).filter(
+        AkunPerkiraan.induk_id == root_id
+    ).cte(name="coa_descendants", recursive=True)
+
+    recursive = db.query(AkunPerkiraan.id).join(
+        base, AkunPerkiraan.induk_id == base.c.id
+    )
+    all_descendants = base.union(recursive)
+
+    return [
+        row[0] for row in db.query(AkunPerkiraan.id).filter(
+            AkunPerkiraan.id.in_(db.query(all_descendants.c.id)),
+            AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
+        ).all()
+    ]
+
+
 def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan) -> Optional[UUID]:
     """Auto-buat COA detail Piutang untuk Pelanggan.
 
