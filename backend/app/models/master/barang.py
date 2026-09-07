@@ -26,6 +26,7 @@ class Barang(BaseModel, BaseMixin):
         SQLEnum(MetodeValuasi), default=MetodeValuasi.AVERAGE, nullable=False
     )
     status = Column(String(20), default="AKTIF", nullable=False)
+    jenis_barang = Column(String(20), nullable=True)
 
     kategori = relationship("KategoriBarang", backref="barangs")
     satuan = relationship("Satuan")
