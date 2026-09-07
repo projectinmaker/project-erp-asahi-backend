@@ -19,6 +19,7 @@ from app.models.detail.barang_satuan import BarangSatuan
 from app.schemas.base import PaginatedResponse
 from app.schemas.master import (
     PelangganCreate, PelangganUpdate, PelangganResponse,
+    PelangganFromCoaCreate, PelangganCoaResponse,
     SupplierCreate, SupplierUpdate, SupplierResponse,
     BarangCreate, BarangUpdate, BarangResponse,
     BarangSatuanCreate, BarangSatuanUpdate, BarangSatuanResponse,
@@ -56,7 +57,10 @@ class SupplierSimpleResponse(BaseSchema):
 
 
 from app.services import master_service
-from app.services.coa_linkage_service import auto_create_piutang_coa, auto_create_hutang_coa
+from app.services.coa_linkage_service import (
+    auto_create_piutang_coa, auto_create_hutang_coa,
+    find_piutang_root_coa, get_coa_detail_ids_under,
+)
 
 router = APIRouter()
 
@@ -82,13 +86,14 @@ def create_pelanggan(
     current_user: Pengguna = Depends(get_current_user)
 ):
     pelanggan = master_service.create_master(db, Pelanggan, data_in)
-    # Auto-buat COA detail Piutang Usaha untuk pelanggan ini
-    piutang_coa_id = auto_create_piutang_coa(db, pelanggan)
-    if piutang_coa_id:
-        pelanggan.akun_piutang_id = piutang_coa_id
-        db.add(pelanggan)
-        db.commit()
-        db.refresh(pelanggan)
+    # Kalau akun_piutang_id sudah diisi manual (link ke COA existing), skip auto-create
+    if not pelanggan.akun_piutang_id:
+        piutang_coa_id = auto_create_piutang_coa(db, pelanggan)
+        if piutang_coa_id:
+            pelanggan.akun_piutang_id = piutang_coa_id
+            db.add(pelanggan)
+            db.commit()
+            db.refresh(pelanggan)
     return pelanggan
 
 @router.get("/pelanggan/{pelanggan_id}", response_model=PelangganResponse)
@@ -112,7 +117,18 @@ def update_pelanggan(
     item = master_service.get_master_by_id(db, Pelanggan, pelanggan_id)
     if not item:
         raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
-    return master_service.update_master(db, item, data_in)
+    old_nama = item.nama
+    item = master_service.update_master(db, item, data_in)
+    # Sync nama COA piutang jika nama pelanggan berubah
+    if data_in.nama and data_in.nama != old_nama and item.akun_piutang_id:
+        from app.models.akun_perkiraan import AkunPerkiraan
+        coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == item.akun_piutang_id).first()
+        if coa:
+            coa.nama = f"Piutang - {item.nama}"
+            db.add(coa)
+            db.commit()
+            db.refresh(item)
+    return item
 
 @router.delete("/pelanggan/{pelanggan_id}", status_code=status.HTTP_200_OK)
 def delete_pelanggan(
@@ -127,6 +143,100 @@ def delete_pelanggan(
         raise HTTPException(status_code=400, detail="Pelanggan sudah tidak aktif")
     master_service.soft_delete_master(db, item)
     return {"message": "Pelanggan berhasil dinonaktifkan"}
+
+@router.get("/pelanggan-coa", response_model=list[PelangganCoaResponse])
+def get_pelanggan_coa(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: List semua COA DETAIL di bawah 'Piutang Usaha', LEFT JOIN ke
+    Pelanggan (kalau sudah linked via akun_piutang_id). Dipakai frontend untuk
+    menampilkan & melengkapi data pelanggan dari COA piutang yang sudah
+    di-import manual sebelumnya.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    group = find_piutang_root_coa(db)
+    if not group:
+        return []
+
+    detail_ids = get_coa_detail_ids_under(db, group.id)
+    if not detail_ids:
+        return []
+
+    rows = (
+        db.query(AkunPerkiraan, Pelanggan)
+        .outerjoin(Pelanggan, Pelanggan.akun_piutang_id == AkunPerkiraan.id)
+        .filter(AkunPerkiraan.id.in_(detail_ids))
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+
+    return [
+        {
+            "coa_id": coa.id,
+            "kode": coa.kode,
+            "nama": coa.nama,
+            "pelanggan_id": pelanggan.id if pelanggan else None,
+            "kode_pelanggan": pelanggan.kode if pelanggan else None,
+            "nama_pelanggan": pelanggan.nama if pelanggan else None,
+            "alamat": pelanggan.alamat if pelanggan else None,
+            "telepon": pelanggan.telepon if pelanggan else None,
+            "email": pelanggan.email if pelanggan else None,
+            "kontak_person": pelanggan.kontak_person if pelanggan else None,
+            "npwp": pelanggan.npwp if pelanggan else None,
+            "syarat_bayar_default": pelanggan.syarat_bayar_default if pelanggan else None,
+            "status": pelanggan.status if pelanggan else coa.status,
+            "is_linked": pelanggan is not None,
+        }
+        for coa, pelanggan in rows
+    ]
+
+@router.post("/pelanggan-from-coa", response_model=PelangganResponse, status_code=status.HTTP_201_CREATED)
+def create_pelanggan_from_coa(
+    data_in: PelangganFromCoaCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: Link COA Piutang existing (sudah di-import manual) ke pelanggan
+    baru. TIDAK membuat COA baru — pakai coa_id yang dikirim frontend langsung.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+
+    coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.coa_id).first()
+    if not coa:
+        raise HTTPException(status_code=404, detail="COA tidak ditemukan")
+    if coa.tingkat != TingkatAkun.DETAIL:
+        raise HTTPException(status_code=400, detail="COA yang dipilih harus level DETAIL")
+
+    group = find_piutang_root_coa(db)
+    if not group or coa.id not in get_coa_detail_ids_under(db, group.id):
+        raise HTTPException(status_code=400, detail="COA yang dipilih bukan bagian dari 'Piutang Usaha'")
+
+    existing_link = db.query(Pelanggan).filter(Pelanggan.akun_piutang_id == coa.id).first()
+    if existing_link:
+        raise HTTPException(
+            status_code=400,
+            detail=f"COA ini sudah terhubung ke pelanggan '{existing_link.nama}' ({existing_link.kode})"
+        )
+
+    pelanggan = Pelanggan(
+        kode=data_in.kode,
+        nama=data_in.nama,
+        alamat=data_in.alamat,
+        telepon=data_in.telepon,
+        email=data_in.email,
+        kontak_person=data_in.kontak_person,
+        npwp=data_in.npwp,
+        syarat_bayar_default=data_in.syarat_bayar_default,
+        akun_piutang_id=coa.id,
+    )
+    db.add(pelanggan)
+    db.commit()
+    db.refresh(pelanggan)
+    return pelanggan
 
 
 # ==========================================
@@ -285,6 +395,7 @@ def update_barang_satuan(
         if existing:
             raise HTTPException(status_code=400, detail="Satuan ini sudah terdaftar untuk barang tersebut")
     return master_service.update_master(db, item, data_in)
+
 
 @router.delete("/barang-satuan/{barang_satuan_id}", status_code=status.HTTP_200_OK)
 def delete_barang_satuan(
