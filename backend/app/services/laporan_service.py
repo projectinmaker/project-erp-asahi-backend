@@ -315,6 +315,7 @@ def get_dashboard_aktivitas_terbaru(db: Session) -> dict:
             SalesInvoice.no_invoice,
             SalesInvoice.tanggal,
             SalesInvoice.grand_total,
+            SalesInvoice.created_at,
             Pelanggan.nama,
         )
         .join(Pelanggan, Pelanggan.id == SalesInvoice.pelanggan_id)
@@ -339,6 +340,7 @@ def get_dashboard_aktivitas_terbaru(db: Session) -> dict:
             PurchaseInvoice.no_faktur,
             PurchaseInvoice.tanggal,
             PurchaseInvoice.grand_total,
+            PurchaseInvoice.created_at,
         )
         .filter(PurchaseInvoice.status != StatusPenjualan.DIBATALKAN)
         .order_by(PurchaseInvoice.created_at.desc())
@@ -362,6 +364,7 @@ def get_dashboard_aktivitas_terbaru(db: Session) -> dict:
             PenerimaanKas.tanggal,
             PenerimaanKas.total_nilai,
             PenerimaanKas.pemberi,
+            PenerimaanKas.created_at,
         )
         .filter(PenerimaanKas.status == StatusTransaksi.SELESAI)
         .order_by(PenerimaanKas.created_at.desc())
@@ -385,6 +388,7 @@ def get_dashboard_aktivitas_terbaru(db: Session) -> dict:
             PembayaranKas.tanggal,
             PembayaranKas.total_nilai,
             PembayaranKas.penerima,
+            PembayaranKas.created_at,
         )
         .filter(PembayaranKas.status == StatusTransaksi.SELESAI)
         .order_by(PembayaranKas.created_at.desc())
