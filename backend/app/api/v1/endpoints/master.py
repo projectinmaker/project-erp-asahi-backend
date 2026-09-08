@@ -13,6 +13,7 @@ from app.models.master.gudang import Gudang
 from app.models.master.syarat_bayar import SyaratBayar
 from app.models.master.kategori_aset import KategoriAset
 from app.models.master.kas_bank_akun import KasBankAkun
+from app.models.master.setting_akun import SettingAkun
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
 from app.models.detail.barang_satuan import BarangSatuan
@@ -30,6 +31,7 @@ from app.schemas.master import (
     SyaratBayarCreate, SyaratBayarUpdate, SyaratBayarResponse,
     KategoriAsetCreate, KategoriAsetUpdate, KategoriAsetResponse,
     KasBankAkunCreate, KasBankAkunUpdate, KasBankAkunResponse,
+    SettingAkunUpdate, SettingAkunResponse,
     COASimpleResponse,
 )
 
@@ -58,6 +60,7 @@ class SupplierSimpleResponse(BaseSchema):
 
 
 from app.services import master_service
+from app.services import setting_akun_service
 from app.services.coa_linkage_service import (
     auto_create_piutang_coa, auto_create_hutang_coa,
     find_piutang_root_coa, find_hutang_root_coa, get_coa_detail_ids_under,
@@ -673,6 +676,35 @@ def delete_kas_bank_akun(kas_bank_akun_id: UUID, db: Session = Depends(get_curre
     if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Kas Bank Akun sudah tidak aktif")
     master_service.soft_delete_master(db, item)
     return {"message": "Kas Bank Akun berhasil dinonaktifkan"}
+
+
+# ==========================================
+# SETTING AKUN ENDPOINTS
+# Mapping akun default (Pendapatan, Pembelian, PPN, dll) yang dipakai
+# saat auto-posting jurnal di modul Penjualan & Pembelian.
+# Data di-seed lewat app.seed.phase3_setting_akun_seed — endpoint ini
+# hanya untuk MENGUBAH akun_perkiraan_id-nya (bukan create/delete key baru).
+# ==========================================
+@router.get("/setting-akun", response_model=list[SettingAkunResponse])
+def get_setting_akun_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(SettingAkun).order_by(SettingAkun.label).all()
+
+@router.get("/setting-akun/{key}", response_model=SettingAkunResponse)
+def get_setting_akun_detail(key: str, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+    if not item: raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
+    return item
+
+@router.put("/setting-akun/{key}", response_model=SettingAkunResponse)
+def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+    if not item: raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
+    item = master_service.update_master(db, item, data_in)
+    setting_akun_service.clear_cache()  # akun mapping berubah, cache in-memory harus di-refresh
+    return item
 
 
 # ==========================================
