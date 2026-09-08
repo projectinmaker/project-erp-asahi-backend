@@ -15,7 +15,7 @@ from app.models.master.setting_akun import SettingAkun
 # ============================================================
 def _detect_format(db: Session) -> str:
     """
-    Deteksi apakah DB menggunakan format dotted (150.000.001) 
+    Deteksi apakah DB menggunakan format dotted (150.000.001)
     atau flat (150000001) berdasarkan sample data.
     """
     sample = db.query(AkunPerkiraan.kode).first()
@@ -311,13 +311,27 @@ def seed_phase3_coa_and_settings():
         ]
 
         inserted_setting = 0
+        updated_setting = 0
         skipped_setting = 0
 
         for key, label, prefix3, mid3, seq3 in setting_defaults:
-            # Cek sudah ada
-            if db.query(SettingAkun).filter(SettingAkun.key == key).first():
-                skipped_setting += 1
-                continue
+            existing = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+
+            # Cek apakah referensi akun_perkiraan_id existing masih valid.
+            # Kalau COA lama sudah dihapus (misal setelah re-import COA dari
+            # Excel), akun_perkiraan_id jadi "stale" (nunjuk ke row yang
+            # sudah nggak ada) -> harus di-relink, bukan di-skip.
+            if existing:
+                masih_valid = (
+                    db.query(AkunPerkiraan)
+                    .filter(AkunPerkiraan.id == existing.akun_perkiraan_id)
+                    .first()
+                    is not None
+                )
+                if masih_valid:
+                    skipped_setting += 1
+                    continue
+                print(f"  [STALE] {key} nunjuk ke COA yang sudah tidak ada, relinking...")
 
             # Cari COA (kedua format)
             kode_flat = _kode(prefix3, mid3, seq3, "flat")
@@ -333,17 +347,22 @@ def seed_phase3_coa_and_settings():
                 skipped_setting += 1
                 continue
 
-            setting = SettingAkun(
-                key=key,
-                label=label,
-                akun_perkiraan_id=coa.id,
-            )
-            db.add(setting)
-            inserted_setting += 1
-            print(f"  + {key} -> {coa.kode} ({coa.nama})")
+            if existing:
+                existing.akun_perkiraan_id = coa.id
+                updated_setting += 1
+                print(f"  ~ {key} relinked -> {coa.kode} ({coa.nama})")
+            else:
+                setting = SettingAkun(
+                    key=key,
+                    label=label,
+                    akun_perkiraan_id=coa.id,
+                )
+                db.add(setting)
+                inserted_setting += 1
+                print(f"  + {key} -> {coa.kode} ({coa.nama})")
 
         db.commit()
-        print(f"\nSettingAkun: {inserted_setting} inserted, {skipped_setting} skipped")
+        print(f"\nSettingAkun: {inserted_setting} inserted, {updated_setting} relinked, {skipped_setting} skipped (sudah valid)")
         print("Phase 3 seed complete.")
 
     except Exception as e:
