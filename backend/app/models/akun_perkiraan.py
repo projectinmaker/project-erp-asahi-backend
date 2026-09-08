@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Numeric, Integer, ForeignKey, Enum as SQLEnum, DateTime
+from sqlalchemy import Column, String, Numeric, Integer, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -43,6 +43,12 @@ class AkunPerkiraan(BaseModel, BaseMixin):
     saldo = Column(Numeric(18, 2), default=0, nullable=False)
     tanggal = Column(DateTime(timezone=True), nullable=True)  # Tanggal mulai aktif / penempatan saldo awal
     status = Column(String(20), default="AKTIF", nullable=False)
+
+    # True untuk COA detail yang auto-created per pelanggan/supplier
+    # (subledger "Piutang - {nama}" / "Hutang - {nama}"). Akun ini tetap
+    # dipakai untuk jurnal, tapi disembunyikan dari modul Akun Perkiraan/COA
+    # utama supaya list COA tidak penuh sama entry per-customer/supplier.
+    is_subledger = Column(Boolean, default=False, nullable=False)
 
     # Relationships
     child_accounts = relationship(
