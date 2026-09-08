@@ -32,6 +32,12 @@ from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.stok_service import update_stok_barang
 from app.services.decimal_utils import safe_decimal, safe_int
+from app.services.setting_akun_service import (
+    get_akun_id_or_raise,
+    KEY_PEMBELIAN,
+    KEY_PPN_MASUKAN,
+    KEY_RETUR_PEMBELIAN,
+)
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
 
@@ -242,7 +248,9 @@ def create_purchase_order(
             entries = [
                 # Debit: Persediaan / Pembelian
                 JurnalEntryItem(
-                    akun_perkiraan_id=supplier.akun_hutang_id,  # TODO: ambil akun pembelian dari config
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_PEMBELIAN, context=f"PO {no_pesanan}"
+                    ),
                     debit=dasar_pajak,
                     keterangan=f"Pembelian PO {no_pesanan} - {supplier.nama}",
                 ),
@@ -257,7 +265,9 @@ def create_purchase_order(
                 entries.insert(
                     1,
                     JurnalEntryItem(
-                        akun_perkiraan_id=supplier.akun_hutang_id,  # TODO: ambil akun PPN Masukan dari config
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PPN_MASUKAN, context=f"PO {no_pesanan}"
+                        ),
                         debit=total_ppn,
                         keterangan=f"PPN Masukan PO {no_pesanan}",
                     ),
@@ -481,7 +491,9 @@ def create_purchase_invoice(
             entries = [
                 # Debit: Persediaan / Pembelian
                 JurnalEntryItem(
-                    akun_perkiraan_id=supplier.akun_hutang_id,  # TODO: ambil akun pembelian dari config
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_PEMBELIAN, context=f"PINV {no_form}"
+                    ),
                     debit=dasar_pajak,
                     keterangan=f"Pembelian PINV {no_form} - {supplier.nama}",
                 ),
@@ -496,7 +508,9 @@ def create_purchase_invoice(
                 entries.insert(
                     1,
                     JurnalEntryItem(
-                        akun_perkiraan_id=supplier.akun_hutang_id,  # TODO: ambil akun PPN Masukan dari config
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PPN_MASUKAN, context=f"PINV {no_form}"
+                        ),
                         debit=total_ppn,
                         keterangan=f"PPN Masukan PINV {no_form}",
                     ),
@@ -714,7 +728,9 @@ def create_purchase_retur(
                 ),
                 # Kredit: Retur Pembelian
                 JurnalEntryItem(
-                    akun_perkiraan_id=supplier.akun_hutang_id,  # TODO: akun retur pembelian dari config
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_RETUR_PEMBELIAN, context=f"Retur {no_retur}"
+                    ),
                     kredit=sub_total,
                     keterangan=f"Retur Pembelian {no_retur}",
                 ),
@@ -722,7 +738,9 @@ def create_purchase_retur(
             if total_ppn > 0:
                 entries.append(
                     JurnalEntryItem(
-                        akun_perkiraan_id=supplier.akun_hutang_id,  # TODO: akun PPN Masukan dari config
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PPN_MASUKAN, context=f"Retur {no_retur}"
+                        ),
                         kredit=total_ppn,
                         keterangan=f"PPN Retur {no_retur}",
                     )

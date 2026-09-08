@@ -31,6 +31,12 @@ from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.stok_service import update_stok_barang
 from app.services.decimal_utils import safe_decimal, safe_int
+from app.services.setting_akun_service import (
+    get_akun_id_or_raise,
+    KEY_PENDAPATAN_PENJUALAN,
+    KEY_PPN_KELUARAN,
+    KEY_RETUR_PENJUALAN,
+)
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
 
@@ -243,7 +249,9 @@ def create_sales_order(
                 ),
                 # Kredit: Pendapatan Penjualan
                 JurnalEntryItem(
-                    akun_perkiraan_id=pelanggan.akun_piutang_id,  # TODO: ambil akun penjualan dari config
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_PENDAPATAN_PENJUALAN, context=f"SO {no_pesanan}"
+                    ),
                     kredit=dasar_pajak,
                     keterangan=f"Pendapatan SO {no_pesanan}",
                 ),
@@ -252,7 +260,9 @@ def create_sales_order(
             if total_ppn > 0:
                 entries.append(
                     JurnalEntryItem(
-                        akun_perkiraan_id=pelanggan.akun_piutang_id,  # TODO: ambil akun PPN dari config
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PPN_KELUARAN, context=f"SO {no_pesanan}"
+                        ),
                         kredit=total_ppn,
                         keterangan=f"PPN SO {no_pesanan}",
                     )
@@ -515,7 +525,9 @@ def create_sales_invoice(
                     keterangan=f"INV {no_invoice} - {pelanggan.nama}",
                 ),
                 JurnalEntryItem(
-                    akun_perkiraan_id=pelanggan.akun_piutang_id,  # TODO: akun penjualan dari config
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_PENDAPATAN_PENJUALAN, context=f"INV {no_invoice}"
+                    ),
                     kredit=dasar_pajak,
                     keterangan=f"Pendapatan INV {no_invoice}",
                 ),
@@ -523,7 +535,9 @@ def create_sales_invoice(
             if total_ppn > 0:
                 entries.append(
                     JurnalEntryItem(
-                        akun_perkiraan_id=pelanggan.akun_piutang_id,  # TODO: akun PPN dari config
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PPN_KELUARAN, context=f"INV {no_invoice}"
+                        ),
                         kredit=total_ppn,
                         keterangan=f"PPN INV {no_invoice}",
                     )
@@ -760,7 +774,9 @@ def create_sales_retur(
             entries = [
                 # Debit: Retur Penjualan
                 JurnalEntryItem(
-                    akun_perkiraan_id=pelanggan.akun_piutang_id,  # TODO: akun retur penjualan dari config
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_RETUR_PENJUALAN, context=f"Retur {no_retur}"
+                    ),
                     debit=sub_total,
                     keterangan=f"Retur Penjualan {no_retur}",
                 ),
@@ -774,7 +790,9 @@ def create_sales_retur(
             if total_ppn > 0:
                 entries.append(
                     JurnalEntryItem(
-                        akun_perkiraan_id=pelanggan.akun_piutang_id,  # TODO: akun PPN dari config
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PPN_KELUARAN, context=f"Retur {no_retur}"
+                        ),
                         kredit=total_ppn,
                         keterangan=f"PPN Retur {no_retur}",
                     )
