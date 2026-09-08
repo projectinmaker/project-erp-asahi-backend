@@ -29,6 +29,19 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from app.database import SessionLocal, engine
 from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA, TingkatAkun, SaldoNormal
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
+from app.models.master.setting_akun import SettingAkun
+from app.models.detail.jurnal_detail import JurnalDetail
+from app.models.detail.penerimaan_rincian import PenerimaanRincian
+from app.models.detail.pembayaran_rincian import PembayaranRincian
+from app.models.master.pelanggan import Pelanggan
+from app.models.master.supplier import Supplier
+from app.models.master.karyawan import Karyawan
+from app.models.transaksi.aset_tetap.aset_tetap import AsetTetap
+
+try:
+    from app.models.transaksi.kas_bank.rekonsiliasi_bank import RekonsiliasiBankDetail
+except ImportError:
+    RekonsiliasiBankDetail = None
 
 
 # ============================================================
@@ -36,10 +49,10 @@ from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
 # ============================================================
 
 # Path ke file Excel COA — bisa di-override via CLI:
-#   python app/seed/import_coa_from_excel.py /path/to/COA_ASAHI_push_erp.xlsx
+#   python app/seed/import_coa_from_excel.py /path/to/COA_ASAHI_push_asahi_books.xlsx
 DEFAULT_EXCEL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "COA_ASAHI_push_erp.xlsx"
+    "COA_ASAHI_push_asahi_books.xlsx"
 )
 
 # ============================================================
@@ -117,7 +130,7 @@ def read_excel(filepath: str):
     """
     if not os.path.exists(filepath):
         print(f"ERROR: File Excel tidak ditemukan: {filepath}")
-        print(f"Pastikan file 'COA_ASAHI_push_erp.xlsx' ada di folder Backend/")
+        print(f"Pastikan file 'COA_ASAHI_push_asahi_books.xlsx' ada di folder Backend/")
         sys.exit(1)
 
     wb = openpyxl.load_workbook(filepath, data_only=True)
@@ -148,20 +161,89 @@ def read_excel(filepath: str):
 # ============================================================
 def delete_old_data(db: Session):
     """
-    Hapus semua data KasBankAkun dan AkunPerkiraan yang lama.
-    Urutan: KasBankAkun dulu (punya FK ke AkunPerkiraan), baru AkunPerkiraan.
+    Hapus semua data KasBankAkun, SettingAkun, dan AkunPerkiraan yang lama.
+
+    Safety check dulu: kalau ada data TRANSAKSIONAL (jurnal_detail,
+    rincian pembayaran/penerimaan, aset tetap, rekonsiliasi) atau MASTER
+    yang sudah punya akun ter-set (pelanggan/supplier/karyawan), STOP —
+    karena menghapus akun_perkiraan akan bikin data itu orphan/corrupt.
+    Script ini hanya aman untuk full-replace di database yang benar-benar
+    masih kosong dari sisi transaksi.
     """
     print("\n" + "=" * 60)
     print("STEP 1: HAPUS DATA LAMA")
     print("=" * 60)
 
-    # 1a. Hapus KasBankAkun (punya FK ke akun_perkiraan)
+    # --- CLEANUP DATA TESTING ---
+    # Data berikut diasumsikan sebagai data testing sesuai konfirmasi user.
+    # Hanya jurnal detail dan relasi akun pada pelanggan/supplier yang dibersihkan.
+    # Safety check untuk data lain tetap dijalankan.
+    print("\n  [TESTING] Membersihkan data testing...")
+
+    count_jurnal = db.query(JurnalDetail).count()
+    if count_jurnal > 0:
+        db.query(JurnalDetail).delete(synchronize_session=False)
+        print(f"  [OK] Hapus {count_jurnal} jurnal_detail testing")
+
+    count_pelanggan = db.query(Pelanggan).filter(
+        Pelanggan.akun_piutang_id.isnot(None)
+    ).count()
+    if count_pelanggan > 0:
+        db.query(Pelanggan).update(
+            {Pelanggan.akun_piutang_id: None},
+            synchronize_session=False
+        )
+        print(f"  [OK] Reset akun piutang {count_pelanggan} pelanggan testing")
+
+    count_supplier = db.query(Supplier).filter(
+        Supplier.akun_hutang_id.isnot(None)
+    ).count()
+    if count_supplier > 0:
+        db.query(Supplier).update(
+            {Supplier.akun_hutang_id: None},
+            synchronize_session=False
+        )
+        print(f"  [OK] Reset akun hutang {count_supplier} supplier testing")
+
+    # --- Safety check: data lain tetap harus kosong ---
+    blockers = {
+        "penerimaan_rincian": db.query(PenerimaanRincian).count(),
+        "pembayaran_rincian": db.query(PembayaranRincian).count(),
+        "aset_tetap": db.query(AsetTetap).count(),
+        "karyawan": db.query(Karyawan).count(),
+    }
+    if RekonsiliasiBankDetail is not None:
+        blockers["rekonsiliasi_bank (akun_perkiraan ter-set)"] = (
+            db.query(RekonsiliasiBankDetail).filter(RekonsiliasiBankDetail.akun_perkiraan_id.isnot(None)).count()
+        )
+
+    found_blockers = {k: v for k, v in blockers.items() if v > 0}
+    if found_blockers:
+        print("\n  [ABORT] Ditemukan data yang bergantung pada akun_perkiraan lama:")
+        for k, v in found_blockers.items():
+            print(f"    - {k}: {v} baris")
+        print("\n  Script ini hanya aman untuk full-replace COA di database yang")
+        print("  masih benar-benar kosong dari sisi transaksi/master ter-link.")
+        print("  Bersihkan data di atas dulu (atau konfirmasi ulang scope-nya)")
+        print("  sebelum menjalankan import ini.")
+        raise RuntimeError("Ada data transaksional/master yang bergantung pada akun_perkiraan lama.")
+
+    # --- Hapus tabel config yang aman untuk di-reset & re-seed ---
     count_kb = db.query(KasBankAkun).count()
     if count_kb > 0:
         db.query(KasBankAkun).delete()
         print(f"  [OK] Hapus {count_kb} records dari kas_bank_akun")
     else:
         print(f"  [SKIP] kas_bank_akun sudah kosong")
+
+    count_setting = db.query(SettingAkun).count()
+    if count_setting > 0:
+        db.query(SettingAkun).delete()
+        print(f"  [OK] Hapus {count_setting} records dari setting_akun")
+        print(f"  [!] PENTING: jalankan ulang 'python3 -m app.seed.phase3_setting_akun_seed'")
+        print(f"      setelah import ini selesai, untuk re-seed mapping akun.")
+    else:
+        print(f"  [SKIP] setting_akun sudah kosong")
 
     # 1b. Hapus semua AkunPerkiraan
     count_coa = db.query(AkunPerkiraan).count()
@@ -422,6 +504,7 @@ KAS_BANK_MAPPING = [
     ("110.000.004", "BK-004", "Bank BRI 2307", JenisKasBank.BANK),
     ("110.000.005", "BK-005", "Bank BCA 7777", JenisKasBank.BANK),
     ("110.000.006", "BK-006", "Bank BSI 4562", JenisKasBank.BANK),
+    ("110.000.007", "BK-007", "Bank BRI 5563", JenisKasBank.BANK),
 ]
 
 
@@ -472,7 +555,7 @@ def main():
     print(f"  File exists: {os.path.exists(excel_path)}")
     if not os.path.exists(excel_path):
         print(f"  ERROR: File tidak ditemukan!")
-        print(f"  Usage: python app/seed/import_coa_from_excel.py [path/to/COA_ASAHI_push_erp.xlsx]")
+        print(f"  Usage: python app/seed/import_coa_from_excel.py [path/to/COA_ASAHI_push_asahi_books.xlsx]")
         sys.exit(1)
 
     db: Session = SessionLocal()
