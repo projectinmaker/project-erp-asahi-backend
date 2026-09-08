@@ -320,3 +320,18 @@ class KasBankAkunResponse(KasBankAkunBase):
     created_at: datetime
     updated_at: datetime
     akun_perkiraan: COASimpleResponse
+
+# ==========================================
+# 9. SETTING AKUN (mapping akun default untuk auto-posting jurnal)
+# ==========================================
+class SettingAkunUpdate(BaseSchema):
+    akun_perkiraan_id: UUID
+
+class SettingAkunResponse(BaseSchema):
+    id: UUID
+    key: str
+    label: str
+    akun_perkiraan_id: UUID
+    akun_perkiraan: COASimpleResponse
+    created_at: datetime
+    updated_at: datetime
