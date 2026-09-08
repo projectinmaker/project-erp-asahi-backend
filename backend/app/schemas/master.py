@@ -42,6 +42,7 @@ class PelangganCreate(PelangganBase):
     akun_piutang_id: Optional[UUID] = None  # kalau diisi, skip auto-create COA (link ke COA existing)
 
 class PelangganUpdate(BaseSchema):
+    kode: Optional[str] = None
     nama: Optional[str] = None
     alamat: Optional[str] = None
     telepon: Optional[str] = None
@@ -99,9 +100,11 @@ class SupplierBase(BaseSchema):
     npwp: Optional[str] = None
     syarat_bayar_default: Optional[str] = None
 
-class SupplierCreate(SupplierBase): pass
+class SupplierCreate(SupplierBase):
+    akun_hutang_id: Optional[UUID] = None  # kalau diisi, skip auto-create COA (link ke COA existing)
 
 class SupplierUpdate(BaseSchema):
+    kode: Optional[str] = None
     nama: Optional[str] = None
     alamat: Optional[str] = None
     telepon: Optional[str] = None
@@ -114,8 +117,37 @@ class SupplierUpdate(BaseSchema):
 class SupplierResponse(SupplierBase):
     id: UUID
     status: str
+    akun_hutang: Optional[COASimpleResponse] = None
     created_at: datetime
     updated_at: datetime
+
+# Skenario B2: link COA Hutang existing (sudah di-import manual) ke data Supplier
+class SupplierFromCoaCreate(BaseSchema):
+    coa_id: UUID
+    kode: str
+    nama: str
+    alamat: Optional[str] = None
+    telepon: Optional[str] = None
+    email: Optional[str] = None
+    kontak_person: Optional[str] = None
+    npwp: Optional[str] = None
+    syarat_bayar_default: Optional[str] = "Tunai"
+
+class SupplierCoaResponse(BaseSchema):
+    coa_id: UUID
+    kode: str
+    nama: str
+    supplier_id: Optional[UUID] = None
+    kode_supplier: Optional[str] = None
+    nama_supplier: Optional[str] = None
+    alamat: Optional[str] = None
+    telepon: Optional[str] = None
+    email: Optional[str] = None
+    kontak_person: Optional[str] = None
+    npwp: Optional[str] = None
+    syarat_bayar_default: Optional[str] = None
+    status: str
+    is_linked: bool
 
 # ==========================================
 # 3. BARANG
