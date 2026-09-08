@@ -7,6 +7,7 @@ from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun, SaldoNormal, H
 from app.models.master.pelanggan import Pelanggan
 from app.models.master.supplier import Supplier
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
+from app.services.setting_akun_service import get_akun_id, KEY_PIUTANG_USAHA, KEY_HUTANG_USAHA
 
 # Mapping: keyword pencarian GROUP COA -> header enum
 _PIUTANG_KEYWORDS = ["PIUTANG", "USAHA"]
@@ -83,6 +84,7 @@ def _create_detail_coa(
     header: HeaderCOA,
     induk_kode: str,
     saldo: Decimal = Decimal("0"),
+    is_subledger: bool = False,
 ) -> AkunPerkiraan:
     """Buat COA DETAIL di bawah parent."""
     kode = _generate_next_detail_kode(db, parent)
@@ -96,11 +98,37 @@ def _create_detail_coa(
         saldo_normal=saldo_normal,
         saldo=saldo,
         status="AKTIF",
+        is_subledger=is_subledger,
     )
     db.add(coa)
     db.flush()
     logger.info(f"Auto-created COA detail: {kode} - {nama} (under {parent.kode})")
     return coa
+
+
+def _resolve_root_coa(
+    db: Session, setting_key: str, keywords: list[str], header: HeaderCOA, label: str
+) -> Optional[AkunPerkiraan]:
+    """Cari COA root (Piutang/Hutang Usaha) — utamakan dari setting_akun
+    (KEY_PIUTANG_USAHA/KEY_HUTANG_USAHA) supaya tetap jalan walau user ganti
+    nama COA. Fallback ke pencarian by-nama (keyword) kalau setting belum
+    di-configure, untuk backward-compatibility.
+    """
+    akun_id = get_akun_id(db, setting_key)
+    if akun_id:
+        coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == akun_id).first()
+        if coa:
+            return coa
+        logger.warning(
+            f"setting_akun {setting_key} nunjuk ke COA yang sudah tidak ada, "
+            f"fallback ke pencarian by-nama"
+        )
+
+    logger.warning(
+        f"setting_akun {setting_key} belum di-configure, fallback ke pencarian "
+        f"by-nama untuk '{label}'. Sebaiknya configure via PUT /master/setting-akun/{setting_key}"
+    )
+    return _find_group_coa(db, keywords, header)
 
 
 def find_piutang_root_coa(db: Session) -> Optional[AkunPerkiraan]:
@@ -138,7 +166,7 @@ def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan) -> Optional[UUID]
     Cari GROUP/HEADER 'Piutang Usaha' -> buat DETAIL dengan nama pelanggan.
     Return: UUID of new COA, atau None jika gagal.
     """
-    group = _find_group_coa(db, _PIUTANG_KEYWORDS, _PIUTANG_HEADER)
+    group = _resolve_root_coa(db, KEY_PIUTANG_USAHA, _PIUTANG_KEYWORDS, _PIUTANG_HEADER, "Piutang Usaha")
     if not group:
         logger.warning("COA 'Piutang Usaha' tidak ditemukan, skip auto-create piutang")
         return None
@@ -163,6 +191,7 @@ def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan) -> Optional[UUID]
         saldo_normal=_PIUTANG_SALDO_NORMAL,
         header=_PIUTANG_HEADER,
         induk_kode=group.kode,
+        is_subledger=True,
     )
     return coa.id
 
@@ -173,7 +202,7 @@ def auto_create_hutang_coa(db: Session, supplier: Supplier) -> Optional[UUID]:
     Cari GROUP/HEADER 'Hutang Usaha' -> buat DETAIL dengan nama supplier.
     Return: UUID of new COA, atau None jika gagal.
     """
-    group = _find_group_coa(db, _UTANG_KEYWORDS, _UTANG_HEADER)
+    group = _resolve_root_coa(db, KEY_HUTANG_USAHA, _UTANG_KEYWORDS, _UTANG_HEADER, "Hutang Usaha")
     if not group:
         logger.warning("COA 'Hutang Usaha' tidak ditemukan, skip auto-create hutang")
         return None
@@ -197,5 +226,6 @@ def auto_create_hutang_coa(db: Session, supplier: Supplier) -> Optional[UUID]:
         saldo_normal=_UTANG_SALDO_NORMAL,
         header=_UTANG_HEADER,
         induk_kode=group.kode,
+        is_subledger=True,
     )
     return coa.id

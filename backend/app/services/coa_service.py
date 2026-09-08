@@ -20,10 +20,20 @@ def get_coa_list(
     limit: int = 100,
     header: Optional[HeaderCOA] = None,
     tingkat: Optional[TingkatAkun] = None,
-    search: Optional[str] = None
+    search: Optional[str] = None,
+    include_subledger: bool = False,
 ) -> Tuple[List[AkunPerkiraan], int]:
-    """Mengambil daftar COA beserta total datanya."""
+    """Mengambil daftar COA beserta total datanya.
+
+    Default exclude COA subledger (auto-created per pelanggan/supplier,
+    misal "Piutang - Budi") dari modul Akun Perkiraan/COA utama — akun ini
+    tetap ada di DB untuk jurnal, tapi tidak perlu tampil di list COA.
+    Set include_subledger=True untuk keperluan lain yang butuh lihat semuanya.
+    """
     query = db.query(AkunPerkiraan)
+
+    if not include_subledger:
+        query = query.filter(AkunPerkiraan.is_subledger == False)  # noqa: E712
 
     if header:
         query = query.filter(AkunPerkiraan.header == header)
