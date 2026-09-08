@@ -127,6 +127,11 @@ def get_coa_detail_ids_under(db: Session, root_id: UUID) -> list[UUID]:
     ]
 
 
+def find_hutang_root_coa(db: Session) -> Optional[AkunPerkiraan]:
+    """Cari COA GROUP/HEADER root 'Hutang Usaha'. Wrapper publik dari _find_group_coa."""
+    return _find_group_coa(db, _UTANG_KEYWORDS, _UTANG_HEADER)
+
+
 def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan) -> Optional[UUID]:
     """Auto-buat COA detail Piutang untuk Pelanggan.
 

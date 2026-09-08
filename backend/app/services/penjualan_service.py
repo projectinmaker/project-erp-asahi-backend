@@ -30,6 +30,7 @@ from app.models.master.pelanggan import Pelanggan
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.stok_service import update_stok_barang
+from app.services.decimal_utils import safe_decimal, safe_int
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
 
@@ -43,7 +44,7 @@ def _hitung_total_detail(details_data: list) -> Decimal:
 
 def _hitung_total_biaya(biaya_data: list) -> Decimal:
     """Hitung total biaya tambahan."""
-    return sum(Decimal(str(b.get("jumlah", 0))) for b in biaya_data)
+    return sum((safe_decimal(b.get("jumlah")) for b in biaya_data), Decimal("0"))
 
 
 def _hitung_grand_total(
@@ -168,9 +169,9 @@ def create_sales_order(
         sub_total = Decimal("0")
         total_diskon = Decimal("0")
         for d in details_data:
-            harga = Decimal(str(d.get("harga", 0)))
-            qty = int(d.get("qty", 0))
-            diskon = Decimal(str(d.get("diskon", 0)))
+            harga = safe_decimal(d.get("harga"))
+            qty = safe_int(d.get("qty"))
+            diskon = safe_decimal(d.get("diskon"))
             line_total = harga * qty
             diskon_nilai = line_total * diskon / Decimal("100")
             sub_total += line_total
@@ -221,7 +222,7 @@ def create_sales_order(
                 barang_id=d["barang_id"],
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
-                diskon=Decimal(str(d.get("diskon", 0))),
+                diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
             )
             db.add(detail)
@@ -441,9 +442,9 @@ def create_sales_invoice(
         sub_total = Decimal("0")
         total_diskon = Decimal("0")
         for d in details_data:
-            harga = Decimal(str(d.get("harga", 0)))
-            qty = int(d.get("qty", 0))
-            diskon = Decimal(str(d.get("diskon", 0)))
+            harga = safe_decimal(d.get("harga"))
+            qty = safe_int(d.get("qty"))
+            diskon = safe_decimal(d.get("diskon"))
             line_total = harga * qty
             diskon_nilai = line_total * diskon / Decimal("100")
             sub_total += line_total
@@ -495,7 +496,7 @@ def create_sales_invoice(
                 barang_id=d["barang_id"],
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
-                diskon=Decimal(str(d.get("diskon", 0))),
+                diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
             )
             db.add(detail)
@@ -705,8 +706,8 @@ def create_sales_retur(
         # Hitung sub_total dari detail
         sub_total = Decimal("0")
         for d in details_data:
-            harga = Decimal(str(d.get("harga", 0)))
-            qty = int(d.get("qty", 0))
+            harga = safe_decimal(d.get("harga"))
+            qty = safe_int(d.get("qty"))
             line_total = harga * qty
             sub_total += line_total
             d["sub_total"] = line_total
