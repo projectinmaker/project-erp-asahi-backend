@@ -30,6 +30,7 @@ def _coa_to_dict(coa, jenis_kas_bank=None) -> dict:
         "created_at": coa.created_at,
         "updated_at": coa.updated_at,
         "jenis_kas_bank": jenis_kas_bank,
+        "is_subledger": coa.is_subledger,
     }
 
 
@@ -40,15 +41,20 @@ def read_coa_list(
     header: Optional[HeaderCOA] = Query(None),
     tingkat: Optional[TingkatAkun] = Query(None),
     search: Optional[str] = Query(None, description="Cari berdasarkan kode atau nama"),
+    include_subledger: bool = Query(False, description="Include COA subledger auto-created per pelanggan/supplier (Piutang/Hutang per-customer). Default False (hidden dari list utama)."),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
     """Ambil daftar Chart of Accounts (COA) dengan info pagination.
 
     Response include jenisKasBank ('KAS'/'BANK') jika COA terhubung ke KasBankAkun.
+    Secara default, COA subledger (auto-created per pelanggan/supplier, misal
+    "Piutang - Budi") disembunyikan dari list ini — set include_subledger=true
+    untuk menampilkannya juga.
     """
     data, total = coa_service.get_coa_list(
-        db, skip=skip, limit=limit, header=header, tingkat=tingkat, search=search
+        db, skip=skip, limit=limit, header=header, tingkat=tingkat, search=search,
+        include_subledger=include_subledger,
     )
 
     result_data = [

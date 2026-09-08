@@ -826,15 +826,15 @@ def delete_satuan(
 # ==========================================
 @router.get("/coa-dropdown", response_model=list[COASimpleResponse])
 def get_coa_dropdown(
-    exclude_linked: bool = Query(False, description="Exclude COA auto-created per pelanggan/supplier (Piutang Usaha & Hutang Usaha children)"),
+    exclude_linked: bool = Query(False, description="Exclude COA subledger auto-created per pelanggan/supplier (Piutang Usaha & Hutang Usaha children)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
     """Dropdown COA ringan (id, kode, nama) — hanya akun DETAIL yang AKTIF.
 
-    Parameter exclude_linked: jika True, exclude DETAIL akun yang auto-created
-    per pelanggan/supplier (anak dari group Piutang Usaha & Hutang Usaha).
-    Digunakan saat memilih COA untuk setting akun (bukan untuk jurnal detail).
+    Parameter exclude_linked: jika True, exclude COA subledger (is_subledger=True)
+    yang auto-created per pelanggan/supplier. Digunakan saat memilih COA untuk
+    setting akun (bukan untuk jurnal detail).
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
@@ -844,22 +844,7 @@ def get_coa_dropdown(
     )
 
     if exclude_linked:
-        # Cari ID group/header "Piutang Usaha" dan "Hutang Usaha"
-        linked_parents = db.query(AkunPerkiraan.id).filter(
-            AkunPerkiraan.nama.ilike("%PIUTANG%USAHA%"),
-            AkunPerkiraan.tingkat.in_([TingkatAkun.GROUP, TingkatAkun.HEADER]),
-            AkunPerkiraan.status == "AKTIF",
-        ).all()
-
-        linked_parents += db.query(AkunPerkiraan.id).filter(
-            AkunPerkiraan.nama.ilike("%HUTANG%USAHA%"),
-            AkunPerkiraan.tingkat.in_([TingkatAkun.GROUP, TingkatAkun.HEADER]),
-            AkunPerkiraan.status == "AKTIF",
-        ).all()
-
-        parent_ids = [p.id for p in linked_parents]
-        if parent_ids:
-            query = query.filter(AkunPerkiraan.induk_id.notin(parent_ids))
+        query = query.filter(AkunPerkiraan.is_subledger == False)  # noqa: E712
 
     return query.order_by(AkunPerkiraan.kode).all()
 
