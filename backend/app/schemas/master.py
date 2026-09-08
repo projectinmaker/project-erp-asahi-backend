@@ -332,6 +332,6 @@ class SettingAkunResponse(BaseSchema):
     key: str
     label: str
     akun_perkiraan_id: UUID
-    akun_perkiraan: COASimpleResponse
+    akun_perkiraan: Optional[COASimpleResponse] = None
     created_at: datetime
     updated_at: datetime

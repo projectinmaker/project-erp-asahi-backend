@@ -77,6 +77,7 @@ class COAResponse(COABase):
     updated_at: datetime
     # Opsi kas/bank info (hanya diisi jika COA ini punya relasi KasBankAkun)
     jenis_kas_bank: Optional[str] = None
+    is_subledger: bool = False
 
     class Config:
         json_schema_extra = {
