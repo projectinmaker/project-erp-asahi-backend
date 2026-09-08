@@ -12,7 +12,8 @@ from app.schemas.base import BaseSchema
 
 class PenggunaSimpleResponse(BaseSchema):
     id: UUID
-    nama: str
+    username: str
+    nama_lengkap: str
 
 
 class JurnalSimpleResponse(BaseSchema):

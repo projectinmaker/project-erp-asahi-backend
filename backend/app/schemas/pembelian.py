@@ -24,7 +24,8 @@ class SupplierSimpleResponse(BaseSchema):
 
 class PenggunaSimpleResponse(BaseSchema):
     id: UUID
-    nama: str
+    username: str
+    nama_lengkap: str
 
 
 class BarangSimpleResponse(BaseSchema):
