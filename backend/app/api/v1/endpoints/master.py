@@ -21,6 +21,7 @@ from app.schemas.master import (
     PelangganCreate, PelangganUpdate, PelangganResponse,
     PelangganFromCoaCreate, PelangganCoaResponse,
     SupplierCreate, SupplierUpdate, SupplierResponse,
+    SupplierFromCoaCreate, SupplierCoaResponse,
     BarangCreate, BarangUpdate, BarangResponse,
     BarangSatuanCreate, BarangSatuanUpdate, BarangSatuanResponse,
     KategoriBarangCreate, KategoriBarangUpdate, KategoriBarangResponse,
@@ -59,7 +60,7 @@ class SupplierSimpleResponse(BaseSchema):
 from app.services import master_service
 from app.services.coa_linkage_service import (
     auto_create_piutang_coa, auto_create_hutang_coa,
-    find_piutang_root_coa, get_coa_detail_ids_under,
+    find_piutang_root_coa, find_hutang_root_coa, get_coa_detail_ids_under,
 )
 
 router = APIRouter()
@@ -260,13 +261,14 @@ def create_supplier(
     current_user: Pengguna = Depends(get_current_user)
 ):
     supplier = master_service.create_master(db, Supplier, data_in)
-    # Auto-buat COA detail Hutang Usaha untuk supplier ini
-    hutang_coa_id = auto_create_hutang_coa(db, supplier)
-    if hutang_coa_id:
-        supplier.akun_hutang_id = hutang_coa_id
-        db.add(supplier)
-        db.commit()
-        db.refresh(supplier)
+    # Kalau akun_hutang_id sudah diisi manual (link ke COA existing), skip auto-create
+    if not supplier.akun_hutang_id:
+        hutang_coa_id = auto_create_hutang_coa(db, supplier)
+        if hutang_coa_id:
+            supplier.akun_hutang_id = hutang_coa_id
+            db.add(supplier)
+            db.commit()
+            db.refresh(supplier)
     return supplier
 
 @router.get("/supplier/{supplier_id}", response_model=SupplierResponse)
@@ -279,7 +281,18 @@ def get_supplier_detail(supplier_id: UUID, db: Session = Depends(get_current_db)
 def update_supplier(supplier_id: UUID, data_in: SupplierUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, Supplier, supplier_id)
     if not item: raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
-    return master_service.update_master(db, item, data_in)
+    old_nama = item.nama
+    item = master_service.update_master(db, item, data_in)
+    # Sync nama COA hutang jika nama supplier berubah
+    if data_in.nama and data_in.nama != old_nama and item.akun_hutang_id:
+        from app.models.akun_perkiraan import AkunPerkiraan
+        coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == item.akun_hutang_id).first()
+        if coa:
+            coa.nama = f"Hutang - {item.nama}"
+            db.add(coa)
+            db.commit()
+            db.refresh(item)
+    return item
 
 @router.delete("/supplier/{supplier_id}", status_code=status.HTTP_200_OK)
 def delete_supplier(supplier_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
@@ -288,6 +301,98 @@ def delete_supplier(supplier_id: UUID, db: Session = Depends(get_current_db), cu
     if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Supplier sudah tidak aktif")
     master_service.soft_delete_master(db, item)
     return {"message": "Supplier berhasil dinonaktifkan"}
+
+@router.get("/supplier-coa", response_model=list[SupplierCoaResponse])
+def get_supplier_coa(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: List semua COA DETAIL di bawah 'Hutang Usaha', LEFT JOIN ke
+    Supplier (kalau sudah linked via akun_hutang_id). Mirror dari /pelanggan-coa.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    group = find_hutang_root_coa(db)
+    if not group:
+        return []
+
+    detail_ids = get_coa_detail_ids_under(db, group.id)
+    if not detail_ids:
+        return []
+
+    rows = (
+        db.query(AkunPerkiraan, Supplier)
+        .outerjoin(Supplier, Supplier.akun_hutang_id == AkunPerkiraan.id)
+        .filter(AkunPerkiraan.id.in_(detail_ids))
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+
+    return [
+        {
+            "coa_id": coa.id,
+            "kode": coa.kode,
+            "nama": coa.nama,
+            "supplier_id": supplier.id if supplier else None,
+            "kode_supplier": supplier.kode if supplier else None,
+            "nama_supplier": supplier.nama if supplier else None,
+            "alamat": supplier.alamat if supplier else None,
+            "telepon": supplier.telepon if supplier else None,
+            "email": supplier.email if supplier else None,
+            "kontak_person": supplier.kontak_person if supplier else None,
+            "npwp": supplier.npwp if supplier else None,
+            "syarat_bayar_default": supplier.syarat_bayar_default if supplier else None,
+            "status": supplier.status if supplier else coa.status,
+            "is_linked": supplier is not None,
+        }
+        for coa, supplier in rows
+    ]
+
+@router.post("/supplier-from-coa", response_model=SupplierResponse, status_code=status.HTTP_201_CREATED)
+def create_supplier_from_coa(
+    data_in: SupplierFromCoaCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: Link COA Hutang existing (sudah di-import manual) ke supplier
+    baru. TIDAK membuat COA baru — pakai coa_id yang dikirim frontend langsung.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+
+    coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.coa_id).first()
+    if not coa:
+        raise HTTPException(status_code=404, detail="COA tidak ditemukan")
+    if coa.tingkat != TingkatAkun.DETAIL:
+        raise HTTPException(status_code=400, detail="COA yang dipilih harus level DETAIL")
+
+    group = find_hutang_root_coa(db)
+    if not group or coa.id not in get_coa_detail_ids_under(db, group.id):
+        raise HTTPException(status_code=400, detail="COA yang dipilih bukan bagian dari 'Hutang Usaha'")
+
+    existing_link = db.query(Supplier).filter(Supplier.akun_hutang_id == coa.id).first()
+    if existing_link:
+        raise HTTPException(
+            status_code=400,
+            detail=f"COA ini sudah terhubung ke supplier '{existing_link.nama}' ({existing_link.kode})"
+        )
+
+    supplier = Supplier(
+        kode=data_in.kode,
+        nama=data_in.nama,
+        alamat=data_in.alamat,
+        telepon=data_in.telepon,
+        email=data_in.email,
+        kontak_person=data_in.kontak_person,
+        npwp=data_in.npwp,
+        syarat_bayar_default=data_in.syarat_bayar_default,
+        akun_hutang_id=coa.id,
+    )
+    db.add(supplier)
+    db.commit()
+    db.refresh(supplier)
+    return supplier
 
 
 # ==========================================
