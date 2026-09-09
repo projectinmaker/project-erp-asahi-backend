@@ -32,6 +32,18 @@ KEY_HUTANG_USAHA = "HUTANG_USAHA"
 KEY_SELISIH_PERSEDIAAN = "SELISIH_PERSEDIAAN"
 KEY_PERSEDIAAN_BAHAN_PEMBANTU = "PERSEDIAAN_BAHAN_PEMBANTU"
 KEY_LABA_RUGI_BERJALAN = "LABA_RUGI_BERJALAN"
+KEY_KAS_DAN_SETARA_KAS = "KAS_DAN_SETARA_KAS"
+
+# Key-key yang WAJIB di-configure agar auto-posting jurnal Sales/Purchase
+# (Order, Invoice, Retur) tidak gagal. Dipakai untuk startup check.
+CRITICAL_KEYS = [
+    KEY_PENDAPATAN_PENJUALAN,
+    KEY_PPN_KELUARAN,
+    KEY_RETUR_PENJUALAN,
+    KEY_PEMBELIAN,
+    KEY_PPN_MASUKAN,
+    KEY_RETUR_PEMBELIAN,
+]
 
 
 # Simple in-memory cache (per process lifecycle)
@@ -85,3 +97,15 @@ def clear_cache() -> None:
     """Clear cache (digunakan setelah update setting)."""
     global _cache
     _cache = {}
+
+
+def check_critical_settings(db: Session) -> list[str]:
+    """Cek key-key kritis (dipakai auto-posting Sales/Purchase) sudah di-configure.
+
+    Return:
+        List key yang BELUM di-configure. Kosong berarti semua sudah OK.
+        Dipakai untuk warning non-fatal saat startup aplikasi.
+    """
+    if not _cache:
+        _load_all_settings(db)
+    return [key for key in CRITICAL_KEYS if not _cache.get(key)]

@@ -9,6 +9,9 @@ from loguru import logger
 
 from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA, TingkatAkun, SaldoNormal
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
+from app.models.master.setting_akun import SettingAkun
+from app.models.master.pelanggan import Pelanggan
+from app.models.master.supplier import Supplier
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.schemas.coa import COACreate, COAUpdate
@@ -156,6 +159,91 @@ def update_coa(db: Session, db_obj: AkunPerkiraan, obj_in: COAUpdate) -> AkunPer
     db.commit()
     db.refresh(db_obj)
     return db_obj
+
+
+# ============================================================
+# DELETE
+# ============================================================
+
+def delete_coa(db: Session, coa: AkunPerkiraan) -> None:
+    """Hapus Akun Perkiraan (hard delete).
+
+    Validasi urutan (raise ValueError dengan pesan jelas kalau gagal):
+    1. Sudah punya transaksi jurnal (jurnal_detail)
+    2. HEADER/GROUP yang masih punya sub-akun (induk_id)
+    3. Subledger yang terhubung ke pelanggan/supplier
+    4. Dipakai di setting_akun
+    5. Dipakai di kas_bank_akun
+
+    Untuk akuntansi, hard-delete hanya aman untuk akun yang belum pernah
+    dipakai transaksi. Kalau sudah dipakai / masih ada dependency, akun
+    sebaiknya dinonaktifkan (status=NONAKTIF) lewat PUT, bukan dihapus.
+    """
+    if db.query(JurnalDetail).filter(JurnalDetail.akun_perkiraan_id == coa.id).first():
+        raise ValueError(
+            "Akun ini sudah punya transaksi jurnal, tidak bisa dihapus. "
+            "Nonaktifkan akun ini (ubah status jadi NONAKTIF) jika sudah tidak dipakai."
+        )
+
+    if db.query(AkunPerkiraan).filter(AkunPerkiraan.induk_id == coa.id).first():
+        raise ValueError(
+            "Akun ini masih punya sub-akun di bawahnya. Hapus atau pindahkan "
+            "sub-akun tersebut dulu sebelum menghapus akun induk ini."
+        )
+
+    if db.query(Pelanggan).filter(Pelanggan.akun_piutang_id == coa.id).first():
+        raise ValueError(
+            "Akun ini terhubung sebagai akun piutang pelanggan. Lepaskan "
+            "keterkaitannya dari data pelanggan terlebih dahulu."
+        )
+
+    if db.query(Supplier).filter(Supplier.akun_hutang_id == coa.id).first():
+        raise ValueError(
+            "Akun ini terhubung sebagai akun hutang supplier. Lepaskan "
+            "keterkaitannya dari data supplier terlebih dahulu."
+        )
+
+    if db.query(SettingAkun).filter(SettingAkun.akun_perkiraan_id == coa.id).first():
+        raise ValueError(
+            "Akun ini sedang dipakai di Setting Akun (mapping akun default). "
+            "Ganti setting-nya ke akun lain dulu sebelum menghapus."
+        )
+
+    if db.query(KasBankAkun).filter(KasBankAkun.akun_perkiraan_id == coa.id).first():
+        raise ValueError(
+            "Akun ini terhubung ke Kas & Bank. Hapus/lepaskan koneksi Kas & "
+            "Bank-nya dulu sebelum menghapus akun ini."
+        )
+
+    db.delete(coa)
+    db.commit()
+
+
+# ============================================================
+# NEXT KODE (auto-generate kode akun detail di bawah induk)
+# ============================================================
+
+def get_next_kode(db: Session, induk_id: UUID) -> str:
+    """Generate kode akun berikutnya di bawah induk_id.
+
+    Reuse _generate_next_detail_kode dari coa_linkage_service.py (single
+    source of truth — juga dipakai internal oleh auto_create_piutang_coa/
+    auto_create_hutang_coa), supaya logic-nya nggak duplikat dan nggak bisa
+    kebablasan beda di kemudian hari.
+    """
+    from app.services.coa_linkage_service import _generate_next_detail_kode
+
+    parent = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == induk_id).first()
+    if not parent:
+        raise ValueError("Akun induk tidak ditemukan.")
+
+    if parent.tingkat not in (TingkatAkun.HEADER, TingkatAkun.GROUP):
+        raise ValueError(
+            "Akun induk harus level HEADER atau GROUP, tidak bisa membuat "
+            "sub-akun di bawah akun level DETAIL."
+        )
+
+    return _generate_next_detail_kode(db, parent)
 
 
 # ============================================================
