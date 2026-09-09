@@ -21,3 +21,8 @@ class Pengguna(BaseModel, BaseMixin):
     role = Column(SQLEnum(RolePengguna), nullable=False)
     status = Column(String(20), default="AKTIF", nullable=False)
     terakhir_login = Column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def nama(self) -> str:
+        """Compatibility for transaction responses exposing creator.nama."""
+        return self.nama_lengkap
