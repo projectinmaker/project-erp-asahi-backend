@@ -1,4 +1,4 @@
- """
+"""
 Pembelian Endpoints.
 PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang.
 """
@@ -121,7 +121,7 @@ def cancel_purchase_order(
     if not item:
         raise HTTPException(status_code=404, detail="Purchase Order tidak ditemukan")
     try:
-        return svc.cancel_purchase_order(db, db_obj=item)
+        return svc.cancel_purchase_order(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -222,7 +222,7 @@ def cancel_purchase_invoice(
     if not item:
         raise HTTPException(status_code=404, detail="Purchase Invoice tidak ditemukan")
     try:
-        return svc.cancel_purchase_invoice(db, db_obj=item)
+        return svc.cancel_purchase_invoice(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -320,7 +320,7 @@ def cancel_purchase_retur(
     if not item:
         raise HTTPException(status_code=404, detail="Purchase Retur tidak ditemukan")
     try:
-        return svc.cancel_purchase_retur(db, db_obj=item)
+        return svc.cancel_purchase_retur(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -416,7 +416,7 @@ def cancel_penerimaan(
     if not item:
         raise HTTPException(status_code=404, detail="Penerimaan Barang tidak ditemukan")
     try:
-        return svc.cancel_penerimaan(db, db_obj=item)
+        return svc.cancel_penerimaan(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

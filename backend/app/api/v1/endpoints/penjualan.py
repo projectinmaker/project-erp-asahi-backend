@@ -127,7 +127,7 @@ def cancel_sales_order(
     if not item:
         raise HTTPException(status_code=404, detail="Sales Order tidak ditemukan")
     try:
-        return svc.cancel_sales_order(db, db_obj=item)
+        return svc.cancel_sales_order(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -233,7 +233,7 @@ def cancel_sales_invoice(
     if not item:
         raise HTTPException(status_code=404, detail="Sales Invoice tidak ditemukan")
     try:
-        return svc.cancel_sales_invoice(db, db_obj=item)
+        return svc.cancel_sales_invoice(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -333,7 +333,7 @@ def cancel_sales_retur(
     if not item:
         raise HTTPException(status_code=404, detail="Sales Retur tidak ditemukan")
     try:
-        return svc.cancel_sales_retur(db, db_obj=item)
+        return svc.cancel_sales_retur(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -430,7 +430,7 @@ def cancel_pengiriman(
     if not item:
         raise HTTPException(status_code=404, detail="Pengiriman Barang tidak ditemukan")
     try:
-        return svc.cancel_pengiriman(db, db_obj=item)
+        return svc.cancel_pengiriman(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

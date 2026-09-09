@@ -115,7 +115,7 @@ def cancel_pembayaran(
     if not item:
         raise HTTPException(status_code=404, detail="Pembayaran Kas tidak ditemukan")
     try:
-        return svc.cancel_pembayaran(db, db_obj=item)
+        return svc.cancel_pembayaran(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -212,7 +212,7 @@ def cancel_penerimaan(
     if not item:
         raise HTTPException(status_code=404, detail="Penerimaan Kas tidak ditemukan")
     try:
-        return svc.cancel_penerimaan(db, db_obj=item)
+        return svc.cancel_penerimaan(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -306,6 +306,6 @@ def cancel_transfer(
     if not item:
         raise HTTPException(status_code=404, detail="Transfer Bank tidak ditemukan")
     try:
-        return svc.cancel_transfer(db, db_obj=item)
+        return svc.cancel_transfer(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

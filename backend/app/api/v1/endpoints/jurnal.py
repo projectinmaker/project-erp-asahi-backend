@@ -145,8 +145,13 @@ def create_jurnal_manual(
             tipe_transaksi="MANUAL",
             status=StatusJurnal.POSTED,
         )
+        db.commit()
     except ValueError as e:
+        db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        db.rollback()
+        raise
 
     # Return detail response
     return (

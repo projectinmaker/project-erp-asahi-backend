@@ -131,7 +131,7 @@ def cancel_penyesuaian(
     if not item:
         raise HTTPException(status_code=404, detail="Penyesuaian Stok tidak ditemukan")
     try:
-        return svc.cancel_penyesuaian(db, db_obj=item)
+        return svc.cancel_penyesuaian(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -247,7 +247,7 @@ def cancel_pemindahan(
     if not item:
         raise HTTPException(status_code=404, detail="Pemindahan Barang tidak ditemukan")
     try:
-        return svc.cancel_pemindahan(db, db_obj=item)
+        return svc.cancel_pemindahan(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -357,6 +357,6 @@ def cancel_permintaan(
     if not item:
         raise HTTPException(status_code=404, detail="Permintaan Barang tidak ditemukan")
     try:
-        return svc.cancel_permintaan(db, db_obj=item)
+        return svc.cancel_permintaan(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

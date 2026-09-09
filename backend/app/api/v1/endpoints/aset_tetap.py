@@ -1,4 +1,4 @@
- """
+"""
 Aset Tetap Endpoints.
 CRUD + status management (hapus, perbaikan, aktifkan kembali).
 """

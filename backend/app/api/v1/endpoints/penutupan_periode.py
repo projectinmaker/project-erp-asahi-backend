@@ -1,4 +1,4 @@
- """
+"""
 Penutupan Periode Endpoints.
 """
 

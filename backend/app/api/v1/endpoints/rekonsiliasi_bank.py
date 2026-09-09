@@ -220,6 +220,6 @@ def void_rekonsiliasi(
 ):
     """Batalkan rekonsiliasi (DRAFT/SELESAI → BATAL)."""
     try:
-        return svc.void_rekonsiliasi(db, rekonsiliasi_id=rekonsiliasi_id)
+        return svc.void_rekonsiliasi(db, rekonsiliasi_id=rekonsiliasi_id, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
