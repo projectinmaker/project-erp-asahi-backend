@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, ForeignKey
+from sqlalchemy import Column, String, Text, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -7,7 +7,10 @@ from app.models.base import BaseMixin
 
 class Supplier(BaseModel, BaseMixin):
     __tablename__ = "supplier"
-    kode = Column(String(20), unique=True, nullable=False, index=True)
+    __table_args__ = (
+        Index("ix_supplier_kode", "kode", unique=True, postgresql_where=text("status = 'AKTIF'")),
+    )
+    kode = Column(String(20), nullable=False)
     nama = Column(String(200), nullable=False)
     alamat = Column(Text, nullable=True)
     telepon = Column(String(30), nullable=True)

@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Numeric, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, Numeric, ForeignKey, Enum as SQLEnum, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -13,7 +13,10 @@ class JenisKasBank(str, enum.Enum):
 
 class KasBankAkun(BaseModel, BaseMixin):
     __tablename__ = "kas_bank_akun"
-    kode = Column(String(20), unique=True, nullable=False, index=True)
+    __table_args__ = (
+        Index("ix_kas_bank_akun_kode", "kode", unique=True, postgresql_where=text("status = 'AKTIF'")),
+    )
+    kode = Column(String(20), nullable=False)
     nama = Column(String(100), nullable=False)
     jenis = Column(SQLEnum(JenisKasBank), nullable=False)
     akun_perkiraan_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=False)

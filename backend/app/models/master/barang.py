@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Integer, Numeric, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, Integer, Numeric, ForeignKey, Enum as SQLEnum, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -14,8 +14,11 @@ class MetodeValuasi(str, enum.Enum):
 
 class Barang(BaseModel, BaseMixin):
     __tablename__ = "barang"
+    __table_args__ = (
+        Index("ix_barang_kode", "kode", unique=True, postgresql_where=text("status = 'AKTIF'")),
+    )
 
-    kode = Column(String(20), unique=True, nullable=False, index=True)
+    kode = Column(String(20), nullable=False)
     nama = Column(String(200), nullable=False)
     kategori_id = Column(UUID(as_uuid=True), ForeignKey("kategori_barang.id"), nullable=False)
     satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id"), nullable=False)
