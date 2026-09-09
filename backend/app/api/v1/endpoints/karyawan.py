@@ -32,12 +32,7 @@ def create_karyawan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat data karyawan baru."""
-    # Cek duplikat NIK
-    existing = db.query(Karyawan).filter(Karyawan.nik == data_in.nik).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="NIK sudah terdaftar")
-
+    """Buat karyawan atau aktifkan kembali NIK yang NONAKTIF."""
     return master_service.create_master(db, Karyawan, data_in)
 
 
