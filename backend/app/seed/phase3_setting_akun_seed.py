@@ -308,6 +308,9 @@ def seed_phase3_coa_and_settings():
             ("SELISIH_PERSEDIAAN", "Selisih Persediaan", "600", "100", "011"),
             ("PERSEDIAAN_BAHAN_PEMBANTU", "Persediaan Bahan Pembantu", "131", "100", "004"),
             ("LABA_RUGI_BERJALAN", "Laba Rugi Berjalan", "310", "100", "001"),
+            # NOTE: kode 100.000.000, BUKAN 111.000.000 (itu Piutang Usaha) — sudah
+            # dicek langsung terhadap COA_ASAHI_push_asahi_books.xlsx.
+            ("KAS_DAN_SETARA_KAS", "Kas dan Setara Kas", "100", "000", "000"),
         ]
 
         inserted_setting = 0
