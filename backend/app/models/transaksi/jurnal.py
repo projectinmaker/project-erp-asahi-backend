@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime
+from sqlalchemy import Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -31,6 +31,7 @@ class StatusJurnal(str, enum.Enum):
 
 class JurnalUmum(BaseModel, BaseMixin):
     __tablename__ = "jurnal_umum"
+    __table_args__ = (UniqueConstraint("reversal_of_id", name="uq_jurnal_reversal"),)
 
     no_jurnal = Column(String(30), unique=True, nullable=False, index=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
@@ -39,6 +40,7 @@ class JurnalUmum(BaseModel, BaseMixin):
     ref_module = Column(SQLEnum(RefModule), nullable=True)
     ref_no = Column(String(30), nullable=True, index=True)
     ref_id = Column(UUID(as_uuid=True), nullable=True)
+    reversal_of_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id", name="fk_jurnal_reversal"), nullable=True)
 
     total_debit = Column(Numeric(18, 2), default=0, nullable=False)
     total_kredit = Column(Numeric(18, 2), default=0, nullable=False)
