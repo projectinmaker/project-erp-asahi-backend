@@ -18,7 +18,7 @@ class PembayaranKas(BaseModel, BaseMixin):
     no_bukti = Column(String(30), unique=True, nullable=False, index=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     kas_bank_id = Column(UUID(as_uuid=True), ForeignKey("kas_bank_akun.id"), nullable=False)
-    no_bukti = Column(String(50), nullable=False)
+    no_nukti = Column(String(50), nullable=False)
     no_cek = Column(String(50), nullable=True)
     penerima = Column(String(255), nullable=True)
     catatan = Column(Text, nullable=True)
