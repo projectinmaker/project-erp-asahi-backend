@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_db, get_current_user
 from app.models.akun_perkiraan import HeaderCOA, TingkatAkun
 from app.models.master.pengguna import Pengguna
-from app.schemas.coa import COACreate, COAUpdate, COAResponse, SaldoAwalRequest, SaldoAwalResponse
+from app.schemas.coa import COACreate, COAUpdate, COAResponse, SaldoAwalRequest, SaldoAwalResponse, NextKodeResponse
 from app.services import coa_service
 from app.schemas.base import PaginatedResponse
 
@@ -148,6 +148,23 @@ def save_saldo_awal(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/next-kode", response_model=NextKodeResponse)
+def get_next_kode(
+    induk_id: UUID = Query(..., description="ID akun induk (HEADER/GROUP) tempat sub-akun baru akan dibuat"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Generate kode akun berikutnya secara otomatis di bawah akun induk.
+
+    Contoh: induk 111.000.000 -> kode berikutnya 111.000.001, lalu 111.000.002, dst.
+    """
+    try:
+        kode = coa_service.get_next_kode(db, induk_id=induk_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"kode": kode}
+
+
 # ==========================================
 # DETAIL / UPDATE
 # ==========================================
@@ -180,3 +197,29 @@ def update_coa(
 
     updated = coa_service.update_coa(db, db_obj=coa, obj_in=coa_in)
     return _coa_to_dict(updated, coa_service._get_jenis_kas_bank_for_coa(db, updated.id))
+
+
+@router.delete("/{coa_id}", status_code=status.HTTP_200_OK)
+def delete_coa(
+    coa_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Hapus Akun Perkiraan (hard delete).
+
+    Hanya berhasil kalau akun belum punya dependency apapun: belum ada
+    transaksi jurnal, tidak punya sub-akun, tidak terhubung ke
+    pelanggan/supplier/setting_akun/kas_bank_akun. Kalau ada salah satu,
+    return 400 dengan pesan jelas — akun sebaiknya dinonaktifkan (PUT
+    status=NONAKTIF) bukan dihapus.
+    """
+    coa = coa_service.get_coa_by_id(db, coa_id=coa_id)
+    if not coa:
+        raise HTTPException(status_code=404, detail="Akun Perkiraan tidak ditemukan")
+
+    try:
+        coa_service.delete_coa(db, coa=coa)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"message": "Akun berhasil dihapus"}

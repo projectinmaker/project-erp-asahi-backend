@@ -827,21 +827,25 @@ def delete_satuan(
 @router.get("/coa-dropdown", response_model=list[COASimpleResponse])
 def get_coa_dropdown(
     exclude_linked: bool = Query(False, description="Exclude COA subledger auto-created per pelanggan/supplier (Piutang Usaha & Hutang Usaha children)"),
+    include_header_group: bool = Query(False, description="Include akun level HEADER & GROUP juga (bukan cuma DETAIL). Dipakai halaman Setting Akun untuk key seperti PIUTANG_USAHA/HUTANG_USAHA yang nunjuk ke akun induk/root, bukan detail."),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    """Dropdown COA ringan (id, kode, nama) — hanya akun DETAIL yang AKTIF.
+    """Dropdown COA ringan (id, kode, nama) — default hanya akun DETAIL yang AKTIF
+    (dipakai form transaksi/jurnal, yang cuma boleh posting ke akun DETAIL).
 
     Parameter exclude_linked: jika True, exclude COA subledger (is_subledger=True)
-    yang auto-created per pelanggan/supplier. Digunakan saat memilih COA untuk
-    setting akun (bukan untuk jurnal detail).
+    yang auto-created per pelanggan/supplier.
+    Parameter include_header_group: jika True, ikut include akun level HEADER
+    & GROUP (bukan cuma DETAIL) — dipakai halaman Setting Akun, karena beberapa
+    key (PIUTANG_USAHA, HUTANG_USAHA) memang nunjuk ke akun induk/root, bukan detail.
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
-    query = db.query(AkunPerkiraan).filter(
-        AkunPerkiraan.status == "AKTIF",
-        AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
-    )
+    query = db.query(AkunPerkiraan).filter(AkunPerkiraan.status == "AKTIF")
+
+    if not include_header_group:
+        query = query.filter(AkunPerkiraan.tingkat == TingkatAkun.DETAIL)
 
     if exclude_linked:
         query = query.filter(AkunPerkiraan.is_subledger == False)  # noqa: E712
@@ -890,16 +894,22 @@ def get_kas_bank_dropdown(
     """
     Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'Kas dan Setara Kas'.
     Mencari semua akun DETAIL yang merupakan anak/cucu dari COA tersebut.
-    Menggunakan ilike (case-insensitive) supaya tidak bergantung pada huruf besar/kecil.
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
-    # 1. Cari COA root "Kas dan Setara Kas" (bisa HEADER atau GROUP)
-    #    Pakai ilike supaya case-insensitive (cocokkan "Kas dan Setara Kas" / "KAS DAN SETARA KAS" / dll)
-    kas_root_id = db.query(AkunPerkiraan.id).filter(
-        AkunPerkiraan.nama.ilike("%KAS%DAN%SETARA%KAS%"),
-        AkunPerkiraan.tingkat.in_([TingkatAkun.HEADER, TingkatAkun.GROUP]),
-    ).scalar()
+    # 1. Cari COA root "Kas dan Setara Kas" — utamakan dari setting_akun
+    #    (KEY_KAS_DAN_SETARA_KAS) supaya tetap jalan walau user ganti nama COA.
+    #    Fallback ke pencarian by-nama (ilike) kalau setting belum di-configure.
+    kas_root_id = setting_akun_service.get_akun_id(db, setting_akun_service.KEY_KAS_DAN_SETARA_KAS)
+
+    if kas_root_id and not db.query(AkunPerkiraan).filter(AkunPerkiraan.id == kas_root_id).first():
+        kas_root_id = None  # stale reference, fallback di bawah
+
+    if not kas_root_id:
+        kas_root_id = db.query(AkunPerkiraan.id).filter(
+            AkunPerkiraan.nama.ilike("%KAS%DAN%SETARA%KAS%"),
+            AkunPerkiraan.tingkat.in_([TingkatAkun.HEADER, TingkatAkun.GROUP]),
+        ).scalar()
 
     if not kas_root_id:
         return []
