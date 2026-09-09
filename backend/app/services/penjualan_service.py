@@ -36,6 +36,9 @@ from app.services.setting_akun_service import (
     KEY_PENDAPATAN_PENJUALAN,
     KEY_PPN_KELUARAN,
     KEY_RETUR_PENJUALAN,
+    KEY_PENDAPATAN_ANGKUT,
+    KEY_HPP_PENJUALAN,
+    KEY_PERSEDIAAN_BARANG_JADI,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
@@ -265,6 +268,19 @@ def create_sales_order(
                         ),
                         kredit=total_ppn,
                         keterangan=f"PPN SO {no_pesanan}",
+                    )
+                )
+
+            if total_biaya_tambahan > 0:
+                # Kredit: Pendapatan Angkut — mengimbangi grand_total (Debit
+                # Piutang) yang sudah termasuk biaya tambahan, supaya jurnal balance.
+                entries.append(
+                    JurnalEntryItem(
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PENDAPATAN_ANGKUT, context=f"SO {no_pesanan}"
+                        ),
+                        kredit=total_biaya_tambahan,
+                        keterangan=f"Biaya tambahan SO {no_pesanan}",
                     )
                 )
 
@@ -540,6 +556,19 @@ def create_sales_invoice(
                         ),
                         kredit=total_ppn,
                         keterangan=f"PPN INV {no_invoice}",
+                    )
+                )
+
+            if total_biaya_tambahan > 0:
+                # Kredit: Pendapatan Angkut — mengimbangi grand_total (Debit
+                # Piutang) yang sudah termasuk biaya tambahan, supaya jurnal balance.
+                entries.append(
+                    JurnalEntryItem(
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_PENDAPATAN_ANGKUT, context=f"INV {no_invoice}"
+                        ),
+                        kredit=total_biaya_tambahan,
+                        keterangan=f"Biaya tambahan INV {no_invoice}",
                     )
                 )
 
@@ -1046,31 +1075,76 @@ def cancel_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
 
 
 def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang:
-    """Finalisasi pengiriman barang — status SELESAI + kurangi stok barang."""
+    """Finalisasi pengiriman barang — status SELESAI + kurangi stok barang +
+    posting jurnal HPP (D: HPP Penjualan, K: Persediaan Barang Jadi).
+
+    HPP diposting DI SINI (bukan saat Sales Invoice dibuat) supaya sinkron
+    dengan momen stok fisik benar-benar berkurang.
+    """
     if db_obj.status == StatusPenjualan.DIBATALKAN:
         raise ValueError("Pengiriman yang sudah dibatalkan tidak bisa difinalisasi")
     if db_obj.status == StatusPenjualan.SELESAI:
         raise ValueError("Pengiriman sudah selesai")
 
-    # Kurangi stok untuk setiap detail barang
-    for detail in db_obj.details:
-        update_stok_barang(
-            db=db,
-            barang_id=detail.barang_id,
-            qty_change=detail.qty,
-            mode="KURANGI",
-            deskripsi=f"Pengiriman {db_obj.no_surat_jalan}",
-            ref_module=RefModule.SALES_INVOICE,
-            ref_no=db_obj.no_surat_jalan,
-            ref_id=db_obj.id,
-        )
+    try:
+        # Kurangi stok untuk setiap detail barang
+        total_hpp = Decimal("0")
+        for detail in db_obj.details:
+            update_stok_barang(
+                db=db,
+                barang_id=detail.barang_id,
+                qty_change=detail.qty,
+                mode="KURANGI",
+                deskripsi=f"Pengiriman {db_obj.no_surat_jalan}",
+                ref_module=RefModule.SALES_INVOICE,
+                ref_no=db_obj.no_surat_jalan,
+                ref_id=db_obj.id,
+            )
+            harga_pokok = detail.barang.harga_pokok or Decimal("0")
+            total_hpp += Decimal(str(detail.qty)) * harga_pokok
 
-    db_obj.status = StatusPenjualan.SELESAI
-    db.add(db_obj)
-    db.commit()
-    db.refresh(db_obj)
-    logger.info(f"PengirimanBarang finished: {db_obj.no_surat_jalan} | stok dikurangi")
-    return db_obj
+        db_obj.status = StatusPenjualan.SELESAI
+
+        # Posting jurnal HPP (asumsi: barang yang dikirim adalah barang jadi)
+        if total_hpp > 0:
+            entries = [
+                JurnalEntryItem(
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_HPP_PENJUALAN, context=f"Pengiriman {db_obj.no_surat_jalan}"
+                    ),
+                    debit=total_hpp,
+                    keterangan=f"HPP Pengiriman {db_obj.no_surat_jalan}",
+                ),
+                JurnalEntryItem(
+                    akun_perkiraan_id=get_akun_id_or_raise(
+                        db, KEY_PERSEDIAAN_BARANG_JADI, context=f"Pengiriman {db_obj.no_surat_jalan}"
+                    ),
+                    kredit=total_hpp,
+                    keterangan=f"Persediaan keluar Pengiriman {db_obj.no_surat_jalan}",
+                ),
+            ]
+            jurnal = auto_posting_jurnal(
+                db=db,
+                ref_module=RefModule.SALES_INVOICE,
+                ref_no=db_obj.no_surat_jalan,
+                entries=entries,
+                keterangan=f"HPP Pengiriman {db_obj.no_surat_jalan}",
+                ref_id=db_obj.id,
+                tanggal=db_obj.tanggal,
+                created_by=db_obj.created_by,
+            )
+            db_obj.jurnal_umum_id = jurnal.id
+
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        logger.info(f"PengirimanBarang finished: {db_obj.no_surat_jalan} | stok dikurangi | HPP={total_hpp}")
+        return db_obj
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error finishing PengirimanBarang {db_obj.no_surat_jalan}: {e}")
+        raise
 
 
 def finish_sales_retur(db: Session, db_obj: SalesRetur) -> SalesRetur:

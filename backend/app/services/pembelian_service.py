@@ -37,6 +37,7 @@ from app.services.setting_akun_service import (
     KEY_PEMBELIAN,
     KEY_PPN_MASUKAN,
     KEY_RETUR_PEMBELIAN,
+    KEY_BEBAN_ANGKUT_PEMBELIAN,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
@@ -271,6 +272,19 @@ def create_purchase_order(
                         debit=total_ppn,
                         keterangan=f"PPN Masukan PO {no_pesanan}",
                     ),
+                )
+
+            if total_biaya_tambahan > 0:
+                # Debit: Beban Angkut Pembelian — mengimbangi grand_total (Kredit
+                # Utang Dagang) yang sudah termasuk biaya tambahan, supaya jurnal balance.
+                entries.append(
+                    JurnalEntryItem(
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_BEBAN_ANGKUT_PEMBELIAN, context=f"PO {no_pesanan}"
+                        ),
+                        debit=total_biaya_tambahan,
+                        keterangan=f"Biaya tambahan PO {no_pesanan}",
+                    )
                 )
 
             try:
@@ -514,6 +528,19 @@ def create_purchase_invoice(
                         debit=total_ppn,
                         keterangan=f"PPN Masukan PINV {no_form}",
                     ),
+                )
+
+            if total_biaya_tambahan > 0:
+                # Debit: Beban Angkut Pembelian — mengimbangi grand_total (Kredit
+                # Utang Dagang) yang sudah termasuk biaya tambahan, supaya jurnal balance.
+                entries.append(
+                    JurnalEntryItem(
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_BEBAN_ANGKUT_PEMBELIAN, context=f"PINV {no_form}"
+                        ),
+                        debit=total_biaya_tambahan,
+                        keterangan=f"Biaya tambahan PINV {no_form}",
+                    )
                 )
 
             try:

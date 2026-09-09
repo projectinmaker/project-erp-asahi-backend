@@ -25,6 +25,7 @@ from app.models.master.kas_bank_akun import KasBankAkun
 from app.models.master.pengguna import Pengguna
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
+from app.services.setting_akun_service import get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
 
@@ -543,11 +544,12 @@ def create_transfer(
 
             # Jika ada biaya transfer
             if biaya_transfer and biaya_transfer > 0:
-                # TODO: Akun beban admin bisa diambil dari setting/config
-                # Sementara gunakan akun dari kas bank asal (biaya keluar dari asal)
+                # D: Beban Transfer Bank (dari setting_akun) — K: Kas/Bank Asal (berkurang)
                 entries.append(
                     JurnalEntryItem(
-                        akun_perkiraan_id=dari_kb.akun_perkiraan_id,
+                        akun_perkiraan_id=get_akun_id_or_raise(
+                            db, KEY_BEBAN_TRANSFER_BANK, context=f"Transfer {no_transfer}"
+                        ),
                         debit=biaya_transfer,
                         keterangan=f"Biaya transfer {no_transfer}",
                     )
