@@ -56,11 +56,8 @@ def _duplicate_detail(Model: Type[T], data: dict, error: IntegrityError) -> str:
     return f"Data {table.name.replace('_', ' ')} sudah digunakan"
 
 
-def create_master(db: Session, Model: Type[T], schema_in: BaseSchema) -> T:
-    """Fungsi generik untuk membuat data master baru"""
-    data = schema_in.model_dump()
-    db_obj = Model(**data)
-    db.add(db_obj)
+def _commit_master(db: Session, Model: Type[T], data: dict) -> None:
+    """Commit create/update dan pulihkan session jika constraint gagal."""
     try:
         db.commit()
     except IntegrityError as error:
@@ -69,6 +66,14 @@ def create_master(db: Session, Model: Type[T], schema_in: BaseSchema) -> T:
         if getattr(error.orig, "pgcode", None) == "23505":
             raise HTTPException(status_code=400, detail=_duplicate_detail(Model, data, error)) from error
         raise
+
+
+def create_master(db: Session, Model: Type[T], schema_in: BaseSchema) -> T:
+    """Fungsi generik untuk membuat data master baru"""
+    data = schema_in.model_dump()
+    db_obj = Model(**data)
+    db.add(db_obj)
+    _commit_master(db, Model, data)
     db.refresh(db_obj)
     return db_obj
 
@@ -78,7 +83,10 @@ def update_master(db: Session, db_obj: Any, schema_in: BaseSchema) -> Any:
     for field, value in update_data.items():
         setattr(db_obj, field, value)
     db.add(db_obj)
-    db.commit()
+    # Simpan nilai sebelum rollback agar konflik reaktivasi (status saja)
+    # tetap bisa menampilkan kode yang bentrok tanpa reload objek.
+    error_data = {column.name: getattr(db_obj, column.name) for column in db_obj.__table__.columns}
+    _commit_master(db, type(db_obj), error_data)
     db.refresh(db_obj)
     return db_obj
 
