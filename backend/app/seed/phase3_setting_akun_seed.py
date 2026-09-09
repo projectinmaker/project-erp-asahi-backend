@@ -311,6 +311,10 @@ def seed_phase3_coa_and_settings():
             # NOTE: kode 100.000.000, BUKAN 111.000.000 (itu Piutang Usaha) — sudah
             # dicek langsung terhadap COA_ASAHI_push_asahi_books.xlsx.
             ("KAS_DAN_SETARA_KAS", "Kas dan Setara Kas", "100", "000", "000"),
+            # NOTE: belum ada akun "Pendapatan Angkut" khusus di COA — dipakaikan
+            # sementara ke "Pendapatan (Biaya) Lainnya" (402.000.002). Redirect ke
+            # akun lain via halaman Setting Akun kalau mau akun khusus.
+            ("PENDAPATAN_ANGKUT", "Pendapatan Angkut", "402", "000", "002"),
         ]
 
         inserted_setting = 0
