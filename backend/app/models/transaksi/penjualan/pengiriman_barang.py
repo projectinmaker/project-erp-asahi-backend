@@ -18,6 +18,7 @@ class PengirimanBarang(BaseModel, BaseMixin):
     keterangan = Column(Text, nullable=True)
     status = Column(SQLEnum(StatusPenjualan), default=StatusPenjualan.DRAFT, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
+    jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
 
     # Relationships
     sales_order = relationship("SalesOrder", back_populates="pengiriman")
