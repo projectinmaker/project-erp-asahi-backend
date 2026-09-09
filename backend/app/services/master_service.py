@@ -1,7 +1,9 @@
 from typing import Type, TypeVar, List, Optional, Any, Tuple
 from uuid import UUID
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, UniqueConstraint
+from sqlalchemy.exc import IntegrityError
 
 from app.schemas.base import BaseSchema
 
@@ -37,11 +39,36 @@ def get_master_by_id(db: Session, Model: Type[T], item_id: UUID) -> Optional[T]:
     """Fungsi generik untuk mengambil 1 data master berdasarkan UUID"""
     return db.query(Model).filter(Model.id == item_id).first()
 
+def _duplicate_detail(Model: Type[T], data: dict, error: IntegrityError) -> str:
+    """Gunakan metadata constraint, tanpa membocorkan detail SQL/database."""
+    table = Model.__table__
+    constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+    for constraint in list(table.constraints) + list(table.indexes):
+        if not isinstance(constraint, UniqueConstraint) and not getattr(constraint, "unique", False):
+            continue
+        columns = list(constraint.columns)
+        name = constraint.name or f"{table.name}_{'_'.join(c.name for c in columns)}_key"
+        if name == constraint_name and len(columns) == 1:
+            field = columns[0].name
+            label = "NIK" if field == "nik" else field.replace("_", " ").capitalize()
+            if field in data:
+                return f"{label} {table.name.replace('_', ' ')} '{data[field]}' sudah digunakan"
+    return f"Data {table.name.replace('_', ' ')} sudah digunakan"
+
+
 def create_master(db: Session, Model: Type[T], schema_in: BaseSchema) -> T:
     """Fungsi generik untuk membuat data master baru"""
-    db_obj = Model(**schema_in.model_dump())
+    data = schema_in.model_dump()
+    db_obj = Model(**data)
     db.add(db_obj)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        # PostgreSQL unique_violation; constraint lain tetap ditangani sebagai error asli.
+        if getattr(error.orig, "pgcode", None) == "23505":
+            raise HTTPException(status_code=400, detail=_duplicate_detail(Model, data, error)) from error
+        raise
     db.refresh(db_obj)
     return db_obj
 
