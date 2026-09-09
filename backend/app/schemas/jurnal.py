@@ -45,6 +45,7 @@ class JurnalUmumListResponse(BaseSchema):
     tanggal: datetime
     tipe_transaksi: Optional[str] = None
     ref_module: Optional[RefModule] = None
+    reversal_of_id: Optional[UUID] = None
     ref_no: Optional[str] = None
     total_debit: Decimal
     total_kredit: Decimal
@@ -62,6 +63,7 @@ class JurnalUmumDetailResponse(BaseSchema):
     tanggal: datetime
     tipe_transaksi: Optional[str] = None
     ref_module: Optional[RefModule] = None
+    reversal_of_id: Optional[UUID] = None
     ref_no: Optional[str] = None
     ref_id: Optional[UUID] = None
     total_debit: Decimal
