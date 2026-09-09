@@ -58,6 +58,10 @@ class SaldoAwalRequest(BaseSchema):
     items: List[SaldoAwalItem]
 
 
+class NextKodeResponse(BaseSchema):
+    kode: str
+
+
 class SaldoAwalResponse(BaseSchema):
     sudah_diset: bool
     tanggal: Optional[str] = None
