@@ -12,7 +12,7 @@ from app.models.master.barang import Barang
 from app.models.master.gudang import Gudang
 from app.models.master.syarat_bayar import SyaratBayar
 from app.models.master.kategori_aset import KategoriAset
-from app.models.master.kas_bank_akun import KasBankAkun
+from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
 from app.models.master.setting_akun import SettingAkun
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
@@ -886,20 +886,16 @@ def get_supplier_dropdown(
     ).order_by(Supplier.nama).all()
 
 
-@router.get("/kas-bank-dropdown", response_model=list[KasBankAkunResponse])
-def get_kas_bank_dropdown(
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user)
-):
-    """
-    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'Kas dan Setara Kas'.
-    Mencari semua akun DETAIL yang merupakan anak/cucu dari COA tersebut.
+def _get_kas_detail_coa_ids(db: Session) -> list[UUID]:
+    """Cari semua COA DETAIL yang merupakan anak/cucu dari 'Kas dan Setara Kas'.
+
+    Utamakan dari setting_akun (KEY_KAS_DAN_SETARA_KAS) supaya tetap jalan
+    walau user ganti nama COA. Fallback ke pencarian by-nama (ilike) kalau
+    setting belum di-configure/stale. Dipakai bareng oleh /kas-bank-dropdown
+    dan /kas-bank-akun/sync supaya logic-nya nggak duplikat.
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
-    # 1. Cari COA root "Kas dan Setara Kas" — utamakan dari setting_akun
-    #    (KEY_KAS_DAN_SETARA_KAS) supaya tetap jalan walau user ganti nama COA.
-    #    Fallback ke pencarian by-nama (ilike) kalau setting belum di-configure.
     kas_root_id = setting_akun_service.get_akun_id(db, setting_akun_service.KEY_KAS_DAN_SETARA_KAS)
 
     if kas_root_id and not db.query(AkunPerkiraan).filter(AkunPerkiraan.id == kas_root_id).first():
@@ -914,7 +910,7 @@ def get_kas_bank_dropdown(
     if not kas_root_id:
         return []
 
-    # 2. Recursive CTE: cari semua descendant (anak, cucu, dst)
+    # Recursive CTE: cari semua descendant (anak, cucu, dst)
     base = db.query(AkunPerkiraan.id).filter(
         AkunPerkiraan.induk_id == kas_root_id
     ).cte(name="coa_children", recursive=True)
@@ -925,19 +921,105 @@ def get_kas_bank_dropdown(
 
     all_descendants = base.union(recursive)
 
-    # 3. Ambil hanya akun DETAIL
-    detail_ids = [
+    return [
         row[0] for row in db.query(AkunPerkiraan.id).filter(
             AkunPerkiraan.id.in_(db.query(all_descendants.c.id)),
             AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
         ).all()
     ]
 
+
+@router.get("/kas-bank-dropdown", response_model=list[KasBankAkunResponse])
+def get_kas_bank_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'Kas dan Setara Kas'.
+    Mencari semua akun DETAIL yang merupakan anak/cucu dari COA tersebut.
+
+    Catatan: hanya menampilkan COA yang SUDAH punya entry KasBankAkun. COA
+    detail yang di-import manual tapi belum di-sync tidak akan muncul —
+    panggil POST /master/kas-bank-akun/sync untuk auto-create entry-nya.
+    """
+    detail_ids = _get_kas_detail_coa_ids(db)
     if not detail_ids:
         return []
 
-    # 4. Filter KasBankAkun yang terhubung ke akun-akun DETAIL tersebut
     return db.query(KasBankAkun).filter(
         KasBankAkun.akun_perkiraan_id.in_(detail_ids),
         KasBankAkun.status == "AKTIF",
     ).order_by(KasBankAkun.nama).all()
+
+
+@router.post("/kas-bank-akun/sync", status_code=status.HTTP_200_OK)
+def sync_kas_bank_akun(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Sync COA di bawah 'Kas dan Setara Kas' ke tabel kas_bank_akun.
+
+    Auto-create entry KasBankAkun untuk COA DETAIL yang belum punya
+    (misal hasil import manual/Excel yang belum ke-link). Aman dipanggil
+    berkali-kali (idempotent) — COA yang sudah punya KasBankAkun di-skip.
+    Panggil endpoint ini sekali setelah import COA untuk sync semua akun
+    Kas/Bank baru.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    detail_ids = _get_kas_detail_coa_ids(db)
+    if not detail_ids:
+        return {"created": 0, "skipped": 0, "detail": []}
+
+    already_linked_ids = {
+        row[0] for row in db.query(KasBankAkun.akun_perkiraan_id)
+        .filter(KasBankAkun.akun_perkiraan_id.in_(detail_ids)).all()
+    }
+
+    to_create_query = db.query(AkunPerkiraan).filter(
+        AkunPerkiraan.id.in_(detail_ids),
+        AkunPerkiraan.status == "AKTIF",
+    )
+    if already_linked_ids:
+        to_create_query = to_create_query.filter(~AkunPerkiraan.id.in_(already_linked_ids))
+    to_create = to_create_query.all()
+
+    if not to_create:
+        return {"created": 0, "skipped": len(already_linked_ids), "detail": []}
+
+    # Kode kas_bank_akun berikutnya: lanjutkan penomoran "BK-XXX" yang sudah ada
+    last_kode = (
+        db.query(KasBankAkun.kode)
+        .filter(KasBankAkun.kode.like("BK-%"))
+        .order_by(KasBankAkun.kode.desc())
+        .first()
+    )
+    try:
+        next_seq = int(last_kode[0].split("-")[1]) + 1 if last_kode else 1
+    except (IndexError, ValueError):
+        next_seq = 1
+
+    created_detail = []
+    for coa in to_create:
+        # Deteksi jenis dari nama: mengandung "bank" -> BANK, selain itu KAS (default)
+        jenis = JenisKasBank.BANK if "bank" in coa.nama.lower() else JenisKasBank.KAS
+
+        new_item = KasBankAkun(
+            kode=f"BK-{next_seq:03d}",
+            nama=coa.nama,
+            jenis=jenis,
+            akun_perkiraan_id=coa.id,
+            saldo=coa.saldo or 0,
+            status="AKTIF",
+        )
+        db.add(new_item)
+        created_detail.append({"kode_coa": coa.kode, "nama": coa.nama, "jenis": jenis.value, "kode_kas_bank": new_item.kode})
+        next_seq += 1
+
+    db.commit()
+
+    return {
+        "created": len(created_detail),
+        "skipped": len(already_linked_ids),
+        "detail": created_detail,
+    }
