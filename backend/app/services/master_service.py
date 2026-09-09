@@ -2,7 +2,7 @@ from typing import Type, TypeVar, List, Optional, Any, Tuple
 from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, UniqueConstraint
+from sqlalchemy import or_, UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError
 
 from app.schemas.base import BaseSchema
@@ -68,9 +68,52 @@ def _commit_master(db: Session, Model: Type[T], data: dict) -> None:
         raise
 
 
-def create_master(db: Session, Model: Type[T], schema_in: BaseSchema) -> T:
-    """Fungsi generik untuk membuat data master baru"""
+def create_master(
+    db: Session, Model: Type[T], schema_in: BaseSchema, allow_reactivate: bool = True
+) -> T:
+    """Create baru atau aktifkan kembali master NONAKTIF dengan kode/NIK sama."""
     data = schema_in.model_dump()
+    table = Model.__table__
+    key = next((field for field in ("kode", "nik") if field in table.c and field in data), None)
+    if allow_reactivate and key and "status" in table.c:
+        # Serialize create dengan kode yang sama, termasuk saat belum ada row.
+        # Lock otomatis dilepas ketika transaksi commit/rollback.
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:master_key, 0))"),
+                {"master_key": f"master:{table.fullname}:{key}:{data[key]}"},
+            )
+        matches = (
+            db.query(Model)
+            .filter(getattr(Model, key) == data[key])
+            .order_by(Model.created_at.desc(), Model.id.desc())
+            .populate_existing()
+            .with_for_update()
+            .all()
+        )
+        # Jangan memilih NONAKTIF jika ada record AKTIF lain dengan kode sama.
+        if any(item.status == "AKTIF" for item in matches):
+            label = "NIK" if key == "nik" else "Kode"
+            entity = table.name.replace("_", " ")
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label} {entity} '{data[key]}' sudah digunakan oleh {entity} aktif",
+            )
+        # Data dari opsi A mungkin memiliki beberapa record NONAKTIF.
+        # Pilih record paling baru secara deterministik; record lain tetap utuh.
+        existing = next((item for item in matches if item.status == "NONAKTIF"), None)
+        if existing is not None:
+            for field, value in data.items():
+                # COA lama dipertahankan bila request tidak memberi pengganti.
+                if field in ("akun_piutang_id", "akun_hutang_id") and value is None:
+                    continue
+                setattr(existing, field, value)
+            existing.status = "AKTIF"
+            db.add(existing)
+            _commit_master(db, Model, data)
+            db.refresh(existing)
+            return existing
     db_obj = Model(**data)
     db.add(db_obj)
     _commit_master(db, Model, data)
