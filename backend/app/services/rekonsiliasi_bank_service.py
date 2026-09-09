@@ -1,3 +1,5 @@
+from app.services.accounting_control import atomic_accounting_write
+from app.services.posting_service import reverse_journal
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Optional, Tuple
@@ -319,12 +321,13 @@ def remove_detail(db: Session, detail_id: UUID) -> None:
 # COMPLETE REKONSILIASI
 # ============================================================
 
+@atomic_accounting_write
 def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> RekonsiliasiBank:
     """Selesaikan rekonsiliasi (DRAFT → SELESAI).
 
     1. Validasi status DRAFT
     2. Validasi balance: adjusted_buku == adjusted_bank (within tolerance)
-    3. Buat jurnal penyesuaian untuk detail PENYESUAIAN (non-fatal)
+    3. Buat jurnal penyesuaian; kegagalan membatalkan penyelesaian
     4. Set status SELESAI
     5. Commit
 
@@ -383,7 +386,7 @@ def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> 
             f"Selisih: {diff}. Tambahkan detail untuk menyeimbangkan."
         )
 
-    # Jurnal penyesuaian (non-fatal)
+    # Jurnal penyesuaian wajib berhasil sebelum rekonsiliasi diselesaikan.
     jurnal_penyesuaian_id = None
     if penyesuaian_items:
         try:
@@ -396,7 +399,7 @@ def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> 
                 )
                 rek.jurnal_penyesuaian_id = jurnal_penyesuaian_id
         except Exception as e:
-            logger.warning(f"Jurnal penyesuaian rekonsiliasi gagal (non-fatal): {e}")
+            raise ValueError(f"Jurnal penyesuaian rekonsiliasi gagal: {e}") from e
 
     rek.status = StatusRekonsiliasi.SELESAI.value
     db.commit()
@@ -429,8 +432,7 @@ def _create_adjustment_journal(
 
     for item in items:
         if not item.akun_perkiraan_id:
-            logger.warning(f"PENYESUAIAN item {item.id} tidak memiliki akun_perkiraan_id, skip")
-            continue
+            raise ValueError("Detail penyesuaian rekonsiliasi tidak memiliki akun")
 
         if item.sisi == SisiPenyesuaian.DEBIT.value:
             # Bank interest: D-KasBank, K-akun
@@ -479,11 +481,12 @@ def _create_adjustment_journal(
 # VOID REKONSILIASI
 # ============================================================
 
-def void_rekonsiliasi(db: Session, rekonsiliasi_id: UUID) -> RekonsiliasiBank:
+@atomic_accounting_write
+def void_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: Optional[UUID] = None) -> RekonsiliasiBank:
     """Batalkan rekonsiliasi (SELESAI/DRAFT → BATAL).
 
     Catatan: Jurnal penyesuaian TIDAK dihapus (audit trail).
-    Pengguna harus membuat jurnal balik manual jika diperlukan.
+    Jurnal pembalik dibuat dalam transaksi pembatalan yang sama.
     """
     rek = (
         db.query(RekonsiliasiBank)
@@ -496,6 +499,8 @@ def void_rekonsiliasi(db: Session, rekonsiliasi_id: UUID) -> RekonsiliasiBank:
     if rek.status == StatusRekonsiliasi.BATAL.value:
         raise ValueError("Rekonsiliasi sudah dibatalkan")
 
+    if rek.jurnal_penyesuaian_id:
+        reverse_journal(db, rek.jurnal_penyesuaian_id, user_id or rek.created_by, "Pembatalan rekonsiliasi")
     rek.status = StatusRekonsiliasi.BATAL.value
     db.add(rek)
     db.commit()

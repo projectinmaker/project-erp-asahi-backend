@@ -8,6 +8,9 @@ Menghandle CRUD + auto-posting jurnal untuk:
 - PermintaanBarang
 """
 
+from app.services.accounting_control import atomic_accounting_write, require_unposted, require_no_stock_movement
+from app.services.posting_service import reverse_journal
+
 from datetime import datetime, date
 from decimal import Decimal
 from typing import List, Optional, Tuple
@@ -122,6 +125,7 @@ def get_penyesuaian_by_id(db: Session, adj_id: UUID) -> Optional[PenyesuaianStok
     )
 
 
+@atomic_accounting_write
 def create_penyesuaian(
     db: Session,
     tanggal: datetime,
@@ -182,6 +186,7 @@ def create_penyesuaian(
         raise
 
 
+@atomic_accounting_write
 def update_penyesuaian(
     db: Session,
     db_obj: PenyesuaianStok,
@@ -194,6 +199,7 @@ def update_penyesuaian(
     auto_post_jurnal: Optional[bool] = None,
 ) -> PenyesuaianStok:
     """Update data penyesuaian stok."""
+    require_unposted(db_obj)
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Penyesuaian Stok dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -221,6 +227,7 @@ def update_penyesuaian(
     return db_obj
 
 
+@atomic_accounting_write
 def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok:
     """Setujui penyesuaian stok + update stok barang + auto-post jurnal + catat StokMutasi."""
     if db_obj.status != StatusPersediaan.DIAJUKAN:
@@ -239,7 +246,7 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
         ref_id=db_obj.id,
     )
 
-    # 2. Auto-post jurnal (non-fatal: jika gagal, stok tetap diupdate)
+    # 2. Jurnal dan perubahan stok harus berhasil bersama.
     if db_obj.auto_post_jurnal and db_obj.total > 0:
         try:
             akun_persediaan_id = _get_akun_persediaan_id(db, db_obj.barang)
@@ -293,7 +300,7 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
                 f"{db_obj.tipe.value} | total={db_obj.total}"
             )
         except Exception as e:
-            logger.warning(f"Jurnal penyesuaian stok gagal diposting (non-fatal): {e}")
+            raise ValueError(f"Jurnal penyesuaian stok gagal diposting: {e}") from e
 
     # 3. Set status + commit
     db_obj.status = StatusPersediaan.DISETUJUI
@@ -304,10 +311,14 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
     return db_obj
 
 
-def cancel_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok:
+@atomic_accounting_write
+def cancel_penyesuaian(db: Session, db_obj: PenyesuaianStok, user_id: Optional[UUID] = None) -> PenyesuaianStok:
     """Batalkan penyesuaian stok."""
+    require_no_stock_movement(db_obj)
     if db_obj.status in (StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError("Penyesuaian Stok sudah dibatalkan/ditolak")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusPersediaan.BATAL
     db.add(db_obj)
     db.commit()
@@ -380,6 +391,7 @@ def get_pemindahan_by_id(db: Session, pb_id: UUID) -> Optional[PemindahanBarang]
     )
 
 
+@atomic_accounting_write
 def create_pemindahan(
     db: Session,
     tanggal: datetime,
@@ -464,6 +476,7 @@ def create_pemindahan(
         raise
 
 
+@atomic_accounting_write
 def update_pemindahan(
     db: Session,
     db_obj: PemindahanBarang,
@@ -477,6 +490,7 @@ def update_pemindahan(
     keterangan: Optional[str] = None,
 ) -> PemindahanBarang:
     """Update data pemindahan barang."""
+    require_unposted(db_obj)
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Pemindahan Barang dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -507,6 +521,7 @@ def update_pemindahan(
     return db_obj
 
 
+@atomic_accounting_write
 def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBarang:
     """Setujui pemindahan barang + update stok (kurangi dari asal, tambah ke tujuan)."""
     if db_obj.status != StatusPersediaan.DIAJUKAN:
@@ -547,10 +562,14 @@ def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBaran
     return db_obj
 
 
-def cancel_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBarang:
+@atomic_accounting_write
+def cancel_pemindahan(db: Session, db_obj: PemindahanBarang, user_id: Optional[UUID] = None) -> PemindahanBarang:
     """Batalkan pemindahan barang."""
+    require_no_stock_movement(db_obj)
     if db_obj.status in (StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError("Pemindahan Barang sudah dibatalkan/ditolak")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusPersediaan.BATAL
     db.add(db_obj)
     db.commit()
@@ -614,6 +633,7 @@ def get_permintaan_by_id(db: Session, req_id: UUID) -> Optional[PermintaanBarang
     )
 
 
+@atomic_accounting_write
 def create_permintaan(
     db: Session,
     tanggal: datetime,
@@ -661,6 +681,7 @@ def create_permintaan(
         raise
 
 
+@atomic_accounting_write
 def update_permintaan(
     db: Session,
     db_obj: PermintaanBarang,
@@ -671,6 +692,7 @@ def update_permintaan(
     keterangan: Optional[str] = None,
 ) -> PermintaanBarang:
     """Update data permintaan barang."""
+    require_unposted(db_obj)
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Permintaan Barang dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -691,6 +713,7 @@ def update_permintaan(
     return db_obj
 
 
+@atomic_accounting_write
 def approve_permintaan(db: Session, db_obj: PermintaanBarang) -> PermintaanBarang:
     """Setujui permintaan barang."""
     if db_obj.status != StatusPersediaan.DIAJUKAN:
@@ -703,10 +726,13 @@ def approve_permintaan(db: Session, db_obj: PermintaanBarang) -> PermintaanBaran
     return db_obj
 
 
-def cancel_permintaan(db: Session, db_obj: PermintaanBarang) -> PermintaanBarang:
+@atomic_accounting_write
+def cancel_permintaan(db: Session, db_obj: PermintaanBarang, user_id: Optional[UUID] = None) -> PermintaanBarang:
     """Batalkan permintaan barang."""
     if db_obj.status in (StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError("Permintaan Barang sudah dibatalkan/ditolak")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusPersediaan.BATAL
     db.add(db_obj)
     db.commit()

@@ -99,14 +99,7 @@ def update_stok_barang(
         saldo_nilai_sesudah = val_result.get('saldo_nilai_sesudah', Decimal('0'))
 
     except Exception as e:
-        # Non-fatal: fallback ke perhitungan sederhana
-        logger.warning(f"Valuasi gagal (fallback): {e}")
-        total_nilai = (qty_change * harga_satuan).quantize(Decimal('0.01'))
-        saldo_nilai_sebelum = Decimal(str(barang.harga_pokok or 0)) * old_stok
-        if is_masuk:
-            saldo_nilai_sesudah = saldo_nilai_sebelum + total_nilai
-        else:
-            saldo_nilai_sesudah = max(Decimal('0'), saldo_nilai_sebelum - total_nilai)
+        raise ValueError(f"Valuasi stok gagal; transaksi dibatalkan: {e}") from e
 
     # ---- UBAH STOK (SETELAH valuasi) ----
     if is_masuk:

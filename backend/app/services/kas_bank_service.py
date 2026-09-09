@@ -8,6 +8,9 @@ Menghandle CRUD + auto-posting jurnal untuk:
 - TransferBank
 """
 
+from app.services.accounting_control import atomic_accounting_write, require_unposted, require_no_stock_movement
+from app.services.posting_service import reverse_journal
+
 from datetime import datetime, date
 from decimal import Decimal
 from typing import List, Optional, Tuple
@@ -88,6 +91,7 @@ def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[Pembayara
     )
 
 
+@atomic_accounting_write
 def create_pembayaran(
     db: Session,
     no_nukti: str,
@@ -132,7 +136,7 @@ def create_pembayaran(
             catatan=catatan,
             total_nilai=total_nilai,
             auto_post_jurnal=auto_post_jurnal,
-            status=StatusTransaksi.SELESAI,
+            status=StatusTransaksi.SELESAI if auto_post_jurnal else StatusTransaksi.DRAFT,
             created_by=created_by,
         )
         db.add(pembayaran)
@@ -189,6 +193,7 @@ def create_pembayaran(
         raise
 
 
+@atomic_accounting_write
 def update_pembayaran(
     db: Session,
     db_obj: PembayaranKas,
@@ -201,6 +206,7 @@ def update_pembayaran(
     auto_post_jurnal: Optional[bool] = None,
 ) -> PembayaranKas:
     """Update data pembayaran (hanya field yang diberikan)."""
+    require_unposted(db_obj)
     if tanggal is not None:
         db_obj.tanggal = tanggal
     if kas_bank_id is not None:
@@ -222,10 +228,13 @@ def update_pembayaran(
     return db_obj
 
 
-def cancel_pembayaran(db: Session, db_obj: PembayaranKas) -> PembayaranKas:
+@atomic_accounting_write
+def cancel_pembayaran(db: Session, db_obj: PembayaranKas, user_id: Optional[UUID] = None) -> PembayaranKas:
     """Batalkan pembayaran (status -> BATAL)."""
     if db_obj.status == StatusTransaksi.BATAL:
         raise ValueError("Pembayaran sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusTransaksi.BATAL
     db.add(db_obj)
     db.commit()
@@ -293,6 +302,7 @@ def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[Penerimaa
     )
 
 
+@atomic_accounting_write
 def create_penerimaan(
     db: Session,
     no_nukti: str,
@@ -328,7 +338,7 @@ def create_penerimaan(
             catatan=catatan,
             total_nilai=total_nilai,
             auto_post_jurnal=auto_post_jurnal,
-            status=StatusTransaksi.SELESAI,
+            status=StatusTransaksi.SELESAI if auto_post_jurnal else StatusTransaksi.DRAFT,
             created_by=created_by,
         )
         db.add(penerimaan)
@@ -383,6 +393,7 @@ def create_penerimaan(
         raise
 
 
+@atomic_accounting_write
 def update_penerimaan(
     db: Session,
     db_obj: PenerimaanKas,
@@ -395,6 +406,7 @@ def update_penerimaan(
     auto_post_jurnal: Optional[bool] = None,
 ) -> PenerimaanKas:
     """Update data penerimaan."""
+    require_unposted(db_obj)
     if tanggal is not None:
         db_obj.tanggal = tanggal
     if kas_bank_id is not None:
@@ -416,10 +428,13 @@ def update_penerimaan(
     return db_obj
 
 
-def cancel_penerimaan(db: Session, db_obj: PenerimaanKas) -> PenerimaanKas:
+@atomic_accounting_write
+def cancel_penerimaan(db: Session, db_obj: PenerimaanKas, user_id: Optional[UUID] = None) -> PenerimaanKas:
     """Batalkan penerimaan."""
     if db_obj.status == StatusTransaksi.BATAL:
         raise ValueError("Penerimaan sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusTransaksi.BATAL
     db.add(db_obj)
     db.commit()
@@ -480,6 +495,7 @@ def get_transfer_by_id(db: Session, transfer_id: UUID) -> Optional[TransferBank]
     )
 
 
+@atomic_accounting_write
 def create_transfer(
     db: Session,
     tanggal: datetime,
@@ -519,7 +535,7 @@ def create_transfer(
             biaya_transfer=biaya_transfer,
             informasi=informasi,
             auto_post_jurnal=auto_post_jurnal,
-            status=StatusTransaksi.SELESAI,
+            status=StatusTransaksi.SELESAI if auto_post_jurnal else StatusTransaksi.DRAFT,
             created_by=created_by,
         )
         db.add(transfer)
@@ -585,6 +601,7 @@ def create_transfer(
         raise
 
 
+@atomic_accounting_write
 def update_transfer(
     db: Session,
     db_obj: TransferBank,
@@ -597,6 +614,7 @@ def update_transfer(
     auto_post_jurnal: Optional[bool] = None,
 ) -> TransferBank:
     """Update data transfer."""
+    require_unposted(db_obj)
     if tanggal is not None:
         db_obj.tanggal = tanggal
     if dari_kas_bank_id is not None:
@@ -622,10 +640,13 @@ def update_transfer(
     return db_obj
 
 
-def cancel_transfer(db: Session, db_obj: TransferBank) -> TransferBank:
+@atomic_accounting_write
+def cancel_transfer(db: Session, db_obj: TransferBank, user_id: Optional[UUID] = None) -> TransferBank:
     """Batalkan transfer."""
     if db_obj.status == StatusTransaksi.BATAL:
         raise ValueError("Transfer sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusTransaksi.BATAL
     db.add(db_obj)
     db.commit()

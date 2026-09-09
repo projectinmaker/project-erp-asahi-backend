@@ -1,3 +1,5 @@
+from app.services.accounting_control import atomic_accounting_write
+from app.services.posting_service import reverse_journal
 import calendar
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -87,6 +89,7 @@ def get_periode_list(
 # TUTUP PERIODE
 # ============================================================
 
+@atomic_accounting_write
 def tutup_periode(
     db: Session,
     tahun: int,
@@ -165,7 +168,7 @@ def tutup_periode(
                     user_id=user_id,
                 )
         except Exception as e:
-            logger.warning(f"Jurnal penutupan gagal dibuat (non-fatal): {e}")
+            raise ValueError(f"Jurnal penutupan gagal dibuat: {e}") from e
 
     # STEP 4b: Baru set status DITUTUP
     if existing:
@@ -322,6 +325,7 @@ def _get_akun_id_by_kode(db: Session, kode: str) -> UUID:
 # BUKA PERIODE
 # ============================================================
 
+@atomic_accounting_write
 def buka_periode(
     db: Session,
     tahun: int,
@@ -332,7 +336,7 @@ def buka_periode(
     """Buka kembali periode yang sudah ditutup.
 
     Catatan: Jurnal penutupan TIDAK dihapus (untuk audit trail).
-    Pengguna bisa membuat jurnal balik manual jika diperlukan.
+    Jurnal pembalik dibuat setelah periode dibuka, dalam transaksi yang sama.
     """
     if bulan < 1 or bulan > 12:
         raise ValueError(f"Bulan harus 1-12, diberikan: {bulan}")
@@ -351,6 +355,9 @@ def buka_periode(
 
     now = datetime.now(timezone.utc)
     pp.status = StatusPeriode.DIBUKA.value
+    db.flush()
+    if pp.jurnal_penutupan_id:
+        reverse_journal(db, pp.jurnal_penutupan_id, user_id, "Buka kembali periode")
     pp.reopened_by = user_id
     pp.reopened_at = now
     if alasan:
