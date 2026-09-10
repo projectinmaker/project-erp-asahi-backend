@@ -20,6 +20,8 @@ class StatusAsetTetap(str, enum.Enum):
 class AsetTetap(BaseModel, BaseMixin):
     __tablename__ = "aset_tetap"
 
+    capitalized = Column(Boolean, nullable=False, default=False)
+    lokasi = Column(String(150), nullable=True)
     kode = Column(String(30), unique=True, nullable=False, index=True)
     nama = Column(String(150), nullable=False)
     kategori_aset_id = Column(UUID(as_uuid=True), ForeignKey("kategori_aset.id"), nullable=False)
