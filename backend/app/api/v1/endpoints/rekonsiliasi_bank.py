@@ -172,6 +172,10 @@ def update_detail(
     current_user: Pengguna = Depends(get_current_user),
 ):
     """Update detail line (hanya DRAFT)."""
+    from app.models.transaksi.kas_bank.rekonsiliasi_bank import RekonsiliasiBankDetail
+    if not db.query(RekonsiliasiBankDetail.id).filter_by(id=detail_id, rekonsiliasi_bank_id=rekonsiliasi_id).first():
+        raise HTTPException(404, "Detail tidak ditemukan pada rekonsiliasi ini")
+
     update_data = data_in.model_dump(exclude_unset=True)
     try:
         return svc.update_detail(db, detail_id=detail_id, **update_data)
@@ -187,6 +191,10 @@ def remove_detail(
     current_user: Pengguna = Depends(get_current_user),
 ):
     """Hapus detail line (hanya DRAFT)."""
+    from app.models.transaksi.kas_bank.rekonsiliasi_bank import RekonsiliasiBankDetail
+    if not db.query(RekonsiliasiBankDetail.id).filter_by(id=detail_id, rekonsiliasi_bank_id=rekonsiliasi_id).first():
+        raise HTTPException(404, "Detail tidak ditemukan pada rekonsiliasi ini")
+
     try:
         svc.remove_detail(db, detail_id=detail_id)
     except ValueError as e:

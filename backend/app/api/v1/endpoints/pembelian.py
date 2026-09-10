@@ -71,7 +71,7 @@ def create_purchase_order(
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,
             keterangan=data_in.keterangan,
-            auto_post_jurnal=data_in.auto_post_jurnal,
+            auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
     except ValueError as e:
@@ -172,7 +172,7 @@ def create_purchase_invoice(
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,
             keterangan=data_in.keterangan,
-            auto_post_jurnal=data_in.auto_post_jurnal,
+            auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
     except ValueError as e:
@@ -270,7 +270,7 @@ def create_purchase_retur(
             alamat=data_in.alamat,
             ppn=data_in.ppn,
             keterangan=data_in.keterangan,
-            auto_post_jurnal=data_in.auto_post_jurnal,
+            auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
     except ValueError as e:

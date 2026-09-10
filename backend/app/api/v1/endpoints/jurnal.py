@@ -1,3 +1,4 @@
+from app.services.accounting_control import atomic_accounting_write
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
@@ -12,8 +13,45 @@ from app.models.detail.jurnal_detail import JurnalDetail
 from app.schemas.base import PaginatedResponse
 from app.schemas.jurnal import JurnalUmumListResponse, JurnalUmumDetailResponse, JurnalDetailItemCreate, JurnalManualCreate
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
+from app.services.accounting_control import require_unposted
+from app.services.posting_service import validate_entries
 
 router = APIRouter()
+
+
+@atomic_accounting_write
+def _update_manual(db, db_obj, data_in, actor):
+    require_unposted(db_obj)
+    from app.services.workflow_service import role, APPROVERS, find_workflow, append_event
+    from app.services.penutupan_periode_service import validate_periode_not_closed
+    if actor.id != db_obj.created_by and role(actor) not in APPROVERS:
+        raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengedit draft')
+    validate_periode_not_closed(db, data_in.tanggal)
+    entries = [JurnalEntryItem(d.akun_perkiraan_id, d.debit, d.kredit, d.keterangan) for d in data_in.details]
+    debit, kredit = validate_entries(db, entries)
+    db_obj.details.clear()
+    db.flush()
+    for e in entries:
+        db_obj.details.append(JurnalDetail(akun_perkiraan_id=e.akun_perkiraan_id, debit=e.debit, kredit=e.kredit, keterangan=e.keterangan))
+    db_obj.tanggal = data_in.tanggal
+    db_obj.keterangan = data_in.keterangan
+    db_obj.total_debit, db_obj.total_kredit = debit, kredit
+    wf = find_workflow(db, db_obj)
+    if wf:
+        append_event(db, wf, 'edit', 'DRAFT', actor.id)
+    return db_obj
+
+
+@router.put('/manual/{jurnal_id}', response_model=JurnalUmumDetailResponse)
+def update_manual(jurnal_id: UUID, data_in: JurnalManualCreate, db: Session = Depends(get_current_db),
+                  current_user: Pengguna = Depends(get_current_user)):
+    obj = db.get(JurnalUmum, jurnal_id)
+    if not obj or obj.ref_module != RefModule.MANUAL or obj.reversal_of_id:
+        raise HTTPException(404, 'Jurnal manual tidak ditemukan')
+    try:
+        return _update_manual(db, obj, data_in, current_user)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("", response_model=PaginatedResponse[JurnalUmumListResponse])
@@ -86,6 +124,7 @@ def get_jurnal_detail(
 # JURNAL MANUAL
 # ==========================================
 @router.post("/manual", response_model=JurnalUmumDetailResponse, status_code=status.HTTP_201_CREATED)
+@atomic_accounting_write
 def create_jurnal_manual(
     data_in: JurnalManualCreate,
     db: Session = Depends(get_current_db),
@@ -143,7 +182,7 @@ def create_jurnal_manual(
             tanggal=data_in.tanggal,
             created_by=current_user.id,
             tipe_transaksi="MANUAL",
-            status=StatusJurnal.POSTED,
+            status=StatusJurnal.DRAFT,
         )
         db.commit()
     except ValueError as e:

@@ -12,38 +12,7 @@ router = APIRouter()
 
 @router.post("/init-admin", response_model=PenggunaResponse)
 def create_initial_admin(db: Session = Depends(get_current_db)):
-    """Endpoint sementara untuk membuat User Admin pertama kali."""
-    existing_admin = db.query(Pengguna).filter(Pengguna.role == "ADMINISTRATOR").first()
-    if existing_admin:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User Administrator sudah terdaftar di sistem.",
-        )
-
-    admin_data = PenggunaCreate(
-        username="admin",
-        nama_lengkap="Administrator Asahi",
-        email="admin@asahi-erp.com",
-        password="admin123",
-        role="ADMINISTRATOR",
-    )
-
-    hashed_password = bcrypt.hashpw(admin_data.password.encode("utf-8"), bcrypt.gensalt()).decode(
-        "utf-8"
-    )
-
-    db_obj = Pengguna(
-        username=admin_data.username,
-        nama_lengkap=admin_data.nama_lengkap,
-        email=admin_data.email,
-        password_hash=hashed_password,
-        role=admin_data.role,
-    )
-    db.add(db_obj)
-    db.commit()
-    db.refresh(db_obj)
-
-    return db_obj
+    raise HTTPException(410, "Bootstrap admin publik dinonaktifkan. Gunakan scripts/bootstrap_admin.py di server.")
 
 
 @router.post("/login", response_model=TokenResponse)

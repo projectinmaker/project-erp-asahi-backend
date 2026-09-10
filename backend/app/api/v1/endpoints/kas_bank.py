@@ -66,7 +66,7 @@ def create_pembayaran(
             no_cek=data_in.no_cek,
             penerima=data_in.penerima,
             catatan=data_in.catatan,
-            auto_post_jurnal=data_in.auto_post_jurnal,
+            auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
     except ValueError as e:
@@ -163,7 +163,7 @@ def create_penerimaan(
             no_cek=data_in.no_cek,
             pemberi=data_in.pemberi,
             catatan=data_in.catatan,
-            auto_post_jurnal=data_in.auto_post_jurnal,
+            auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
     except ValueError as e:
@@ -257,7 +257,7 @@ def create_transfer(
             nilai_transfer=data_in.nilai_transfer,
             biaya_transfer=data_in.biaya_transfer,
             informasi=data_in.informasi,
-            auto_post_jurnal=data_in.auto_post_jurnal,
+            auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
     except ValueError as e:
