@@ -39,3 +39,6 @@ api_router.include_router(stok_kartu.router, tags=["Stok Kartu"], dependencies=[
 
 from app.api.v1.endpoints import workflow
 api_router.include_router(workflow.router, prefix="/workflow", tags=["Workflow"], dependencies=[Depends(module_access("workflow"))])
+
+from app.api.v1.endpoints import settlement
+api_router.include_router(settlement.router, prefix="/pelunasan", tags=["Pelunasan AR/AP"], dependencies=[Depends(module_access("pelunasan"))])
