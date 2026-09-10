@@ -119,6 +119,7 @@ def get_rekonsiliasi_by_id(db: Session, rekonsiliasi_id: UUID) -> Optional[Rekon
 # CREATE
 # ============================================================
 
+@atomic_accounting_write
 def create_rekonsiliasi(
     db: Session,
     kas_bank_akun_id: UUID,
@@ -185,6 +186,7 @@ def create_rekonsiliasi(
 # UPDATE HEADER
 # ============================================================
 
+@atomic_accounting_write
 def update_rekonsiliasi(
     db: Session,
     db_obj: RekonsiliasiBank,
@@ -218,6 +220,7 @@ def update_rekonsiliasi(
 # DETAIL CRUD
 # ============================================================
 
+@atomic_accounting_write
 def add_detail(
     db: Session,
     rekonsiliasi_id: UUID,
@@ -264,6 +267,7 @@ def add_detail(
     return detail
 
 
+@atomic_accounting_write
 def update_detail(
     db: Session,
     detail_id: UUID,
@@ -303,6 +307,7 @@ def update_detail(
     return detail
 
 
+@atomic_accounting_write
 def remove_detail(db: Session, detail_id: UUID) -> None:
     """Hapus detail line (hanya DRAFT)."""
     detail = db.query(RekonsiliasiBankDetail).filter(RekonsiliasiBankDetail.id == detail_id).first()
@@ -390,14 +395,13 @@ def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> 
     jurnal_penyesuaian_id = None
     if penyesuaian_items:
         try:
-            with db.begin_nested():
-                jurnal_penyesuaian_id = _create_adjustment_journal(
-                    db=db,
-                    rek=rek,
-                    items=penyesuaian_items,
-                    user_id=user_id,
-                )
-                rek.jurnal_penyesuaian_id = jurnal_penyesuaian_id
+            jurnal_penyesuaian_id = _create_adjustment_journal(
+                db=db,
+                rek=rek,
+                items=penyesuaian_items,
+                user_id=user_id,
+            )
+            rek.jurnal_penyesuaian_id = jurnal_penyesuaian_id
         except Exception as e:
             raise ValueError(f"Jurnal penyesuaian rekonsiliasi gagal: {e}") from e
 

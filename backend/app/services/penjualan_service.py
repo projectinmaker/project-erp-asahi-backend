@@ -492,64 +492,11 @@ def create_sales_invoice(
 
         # Auto-post jurnal (piutang dagang D, pendapatan penjualan K)
         # Guard: skip jika pelanggan belum punya akun piutang (Phase 3 akan ganti mekanisme COA)
-        if auto_post_jurnal and grand_total > 0:
-            if not pelanggan.akun_piutang_id:
-                raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
-            dasar_pajak = sub_total - total_diskon
-            entries = [
-                JurnalEntryItem(
-                    akun_perkiraan_id=pelanggan.akun_piutang_id,
-                    debit=grand_total,
-                    keterangan=f"INV {no_invoice} - {pelanggan.nama}",
-                ),
-                JurnalEntryItem(
-                    akun_perkiraan_id=get_akun_id_or_raise(
-                        db, KEY_PENDAPATAN_PENJUALAN, context=f"INV {no_invoice}"
-                    ),
-                    kredit=dasar_pajak,
-                    keterangan=f"Pendapatan INV {no_invoice}",
-                ),
-            ]
-            if total_ppn > 0:
-                entries.append(
-                    JurnalEntryItem(
-                        akun_perkiraan_id=get_akun_id_or_raise(
-                            db, KEY_PPN_KELUARAN, context=f"INV {no_invoice}"
-                        ),
-                        kredit=total_ppn,
-                        keterangan=f"PPN INV {no_invoice}",
-                    )
-                )
-
-            if total_biaya_tambahan > 0:
-                # Kredit: Pendapatan Angkut — mengimbangi grand_total (Debit
-                # Piutang) yang sudah termasuk biaya tambahan, supaya jurnal balance.
-                entries.append(
-                    JurnalEntryItem(
-                        akun_perkiraan_id=get_akun_id_or_raise(
-                            db, KEY_PENDAPATAN_ANGKUT, context=f"INV {no_invoice}"
-                        ),
-                        kredit=total_biaya_tambahan,
-                        keterangan=f"Biaya tambahan INV {no_invoice}",
-                    )
-                )
-
-            try:
-                with db.begin_nested():
-                    jurnal = auto_posting_jurnal(
-                        db=db,
-                        ref_module=RefModule.SALES_INVOICE,
-                        ref_no=no_invoice,
-                        entries=entries,
-                        keterangan=f"Sales Invoice {no_invoice}",
-                        ref_id=inv.id,
-                        tanggal=tanggal,
-                        created_by=created_by,
-                    )
-                    inv.jurnal_umum_id = jurnal.id
-                    inv.status = StatusPenjualan.SELESAI
-            except Exception as e:
-                raise ValueError(f"Jurnal INV gagal diposting: {e}")
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(inv)
+        if auto_post_jurnal:
+            post_sales_invoice(db, inv, created_by)
 
         db.commit()
         db.refresh(inv)
@@ -613,6 +560,8 @@ def update_sales_invoice(
         db_obj.auto_post_jurnal = auto_post_jurnal
 
     db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -773,51 +722,11 @@ def create_sales_retur(
 
         # Auto-post jurnal (D: Retur Penjualan, K: Piutang Dagang)
         # Guard: skip jika pelanggan belum punya akun piutang (Phase 3 akan ganti mekanisme COA)
-        if auto_post_jurnal and grand_total > 0:
-            if not pelanggan.akun_piutang_id:
-                raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
-            entries = [
-                # Debit: Retur Penjualan
-                JurnalEntryItem(
-                    akun_perkiraan_id=get_akun_id_or_raise(
-                        db, KEY_RETUR_PENJUALAN, context=f"Retur {no_retur}"
-                    ),
-                    debit=sub_total,
-                    keterangan=f"Retur Penjualan {no_retur}",
-                ),
-                # Kredit: Piutang Dagang
-                JurnalEntryItem(
-                    akun_perkiraan_id=pelanggan.akun_piutang_id,
-                    kredit=grand_total,
-                    keterangan=f"Kurangi piutang {no_retur}",
-                ),
-            ]
-            if total_ppn > 0:
-                entries.append(
-                    JurnalEntryItem(
-                        akun_perkiraan_id=get_akun_id_or_raise(
-                            db, KEY_PPN_KELUARAN, context=f"Retur {no_retur}"
-                        ),
-                        debit=total_ppn,
-                        keterangan=f"PPN Retur {no_retur}",
-                    )
-                )
-
-            try:
-                with db.begin_nested():
-                    jurnal = auto_posting_jurnal(
-                        db=db,
-                        ref_module=RefModule.SALES_RETUR,
-                        ref_no=no_retur,
-                        entries=entries,
-                        keterangan=f"Sales Retur {no_retur}",
-                        ref_id=retur.id,
-                        tanggal=tanggal,
-                        created_by=created_by,
-                    )
-                    retur.jurnal_umum_id = jurnal.id
-            except Exception as e:
-                raise ValueError(f"Jurnal Retur gagal diposting: {e}")
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(retur)
+        if auto_post_jurnal:
+            post_sales_retur(db, retur, created_by)
 
         db.commit()
         db.refresh(retur)
@@ -869,6 +778,8 @@ def update_sales_retur(
         db_obj.auto_post_jurnal = auto_post_jurnal
 
     db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -1164,3 +1075,130 @@ def finish_sales_retur(db: Session, db_obj: SalesRetur) -> SalesRetur:
     db.refresh(db_obj)
     logger.info(f"SalesRetur finished: {db_obj.no_retur} | stok ditambahkan")
     return db_obj
+
+
+def post_sales_invoice(db: Session, inv, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    from app.services.document_totals import validate_postable
+    validate_postable(db, inv)
+    tanggal = inv.tanggal
+    pelanggan = db.get(Pelanggan, inv.pelanggan_id)
+    no_invoice = inv.no_invoice
+    sub_total = inv.sub_total
+    total_diskon = inv.total_diskon
+    total_ppn = inv.total_ppn
+    total_biaya_tambahan = inv.total_biaya_tambahan
+    grand_total = inv.grand_total
+    if not pelanggan.akun_piutang_id:
+        raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
+    dasar_pajak = sub_total - total_diskon
+    entries = [
+        JurnalEntryItem(
+            akun_perkiraan_id=pelanggan.akun_piutang_id,
+            debit=grand_total,
+            keterangan=f"INV {no_invoice} - {pelanggan.nama}",
+        ),
+        JurnalEntryItem(
+            akun_perkiraan_id=get_akun_id_or_raise(
+                db, KEY_PENDAPATAN_PENJUALAN, context=f"INV {no_invoice}"
+            ),
+            kredit=dasar_pajak,
+            keterangan=f"Pendapatan INV {no_invoice}",
+        ),
+    ]
+    if total_ppn > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PPN_KELUARAN, context=f"INV {no_invoice}"
+                ),
+                kredit=total_ppn,
+                keterangan=f"PPN INV {no_invoice}",
+            )
+        )
+
+    if total_biaya_tambahan > 0:
+        # Kredit: Pendapatan Angkut — mengimbangi grand_total (Debit
+        # Piutang) yang sudah termasuk biaya tambahan, supaya jurnal balance.
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PENDAPATAN_ANGKUT, context=f"INV {no_invoice}"
+                ),
+                kredit=total_biaya_tambahan,
+                keterangan=f"Biaya tambahan INV {no_invoice}",
+            )
+        )
+
+    try:
+        jurnal = auto_posting_jurnal(
+            db=db,
+            ref_module=RefModule.SALES_INVOICE,
+            ref_no=no_invoice,
+            entries=entries,
+            keterangan=f"Sales Invoice {no_invoice}",
+            ref_id=inv.id,
+            tanggal=tanggal,
+            created_by=created_by,
+        )
+        inv.jurnal_umum_id = jurnal.id
+        inv.status = StatusPenjualan.SELESAI
+    except Exception as e:
+        raise ValueError(f"Jurnal INV gagal diposting: {e}")
+    return inv
+
+
+def post_sales_retur(db: Session, retur, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    from app.services.document_totals import validate_postable
+    validate_postable(db, retur)
+    tanggal = retur.tanggal
+    pelanggan = db.get(Pelanggan, retur.pelanggan_id)
+    no_retur = retur.no_retur
+    sub_total = retur.sub_total
+    total_ppn = retur.total_ppn
+    grand_total = retur.grand_total
+    if not pelanggan.akun_piutang_id:
+        raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
+    entries = [
+        # Debit: Retur Penjualan
+        JurnalEntryItem(
+            akun_perkiraan_id=get_akun_id_or_raise(
+                db, KEY_RETUR_PENJUALAN, context=f"Retur {no_retur}"
+            ),
+            debit=grand_total - total_ppn,
+            keterangan=f"Retur Penjualan {no_retur}",
+        ),
+        # Kredit: Piutang Dagang
+        JurnalEntryItem(
+            akun_perkiraan_id=pelanggan.akun_piutang_id,
+            kredit=grand_total,
+            keterangan=f"Kurangi piutang {no_retur}",
+        ),
+    ]
+    if total_ppn > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PPN_KELUARAN, context=f"Retur {no_retur}"
+                ),
+                debit=total_ppn,
+                keterangan=f"PPN Retur {no_retur}",
+            )
+        )
+
+    try:
+        jurnal = auto_posting_jurnal(
+            db=db,
+            ref_module=RefModule.SALES_RETUR,
+            ref_no=no_retur,
+            entries=entries,
+            keterangan=f"Sales Retur {no_retur}",
+            ref_id=retur.id,
+            tanggal=tanggal,
+            created_by=created_by,
+        )
+        retur.jurnal_umum_id = jurnal.id
+    except Exception as e:
+        raise ValueError(f"Jurnal Retur gagal diposting: {e}")
+    return retur

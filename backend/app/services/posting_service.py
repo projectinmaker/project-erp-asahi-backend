@@ -90,6 +90,8 @@ def auto_posting_jurnal(
         JurnalUmum object (flushed, belum committed — caller harus commit)
     """
     try:
+        from app.services.accounting_control import accounting_lock
+        accounting_lock(db)
         tanggal = tanggal or datetime.now(timezone.utc)
         # Validasi: cek periode tidak ditutup (inline query untuk menghindari circular import)
         if tanggal:
@@ -108,31 +110,7 @@ def auto_posting_jurnal(
                     f"Tidak bisa posting jurnal ({ref_no})."
                 )
 
-        # Validasi: pastikan entries tidak kosong
-        if len(entries) < 2:
-            raise ValueError("entries tidak boleh kosong, minimal 2 baris (debit & kredit)")
-
-        for entry in entries:
-            for field in ("debit", "kredit"):
-                value = Decimal(str(getattr(entry, field)))
-                if not value.is_finite() or value < 0:
-                    raise ValueError("Nilai debit/kredit harus angka valid dan tidak negatif")
-                setattr(entry, field, value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-            if (entry.debit > 0) == (entry.kredit > 0):
-                raise ValueError("Setiap baris jurnal harus berisi debit atau kredit, bukan keduanya/nol")
-            account = db.get(AkunPerkiraan, entry.akun_perkiraan_id)
-            if account is None or account.tingkat != TingkatAkun.DETAIL:
-                raise ValueError("Jurnal hanya boleh memakai akun DETAIL yang tersedia")
-            if not allow_inactive_accounts and account.status != "AKTIF":
-                raise ValueError(f"Akun {account.kode} tidak aktif")
-
-        # Validasi: pastikan total debit == total kredit (balanced)
-        total_debit = sum(e.debit for e in entries)
-        total_kredit = sum(e.kredit for e in entries)
-        if total_debit != total_kredit:
-            raise ValueError(
-                f"Jurnal tidak balance: total debit={total_debit}, total_kredit={total_kredit}"
-            )
+        total_debit, total_kredit = validate_entries(db, entries, allow_inactive_accounts)
 
         # Default tanggal
         if tanggal is None:
@@ -230,3 +208,33 @@ def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = 
     reversal.reversal_of_id = original.id
     db.flush()
     return reversal
+
+
+def validate_entries(db, entries, allow_inactive_accounts=False):
+    # Validasi: pastikan entries tidak kosong
+    if len(entries) < 2:
+        raise ValueError("entries tidak boleh kosong, minimal 2 baris (debit & kredit)")
+
+    for entry in entries:
+        for field in ("debit", "kredit"):
+            value = Decimal(str(getattr(entry, field)))
+            if not value.is_finite() or value < 0:
+                raise ValueError("Nilai debit/kredit harus angka valid dan tidak negatif")
+            setattr(entry, field, value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        if (entry.debit > 0) == (entry.kredit > 0):
+            raise ValueError("Setiap baris jurnal harus berisi debit atau kredit, bukan keduanya/nol")
+        account = db.get(AkunPerkiraan, entry.akun_perkiraan_id)
+        if account is None or account.tingkat != TingkatAkun.DETAIL:
+            raise ValueError("Jurnal hanya boleh memakai akun DETAIL yang tersedia")
+        if not allow_inactive_accounts and account.status != "AKTIF":
+            raise ValueError(f"Akun {account.kode} tidak aktif")
+
+    # Validasi: pastikan total debit == total kredit (balanced)
+    total_debit = sum(e.debit for e in entries)
+    total_kredit = sum(e.kredit for e in entries)
+    if total_debit != total_kredit:
+        raise ValueError(
+            f"Jurnal tidak balance: total debit={total_debit}, total_kredit={total_kredit}"
+        )
+
+    return total_debit, total_kredit

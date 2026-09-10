@@ -152,35 +152,11 @@ def create_pembayaran(
             db.add(detail)
 
         # Auto-post jurnal
-        if auto_post_jurnal and total_nilai > 0:
-            entries = [
-                # Kredit: Kas/Bank
-                JurnalEntryItem(
-                    akun_perkiraan_id=kas_bank.akun_perkiraan_id,
-                    kredit=total_nilai,
-                    keterangan=f"Pembayaran {no_bukti}",
-                ),
-            ]
-            # Debit: Akun-akun dari rincian
-            for r in rincian_data:
-                entries.append(
-                    JurnalEntryItem(
-                        akun_perkiraan_id=r["akun_perkiraan_id"],
-                        debit=Decimal(str(r["nilai"])),
-                    )
-                )
-
-            jurnal = auto_posting_jurnal(
-                db=db,
-                ref_module=RefModule.PEMBAYARAN,
-                ref_no=no_bukti,
-                entries=entries,
-                keterangan=f"Pembayaran Kas {no_bukti}",
-                ref_id=pembayaran.id,
-                tanggal=tanggal,
-                created_by=created_by,
-            )
-            pembayaran.jurnal_umum_id = jurnal.id
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(pembayaran)
+        if auto_post_jurnal:
+            post_pembayaran(db, pembayaran, created_by)
 
         db.commit()
         db.refresh(pembayaran)
@@ -223,6 +199,8 @@ def update_pembayaran(
         db_obj.auto_post_jurnal = auto_post_jurnal
 
     db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -352,35 +330,11 @@ def create_penerimaan(
             )
             db.add(detail)
 
-        if auto_post_jurnal and total_nilai > 0:
-            entries = [
-                # Debit: Kas/Bank
-                JurnalEntryItem(
-                    akun_perkiraan_id=kas_bank.akun_perkiraan_id,
-                    debit=total_nilai,
-                    keterangan=f"Penerimaan {no_bukti}",
-                ),
-            ]
-            # Kredit: Akun-akun dari rincian
-            for r in rincian_data:
-                entries.append(
-                    JurnalEntryItem(
-                        akun_perkiraan_id=r["akun_perkiraan_id"],
-                        kredit=Decimal(str(r["nilai"])),
-                    )
-                )
-
-            jurnal = auto_posting_jurnal(
-                db=db,
-                ref_module=RefModule.PENERIMAAN,
-                ref_no=no_bukti,
-                entries=entries,
-                keterangan=f"Penerimaan Kas {no_bukti}",
-                ref_id=penerimaan.id,
-                tanggal=tanggal,
-                created_by=created_by,
-            )
-            penerimaan.jurnal_umum_id = jurnal.id
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(penerimaan)
+        if auto_post_jurnal:
+            post_penerimaan(db, penerimaan, created_by)
 
         db.commit()
         db.refresh(penerimaan)
@@ -423,6 +377,8 @@ def update_penerimaan(
         db_obj.auto_post_jurnal = auto_post_jurnal
 
     db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -542,53 +498,11 @@ def create_transfer(
         db.flush()
 
         # Auto-post jurnal
-        if auto_post_jurnal and nilai_transfer > 0:
-            entries = [
-                # Debit: Kas/Bank Tujuan
-                JurnalEntryItem(
-                    akun_perkiraan_id=ke_kb.akun_perkiraan_id,
-                    debit=nilai_transfer,
-                    keterangan=f"Transfer ke {ke_kb.nama}",
-                ),
-                # Kredit: Kas/Bank Asal
-                JurnalEntryItem(
-                    akun_perkiraan_id=dari_kb.akun_perkiraan_id,
-                    kredit=nilai_transfer,
-                    keterangan=f"Transfer dari {dari_kb.nama}",
-                ),
-            ]
-
-            # Jika ada biaya transfer
-            if biaya_transfer and biaya_transfer > 0:
-                # D: Beban Transfer Bank (dari setting_akun) — K: Kas/Bank Asal (berkurang)
-                entries.append(
-                    JurnalEntryItem(
-                        akun_perkiraan_id=get_akun_id_or_raise(
-                            db, KEY_BEBAN_TRANSFER_BANK, context=f"Transfer {no_transfer}"
-                        ),
-                        debit=biaya_transfer,
-                        keterangan=f"Biaya transfer {no_transfer}",
-                    )
-                )
-                entries.append(
-                    JurnalEntryItem(
-                        akun_perkiraan_id=dari_kb.akun_perkiraan_id,
-                        kredit=biaya_transfer,
-                        keterangan=f"Biaya transfer {no_transfer}",
-                    )
-                )
-
-            jurnal = auto_posting_jurnal(
-                db=db,
-                ref_module=RefModule.TRANSFER_BANK,
-                ref_no=no_transfer,
-                entries=entries,
-                keterangan=f"Transfer Bank {no_transfer}",
-                ref_id=transfer.id,
-                tanggal=tanggal,
-                created_by=created_by,
-            )
-            transfer.jurnal_umum_id = jurnal.id
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(transfer)
+        if auto_post_jurnal:
+            post_transfer(db, transfer, created_by)
 
         db.commit()
         db.refresh(transfer)
@@ -635,6 +549,8 @@ def update_transfer(
         db_obj.auto_post_jurnal = auto_post_jurnal
 
     db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -653,3 +569,144 @@ def cancel_transfer(db: Session, db_obj: TransferBank, user_id: Optional[UUID] =
     db.refresh(db_obj)
     logger.info(f"TransferBank cancelled: {db_obj.no_transfer}")
     return db_obj
+
+def post_pembayaran(db: Session, pembayaran, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    from app.services.document_totals import validate_postable
+    validate_postable(db, pembayaran)
+    tanggal = pembayaran.tanggal
+    kas_bank = db.get(KasBankAkun, pembayaran.kas_bank_id)
+    rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in pembayaran.rincian]
+    no_bukti = pembayaran.no_bukti
+    total_nilai = pembayaran.total_nilai
+    entries = [
+        # Kredit: Kas/Bank
+        JurnalEntryItem(
+            akun_perkiraan_id=kas_bank.akun_perkiraan_id,
+            kredit=total_nilai,
+            keterangan=f"Pembayaran {no_bukti}",
+        ),
+    ]
+    # Debit: Akun-akun dari rincian
+    for r in rincian_data:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=r["akun_perkiraan_id"],
+                debit=Decimal(str(r["nilai"])),
+            )
+        )
+
+    jurnal = auto_posting_jurnal(
+        db=db,
+        ref_module=RefModule.PEMBAYARAN,
+        ref_no=no_bukti,
+        entries=entries,
+        keterangan=f"Pembayaran Kas {no_bukti}",
+        ref_id=pembayaran.id,
+        tanggal=tanggal,
+        created_by=created_by,
+    )
+    pembayaran.jurnal_umum_id = jurnal.id
+    pembayaran.status = StatusTransaksi.SELESAI
+    return pembayaran
+
+
+def post_penerimaan(db: Session, penerimaan, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    from app.services.document_totals import validate_postable
+    validate_postable(db, penerimaan)
+    tanggal = penerimaan.tanggal
+    kas_bank = db.get(KasBankAkun, penerimaan.kas_bank_id)
+    rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in penerimaan.rincian]
+    no_bukti = penerimaan.no_bukti
+    total_nilai = penerimaan.total_nilai
+    entries = [
+        # Debit: Kas/Bank
+        JurnalEntryItem(
+            akun_perkiraan_id=kas_bank.akun_perkiraan_id,
+            debit=total_nilai,
+            keterangan=f"Penerimaan {no_bukti}",
+        ),
+    ]
+    # Kredit: Akun-akun dari rincian
+    for r in rincian_data:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=r["akun_perkiraan_id"],
+                kredit=Decimal(str(r["nilai"])),
+            )
+        )
+
+    jurnal = auto_posting_jurnal(
+        db=db,
+        ref_module=RefModule.PENERIMAAN,
+        ref_no=no_bukti,
+        entries=entries,
+        keterangan=f"Penerimaan Kas {no_bukti}",
+        ref_id=penerimaan.id,
+        tanggal=tanggal,
+        created_by=created_by,
+    )
+    penerimaan.jurnal_umum_id = jurnal.id
+    penerimaan.status = StatusTransaksi.SELESAI
+    return penerimaan
+
+
+def post_transfer(db: Session, transfer, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    from app.services.document_totals import validate_postable
+    validate_postable(db, transfer)
+    tanggal = transfer.tanggal
+    dari_kb = db.get(KasBankAkun, transfer.dari_kas_bank_id)
+    ke_kb = db.get(KasBankAkun, transfer.ke_kas_bank_id)
+    no_transfer = transfer.no_transfer
+    nilai_transfer = transfer.nilai_transfer
+    biaya_transfer = transfer.biaya_transfer
+    entries = [
+        # Debit: Kas/Bank Tujuan
+        JurnalEntryItem(
+            akun_perkiraan_id=ke_kb.akun_perkiraan_id,
+            debit=nilai_transfer,
+            keterangan=f"Transfer ke {ke_kb.nama}",
+        ),
+        # Kredit: Kas/Bank Asal
+        JurnalEntryItem(
+            akun_perkiraan_id=dari_kb.akun_perkiraan_id,
+            kredit=nilai_transfer,
+            keterangan=f"Transfer dari {dari_kb.nama}",
+        ),
+    ]
+
+    # Jika ada biaya transfer
+    if biaya_transfer and biaya_transfer > 0:
+        # D: Beban Transfer Bank (dari setting_akun) — K: Kas/Bank Asal (berkurang)
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_BEBAN_TRANSFER_BANK, context=f"Transfer {no_transfer}"
+                ),
+                debit=biaya_transfer,
+                keterangan=f"Biaya transfer {no_transfer}",
+            )
+        )
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=dari_kb.akun_perkiraan_id,
+                kredit=biaya_transfer,
+                keterangan=f"Biaya transfer {no_transfer}",
+            )
+        )
+
+    jurnal = auto_posting_jurnal(
+        db=db,
+        ref_module=RefModule.TRANSFER_BANK,
+        ref_no=no_transfer,
+        entries=entries,
+        keterangan=f"Transfer Bank {no_transfer}",
+        ref_id=transfer.id,
+        tanggal=tanggal,
+        created_by=created_by,
+    )
+    transfer.jurnal_umum_id = jurnal.id
+    transfer.status = StatusTransaksi.SELESAI
+    return transfer
