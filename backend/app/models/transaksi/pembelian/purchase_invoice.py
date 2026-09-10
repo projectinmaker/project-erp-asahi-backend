@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy import Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -12,6 +12,10 @@ class PurchaseInvoice(BaseModel, BaseMixin):
     no_form = Column(String(30), unique=True, nullable=False, index=True)
     no_faktur = Column(String(50), nullable=False)
     tanggal = Column(DateTime(timezone=True), nullable=False)
+    tanggal_jatuh_tempo = Column(Date, nullable=True)
+    akun_kontrol_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=True)
+    syarat_bayar_id = Column(UUID(as_uuid=True), ForeignKey("syarat_bayar.id"), nullable=True)
+    syarat_bayar = relationship("SyaratBayar")
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=False)
     alamat = Column(Text, nullable=True)
     diskon_global = Column(Numeric(5, 2), default=0, nullable=True)

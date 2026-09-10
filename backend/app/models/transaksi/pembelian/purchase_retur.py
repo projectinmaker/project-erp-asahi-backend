@@ -24,6 +24,9 @@ class PurchaseRetur(BaseModel, BaseMixin):
     status = Column(SQLEnum(StatusPenjualan), default=StatusPenjualan.DRAFT, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
 
+    purchase_invoice_id = Column(UUID(as_uuid=True), ForeignKey("purchase_invoice.id"), nullable=True)
+    purchase_invoice = relationship("PurchaseInvoice")
+
     # Relationships
     purchase_order = relationship("PurchaseOrder", back_populates="retur")
     supplier = relationship("Supplier")
