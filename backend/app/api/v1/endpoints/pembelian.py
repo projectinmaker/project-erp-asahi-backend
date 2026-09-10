@@ -163,6 +163,8 @@ def create_purchase_invoice(
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         return svc.create_purchase_invoice(
             db=db,
+            tanggal_jatuh_tempo=data_in.tanggal_jatuh_tempo,
+            syarat_bayar_id=data_in.syarat_bayar_id,
             tanggal=data_in.tanggal,
             supplier_id=data_in.supplier_id,
             no_faktur=data_in.no_faktur,
@@ -263,6 +265,7 @@ def create_purchase_retur(
         details_data = [d.model_dump() for d in data_in.details]
         return svc.create_purchase_retur(
             db=db,
+            purchase_invoice_id=data_in.purchase_invoice_id,
             tanggal=data_in.tanggal,
             purchase_order_id=data_in.purchase_order_id,
             supplier_id=data_in.supplier_id,

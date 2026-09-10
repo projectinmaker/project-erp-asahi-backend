@@ -169,6 +169,7 @@ def create_sales_invoice(
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         return svc.create_sales_invoice(
             db=db,
+            tanggal_jatuh_tempo=data_in.tanggal_jatuh_tempo,
             tanggal=data_in.tanggal,
             pelanggan_id=data_in.pelanggan_id,
             details_data=details_data,

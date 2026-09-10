@@ -101,7 +101,10 @@ def update_pembayaran(
         raise HTTPException(status_code=400, detail="Pembayaran sudah dibatalkan, tidak bisa diupdate")
 
     update_data = data_in.model_dump(exclude_unset=True)
-    return svc.update_pembayaran(db, db_obj=item, **update_data)
+    try:
+        return svc.update_pembayaran(db, db_obj=item, **update_data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.post("/pembayaran/{pembayaran_id}/cancel", response_model=PembayaranKasResponse)
@@ -198,7 +201,10 @@ def update_penerimaan(
         raise HTTPException(status_code=400, detail="Penerimaan sudah dibatalkan, tidak bisa diupdate")
 
     update_data = data_in.model_dump(exclude_unset=True)
-    return svc.update_penerimaan(db, db_obj=item, **update_data)
+    try:
+        return svc.update_penerimaan(db, db_obj=item, **update_data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.post("/penerimaan/{penerimaan_id}/cancel", response_model=PenerimaanKasResponse)
@@ -292,7 +298,10 @@ def update_transfer(
         raise HTTPException(status_code=400, detail="Transfer sudah dibatalkan, tidak bisa diupdate")
 
     update_data = data_in.model_dump(exclude_unset=True)
-    return svc.update_transfer(db, db_obj=item, **update_data)
+    try:
+        return svc.update_transfer(db, db_obj=item, **update_data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.post("/transfer/{transfer_id}/cancel", response_model=TransferBankResponse)
