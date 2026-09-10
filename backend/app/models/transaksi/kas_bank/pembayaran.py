@@ -28,6 +28,9 @@ class PembayaranKas(BaseModel, BaseMixin):
     status = Column(SQLEnum(StatusTransaksi), default=StatusTransaksi.DRAFT, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
 
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=True)
+    alokasi = relationship("PaymentAllocation", back_populates="pembayaran", cascade="all, delete-orphan")
+
     # Relationships
     kas_bank = relationship("KasBankAkun")
     jurnal = relationship("JurnalUmum")
