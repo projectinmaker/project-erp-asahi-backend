@@ -18,7 +18,7 @@ class PemindahanBarang(BaseModel, BaseMixin):
     no_pemindahan = Column(String(30), unique=True, nullable=False, index=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     proses = Column(SQLEnum(ProsesPemindahan), nullable=False)
-    dari_gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=False)
+    dari_gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)
     ke_gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=False)
     barang_id = Column(UUID(as_uuid=True), ForeignKey("barang.id"), nullable=False)
     qty = Column(Integer, default=0, nullable=False)

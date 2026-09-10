@@ -16,6 +16,7 @@ class PenyesuaianStok(BaseModel, BaseMixin):
     __tablename__ = "penyesuaian_stok"
 
     no_adj = Column(String(30), unique=True, nullable=False, index=True)
+    gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     barang_id = Column(UUID(as_uuid=True), ForeignKey("barang.id"), nullable=False)
     tipe = Column(SQLEnum(TipePenyesuaian), nullable=False)
