@@ -611,6 +611,7 @@ def create_purchase_retur(
     auto_post_jurnal: bool = True,
     created_by: Optional[UUID] = None,
     purchase_invoice_id=None,
+    gudang_id: Optional[UUID] = None,
 ) -> PurchaseRetur:
     """Buat PurchaseRetur baru beserta detail.
     Jurnal: D - Utang Dagang, K - Retur Pembelian / Persediaan
@@ -636,6 +637,7 @@ def create_purchase_retur(
 
         # Buat header
         retur = PurchaseRetur(
+            gudang_id=gudang_id,
             no_retur=no_retur,
             tanggal=tanggal,
             purchase_order_id=purchase_order_id,
@@ -701,9 +703,12 @@ def update_purchase_retur(
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
     purchase_invoice_id=None,
+    gudang_id: Optional[UUID] = None,
 ) -> PurchaseRetur:
     """Update data purchase retur (hanya field header)."""
     require_unposted(db_obj)
+    if gudang_id is not None:
+        db_obj.gudang_id = gudang_id
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Purchase Retur dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -820,6 +825,7 @@ def create_penerimaan(
     alamat: Optional[str] = None,
     keterangan: Optional[str] = None,
     created_by: Optional[UUID] = None,
+    gudang_id: Optional[UUID] = None,
 ) -> PenerimaanBarang:
     """Buat PenerimaanBarang baru beserta detail.
     Tidak ada jurnal posting (penerimaan tidak mengubah keuangan langsung).
@@ -838,6 +844,7 @@ def create_penerimaan(
 
         # Buat header
         pb = PenerimaanBarang(
+            gudang_id=gudang_id,
             no_form=no_form,
             tanggal=tanggal,
             purchase_order_id=purchase_order_id,
@@ -854,6 +861,8 @@ def create_penerimaan(
         for d in details_data:
             detail = PenerimaanBarangDetail(
                 penerimaan_barang_id=pb.id,
+                harga_perolehan=d.get("harga_perolehan"),
+                tanggal_kedaluwarsa=d.get("tanggal_kedaluwarsa"),
                 barang_id=d["barang_id"],
                 qty=int(d["qty"]),
                 satuan_id=d["satuan_id"],
@@ -880,9 +889,12 @@ def update_penerimaan(
     supplier_id: Optional[UUID] = None,
     alamat: Optional[str] = None,
     keterangan: Optional[str] = None,
+    gudang_id: Optional[UUID] = None,
 ) -> PenerimaanBarang:
     """Update data penerimaan barang (hanya field header)."""
     require_unposted(db_obj)
+    if gudang_id is not None:
+        db_obj.gudang_id = gudang_id
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Penerimaan Barang dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -929,6 +941,15 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
 
     # Tambah stok untuk setiap detail barang yang diterima
     for detail in db_obj.details:
+        cost = detail.harga_perolehan
+        if cost is None:
+            lines = [r for r in db_obj.purchase_order.details if r.barang_id == detail.barang_id]
+            if len(lines) != 1:
+                raise ValueError('Isi hargaPerolehan; harga dari PO tidak dapat ditentukan secara unik')
+            cost = lines[0].harga * (Decimal(100) - lines[0].diskon) / Decimal(100)
+        if cost < 0:
+            raise ValueError('Harga perolehan tidak boleh negatif')
+        detail.harga_perolehan = cost
         update_stok_barang(
             db=db,
             barang_id=detail.barang_id,
@@ -938,6 +959,9 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             ref_module=RefModule.PURCHASE_INVOICE,
             ref_no=db_obj.no_form,
             ref_id=db_obj.id,
+            gudang_id=db_obj.gudang_id,
+            harga_satuan=cost,
+            tanggal_kedaluwarsa=detail.tanggal_kedaluwarsa,
         )
 
     db_obj.status = StatusPenjualan.SELESAI
@@ -956,9 +980,22 @@ def finish_purchase_retur(db: Session, db_obj: PurchaseRetur) -> PurchaseRetur:
     if db_obj.status == StatusPenjualan.SELESAI:
         raise ValueError("Purchase Retur sudah selesai")
 
+    if not db_obj.purchase_invoice_id:
+        raise ValueError('Retur stok memerlukan purchaseInvoiceId')
+    prior_returns = db.query(PurchaseRetur).filter_by(purchase_invoice_id=db_obj.purchase_invoice_id, status=StatusPenjualan.SELESAI).all()
+    quantities = {}
+    for row in db_obj.details:
+        quantities[row.barang_id] = quantities.get(row.barang_id, 0) + row.qty
+    for item_id, quantity in quantities.items():
+        purchased = sum(row.qty for row in db_obj.purchase_invoice.details if row.barang_id == item_id)
+        returned = sum(row.qty for retur in prior_returns for row in retur.details if row.barang_id == item_id)
+        if quantity <= 0 or quantity + returned > purchased:
+            raise ValueError('Qty retur melebihi qty invoice pembelian yang belum diretur')
+
     # Kurangi stok untuk setiap detail barang yang dikembalikan ke supplier
+    stock_entries = []
     for detail in db_obj.details:
-        update_stok_barang(
+        movement = update_stok_barang(
             db=db,
             barang_id=detail.barang_id,
             qty_change=detail.qty,
@@ -967,7 +1004,17 @@ def finish_purchase_retur(db: Session, db_obj: PurchaseRetur) -> PurchaseRetur:
             ref_module=RefModule.PURCHASE_RETUR,
             ref_no=db_obj.no_retur,
             ref_id=db_obj.id,
+            gudang_id=db_obj.gudang_id,
         )
+
+        from app.services.persediaan_service import _get_akun_persediaan_id
+        value = movement['total_nilai']
+        if value:
+            stock_entries += [JurnalEntryItem(get_akun_id_or_raise(db, KEY_RETUR_PEMBELIAN, context=db_obj.no_retur), debit=value),
+                              JurnalEntryItem(_get_akun_persediaan_id(db, detail.barang), kredit=value)]
+    if stock_entries:
+        auto_posting_jurnal(db, RefModule.PURCHASE_RETUR, db_obj.no_retur, stock_entries,
+            ref_id=db_obj.id, tanggal=db_obj.tanggal, created_by=db_obj.created_by, tipe_transaksi='RETUR_STOCK')
 
     db_obj.status = StatusPenjualan.SELESAI
     db.add(db_obj)

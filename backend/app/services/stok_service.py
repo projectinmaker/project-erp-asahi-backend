@@ -10,137 +10,48 @@ from app.models.transaksi.stok_mutasi import StokMutasi, TipeMutasiStok
 from app.models.transaksi.jurnal import RefModule
 
 
-def update_stok_barang(
-    db: Session,
-    barang_id: UUID,
-    qty_change: int,
-    mode: str = "KURANGI",
-    deskripsi: str = "",
-    ref_module: Optional[RefModule] = None,
-    ref_no: Optional[str] = None,
-    ref_id: Optional[UUID] = None,
-    gudang_id: Optional[UUID] = None,
-    harga_satuan: Optional[Decimal] = None,
-) -> dict:
-    """Update stok barang (tambah/kurangi), catat mutasi + valuasi.
+from datetime import datetime, timezone
+from app.services.accounting_control import atomic_accounting_write
 
-    Parameter:
-        db: SQLAlchemy Session
-        barang_id: UUID barang yang stoknya diupdate
-        qty_change: Jumlah perubahan (harus > 0)
-        mode: "TAMBAH" atau "KURANGI"
-        deskripsi: Keterangan perubahan (untuk log)
-        ref_module: Enum RefModule (opsional, untuk StokMutasi)
-        ref_no: Nomor dokumen sumber (opsional)
-        ref_id: UUID dokumen sumber (opsional)
-        gudang_id: UUID gudang (opsional)
-        harga_satuan: Harga satuan untuk valuasi (opsional, default: barang.harga_pokok)
 
-    Return:
-        dict {
-            'barang': Barang,
-            'mutasi': StokMutasi,
-            'harga_satuan': Decimal,
-            'total_nilai': Decimal,
-            'saldo_nilai': Decimal,
-        }
-
-    Raise:
-        ValueError: jika barang tidak ditemukan atau stok tidak mencukupi
-    """
-    barang = db.query(Barang).filter(Barang.id == barang_id).first()
+@atomic_accounting_write
+def update_stok_barang(db, barang_id, qty_change, mode="KURANGI", deskripsi="", ref_module=None,
+                       ref_no=None, ref_id=None, gudang_id=None, harga_satuan=None, tanggal=None,
+                       tanggal_kedaluwarsa=None, incoming_parts=None, exact_total=None):
+    from app.services import warehouse_service as wh
+    from app.models.transaksi.stock_balance import StockBalance
+    from sqlalchemy import func
+    barang = db.get(Barang, barang_id)
     if not barang:
-        raise ValueError(f"Barang dengan ID {barang_id} tidak ditemukan")
-
-    if qty_change <= 0:
-        raise ValueError("qty_change harus lebih dari 0")
-
-    is_masuk = (mode == "TAMBAH")
-    old_stok = barang.stok
-
-    # Validasi stok cukup untuk KELUAR
-    if not is_masuk and barang.stok < qty_change:
-        raise ValueError(
-            f"Stok tidak mencukupi: {barang.nama} (stok={barang.stok}, diminta={qty_change})"
-        )
-
-    # ---- VALUASI (SEBELUM stok diubah) ----
-    if harga_satuan is None:
-        harga_satuan = Decimal(str(barang.harga_pokok or 0))
-    else:
-        harga_satuan = Decimal(str(harga_satuan))
-
-    try:
-        from app.services.stok_kartu_service import proses_stok_masuk, proses_stok_keluar
-
-        if is_masuk:
-            val_result = proses_stok_masuk(
-                db=db,
-                barang=barang,
-                qty=qty_change,
-                harga_satuan=harga_satuan,
-                gudang_id=gudang_id,
-                ref_module=ref_module,
-                ref_no=ref_no,
-                ref_id=ref_id,
-            )
-        else:
-            val_result = proses_stok_keluar(
-                db=db,
-                barang=barang,
-                qty=qty_change,
-                gudang_id=gudang_id,
-            )
-            # Untuk KELUAR, gunakan harga dari valuasi engine
-            harga_satuan = val_result.get('harga_satuan', harga_satuan)
-
-        total_nilai = val_result.get('total_nilai', qty_change * harga_satuan)
-        saldo_nilai_sebelum = val_result.get('saldo_nilai_sebelum', Decimal('0'))
-        saldo_nilai_sesudah = val_result.get('saldo_nilai_sesudah', Decimal('0'))
-
-    except Exception as e:
-        raise ValueError(f"Valuasi stok gagal; transaksi dibatalkan: {e}") from e
-
-    # ---- UBAH STOK (SETELAH valuasi) ----
-    if is_masuk:
-        barang.stok += qty_change
-        tipe_mutasi = _resolve_tipe_mutasi(ref_module, is_masuk=True)
-    else:
-        barang.stok -= qty_change
-        tipe_mutasi = _resolve_tipe_mutasi(ref_module, is_masuk=False)
-
-    # ---- CATAT STOK MUTASI ----
-    mutasi = StokMutasi(
-        barang_id=barang_id,
-        tipe=tipe_mutasi,
-        qty=qty_change,
-        saldo_sebelum=old_stok,
-        saldo_sesudah=barang.stok,
-        ref_module=ref_module,
-        ref_no=ref_no,
-        ref_id=ref_id,
-        gudang_id=gudang_id,
-        keterangan=deskripsi,
-        # Valuasi columns
-        harga_satuan=harga_satuan,
-        total_nilai=total_nilai,
-        saldo_nilai_sebelum=saldo_nilai_sebelum,
-        saldo_nilai_sesudah=saldo_nilai_sesudah,
-    )
+        raise ValueError('Barang tidak ditemukan')
+    if mode not in ('TAMBAH', 'KURANGI') or qty_change <= 0 or int(qty_change) != qty_change:
+        raise ValueError('Mode/kuantitas stok tidak valid')
+    incoming = mode == 'TAMBAH'
+    old = barang.stok
+    val = wh.value_move(db, barang, qty_change, incoming, gudang_id,
+        harga_satuan if harga_satuan is not None else barang.harga_pokok,
+        tanggal or datetime.now(timezone.utc), ref_module, ref_no, ref_id, tanggal_kedaluwarsa, incoming_parts)
+    if exact_total is not None:
+        if not incoming or wh.method(barang) != 'AVERAGE':
+            raise ValueError('Nilai transfer hanya untuk penerimaan average')
+        pos = db.query(StockBalance).filter_by(barang_id=barang.id, location_key=str(gudang_id) if gudang_id else 'UNASSIGNED').one()
+        pos.nilai += exact_total - val['total_nilai']
+        val['total_nilai'] = exact_total
+        val['saldo_nilai_sesudah'] = pos.nilai
+    barang.stok += qty_change if incoming else -qty_change
+    db.flush()
+    total = db.query(func.sum(StockBalance.nilai)).filter_by(barang_id=barang.id).scalar() or Decimal(0)
+    if barang.stok:
+        barang.harga_pokok = wh.money(total / barang.stok)
+    mutasi = StokMutasi(barang_id=barang_id, tipe=_resolve_tipe_mutasi(ref_module, incoming), qty=qty_change,
+        saldo_sebelum=old, saldo_sesudah=barang.stok, ref_module=ref_module, ref_no=ref_no, ref_id=ref_id,
+        gudang_id=gudang_id, keterangan=deskripsi, harga_satuan=val['harga_satuan'], total_nilai=val['total_nilai'],
+        saldo_nilai_sebelum=val['saldo_nilai_sebelum'], saldo_nilai_sesudah=val['saldo_nilai_sesudah'],
+        warehouse_qty_before=val['warehouse_qty_before'], warehouse_qty_after=val['warehouse_qty_after'], global_value_after=total)
+    mutasi.cost_parts = [{key: value.isoformat() if hasattr(value, 'isoformat') else value for key, value in part.items()} for part in val['parts']]
     db.add(mutasi)
-
-    logger.info(
-        f"Stok updated: {barang.kode} ({barang.nama}) | "
-        f"{old_stok} -> {barang.stok} | {mode} {qty_change} @ {harga_satuan} | {deskripsi}"
-    )
-
-    return {
-        'barang': barang,
-        'mutasi': mutasi,
-        'harga_satuan': harga_satuan,
-        'total_nilai': total_nilai,
-        'saldo_nilai': saldo_nilai_sesudah,
-    }
+    db.flush()
+    return dict(val, barang=barang, mutasi=mutasi, saldo_nilai=val['saldo_nilai_sesudah'])
 
 
 def update_stok_barang_legacy(
@@ -205,6 +116,10 @@ def hitung_nilai_stok(
     Untuk AVERAGE: harga_pokok * stok.
     Untuk FIFO/FEFO: jumlah dari semua active layers.
     """
+    from app.models.transaksi.stock_balance import StockBalance
+    from sqlalchemy import func
+    if db.query(StockBalance).filter_by(barang_id=barang_id).first():
+        return db.query(func.sum(StockBalance.nilai)).filter_by(barang_id=barang_id).scalar() or Decimal(0)
     barang = db.query(Barang).filter(Barang.id == barang_id).first()
     if not barang:
         raise ValueError(f"Barang dengan ID {barang_id} tidak ditemukan")

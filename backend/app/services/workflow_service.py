@@ -2,7 +2,7 @@
 from fastapi import HTTPException
 from app.models import (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
-    TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
+    AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
     PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum,
 )
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent
@@ -12,7 +12,7 @@ FINANCE = {'ADMINISTRATOR', 'MANAJER_KEUANGAN', 'STAFF_AKUNTANSI'}
 APPROVERS = {'ADMINISTRATOR', 'MANAJER_KEUANGAN'}
 MODELS = {m.__tablename__: m for m in (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
-    TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
+    AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
     PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum,
 )}
 SALES = {'sales_order', 'sales_invoice', 'sales_retur'}
@@ -56,7 +56,7 @@ def effective_state(obj, wf=None):
         return 'CANCELLED'
     if status in ('BATAL', 'DIBATALKAN'):
         return 'CANCELLED'
-    if obj.__tablename__ == 'jurnal_umum' and status == 'POSTED':
+    if obj.__tablename__ in ('jurnal_umum', 'asset_event') and status == 'POSTED':
         return 'POSTED'
     if obj.__tablename__ in STOCK and status in ('SELESAI', 'DISETUJUI'):
         return 'EXECUTED'
@@ -137,7 +137,10 @@ def transition(db, document_type, document_id, action, user, expected_version, r
             raise HTTPException(403, 'Approval memerlukan manajer/admin lain, bukan pembuat atau pengaju dokumen')
         raise HTTPException(409, 'Aksi tidak diizinkan untuk role atau status dokumen saat ini')
     if action == 'submit':
-        if document_type in FINANCIAL - {'jurnal_umum'}:
+        if document_type == 'asset_event':
+            from app.services.asset_cycle_service import prepare
+            prepare(db, obj)
+        if document_type in FINANCIAL - {'jurnal_umum', 'asset_event'}:
             from app.services.document_totals import refresh_totals
             refresh_totals(obj)
             if document_type in ('penerimaan_kas', 'pembayaran_kas'):
@@ -173,6 +176,9 @@ def transition(db, document_type, document_id, action, user, expected_version, r
 
 
 def post_existing(db, obj, actor_id):
+    if obj.__tablename__ == "asset_event":
+        from app.services.asset_cycle_service import post_event
+        return post_event(db, obj, actor_id)
     if obj.__tablename__ == 'purchase_retur' and not obj.purchase_invoice_id:
         raise ValueError('Pilih purchaseInvoiceId sebelum posting retur pembelian agar hutang invoice dapat diperbarui')
     validate_order_approval(db, obj)

@@ -64,6 +64,17 @@ def atomic_accounting_write(function):
                 if tanggal is not None:
                     validate_periode_not_closed(db, tanggal)
             actor = db.info.get('request_actor')
+            for field in ('gudang_id', 'dari_gudang_id', 'ke_gudang_id'):
+                warehouse_id = bound.arguments.get(field)
+                if warehouse_id:
+                    from app.models.master.gudang import Gudang
+                    warehouse = db.get(Gudang, warehouse_id)
+                    if not warehouse or warehouse.status != 'AKTIF':
+                        raise ValueError('Gudang tidak ditemukan atau tidak aktif')
+            if bound.arguments.get('pengiriman_id'):
+                from app.models import PengirimanBarang
+                if db.get(PengirimanBarang, bound.arguments['pengiriman_id']) is None:
+                    raise ValueError('Pengiriman sumber tidak ditemukan')
             if actor and rek is not None and function.__name__ not in ('complete_rekonsiliasi', 'void_rekonsiliasi'):
                 from app.services.workflow_service import role, APPROVERS
                 if actor.id != rek.created_by and role(actor) not in APPROVERS:

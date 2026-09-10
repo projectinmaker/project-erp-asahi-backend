@@ -75,6 +75,9 @@ def create_master(
     data = schema_in.model_dump()
     table = Model.__table__
     key = next((field for field in ("kode", "nik") if field in table.c and field in data), None)
+    if table.name == 'barang' and 'stok' in table.c:
+        from app.services.accounting_control import accounting_lock
+        accounting_lock(db)
     if allow_reactivate and key and "status" in table.c:
         # Serialize create dengan kode yang sama, termasuk saat belum ada row.
         # Lock otomatis dilepas ketika transaksi commit/rollback.
@@ -104,6 +107,12 @@ def create_master(
         # Pilih record paling baru secara deterministik; record lain tetap utuh.
         existing = next((item for item in matches if item.status == "NONAKTIF"), None)
         if existing is not None:
+            if table.name == 'barang':
+                from app.models.transaksi.stock_balance import StockBalance
+                from app.models.transaksi.stok_mutasi import StokMutasi
+                if db.query(StockBalance).filter_by(barang_id=existing.id).first() or db.query(StokMutasi).filter_by(barang_id=existing.id).first():
+                    for inventory_field in ('stok', 'harga_pokok', 'metode_valuasi'):
+                        data[inventory_field] = getattr(existing, inventory_field)
             for field, value in data.items():
                 # COA lama dipertahankan bila request tidak memberi pengganti.
                 if field in ("akun_piutang_id", "akun_hutang_id") and value is None:
@@ -123,6 +132,8 @@ def create_master(
 def update_master(db: Session, db_obj: Any, schema_in: BaseSchema) -> Any:
     """Fungsi generik untuk update data master yang sudah ada"""
     update_data = schema_in.model_dump(exclude_unset=True)
+    if db_obj.__table__.name == "barang" and any(field in update_data for field in ('stok', 'harga_pokok', 'metode_valuasi')):
+        protect_inventory(db, db_obj, update_data)
     for field, value in update_data.items():
         setattr(db_obj, field, value)
     db.add(db_obj)
@@ -140,3 +151,14 @@ def soft_delete_master(db: Session, db_obj: Any) -> Any:
     db.commit()
     db.refresh(db_obj)
     return db_obj
+
+
+def protect_inventory(db, item, data):
+    from app.services.accounting_control import accounting_lock
+    from app.models.transaksi.stock_balance import StockBalance
+    from app.models.transaksi.stok_mutasi import StokMutasi
+    accounting_lock(db)
+    if db.query(StockBalance).filter_by(barang_id=item.id).first() or db.query(StokMutasi).filter_by(barang_id=item.id).first():
+        for field in ('stok', 'harga_pokok', 'metode_valuasi'):
+            if field in data and data[field] != getattr(item, field):
+                raise HTTPException(400, 'Stok, biaya, dan metode valuasi tidak boleh diubah langsung setelah ada saldo/mutasi')

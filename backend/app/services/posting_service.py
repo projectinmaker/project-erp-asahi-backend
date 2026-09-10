@@ -188,6 +188,9 @@ def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = 
     Closed periods must be reopened through the authorized period workflow.
     The original journal and its POSTED status remain intact for audit.
     """
+    from app.models.transaksi.asset_event import AssetEvent
+    if db.query(AssetEvent).filter(AssetEvent.source_journal_id == journal_id, AssetEvent.status != 'BATAL').first():
+        raise ValueError('Jurnal digunakan oleh registrasi aset. Batalkan transaksi aset terkait terlebih dahulu.')
     original = (db.query(JurnalUmum).filter(JurnalUmum.id == journal_id)
                 .populate_existing().with_for_update().one())
     if original.reversal_of_id:

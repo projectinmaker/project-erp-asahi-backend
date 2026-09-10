@@ -136,6 +136,7 @@ def create_penyesuaian(
     alasan: Optional[str] = None,
     auto_post_jurnal: bool = True,
     created_by: Optional[UUID] = None,
+    gudang_id: Optional[UUID] = None,
 ) -> PenyesuaianStok:
     """Buat PenyesuaianStok baru.
     - Generate no_adj otomatis (ADJ-YYYY-MM-NNN)
@@ -160,6 +161,7 @@ def create_penyesuaian(
         )
 
         adj = PenyesuaianStok(
+            gudang_id=gudang_id,
             no_adj=no_adj,
             tanggal=tanggal,
             barang_id=barang_id,
@@ -197,9 +199,12 @@ def update_penyesuaian(
     biaya_satuan: Optional[Decimal] = None,
     alasan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    gudang_id: Optional[UUID] = None,
 ) -> PenyesuaianStok:
     """Update data penyesuaian stok."""
     require_unposted(db_obj)
+    if gudang_id is not None:
+        db_obj.gudang_id = gudang_id
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Penyesuaian Stok dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -235,16 +240,21 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
 
     # 1. Update stok barang
     mode = "TAMBAH" if db_obj.tipe.value == "TAMBAH" else "KURANGI"
-    update_stok_barang(
+    movement = update_stok_barang(
         db=db,
         barang_id=db_obj.barang_id,
         qty_change=db_obj.qty,
+        gudang_id=db_obj.gudang_id,
+        harga_satuan=db_obj.biaya_satuan,
         mode=mode,
         deskripsi=f"Penyesuaian Stok {db_obj.no_adj} ({mode})",
         ref_module=RefModule.PENYESUAIAN_STOK,
         ref_no=db_obj.no_adj,
         ref_id=db_obj.id,
     )
+
+    db_obj.total = movement['total_nilai']
+    db_obj.biaya_satuan = movement['harga_satuan']
 
     # 2. Jurnal dan perubahan stok harus berhasil bersama.
     if db_obj.auto_post_jurnal and db_obj.total > 0:
@@ -416,7 +426,7 @@ def create_pemindahan(
             raise ValueError("Gudang asal dan tujuan tidak boleh sama")
 
         dari_gudang = db.query(Gudang).filter(Gudang.id == dari_gudang_id).first()
-        if not dari_gudang:
+        if dari_gudang_id and not dari_gudang:
             raise ValueError(f"Gudang asal dengan ID {dari_gudang_id} tidak ditemukan")
 
         ke_gudang = db.query(Gudang).filter(Gudang.id == ke_gudang_id).first()
@@ -466,7 +476,7 @@ def create_pemindahan(
 
         db.commit()
         db.refresh(pb)
-        logger.info(f"PemindahanBarang created: {no_pemindahan} | {dari_gudang.nama} -> {ke_gudang.nama} | qty={qty}")
+        logger.info(f"PemindahanBarang created: {no_pemindahan} | {dari_gudang.nama if dari_gudang else 'UNASSIGNED'} -> {ke_gudang.nama} | qty={qty}")
         return pb
 
     except Exception as e:
@@ -530,7 +540,7 @@ def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBaran
         raise ValueError("Gudang asal dan tujuan tidak boleh sama")
 
     # Kurangi stok dari gudang asal
-    update_stok_barang(
+    outgoing = update_stok_barang(
         db=db,
         barang_id=db_obj.barang_id,
         qty_change=db_obj.qty,
@@ -551,6 +561,9 @@ def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBaran
         ref_no=db_obj.no_pemindahan,
         ref_id=db_obj.id,
         gudang_id=db_obj.ke_gudang_id,
+        harga_satuan=outgoing['harga_satuan'],
+        incoming_parts=outgoing['parts'] or None,
+        exact_total=outgoing['total_nilai'] if getattr(db_obj.barang.metode_valuasi, 'value', db_obj.barang.metode_valuasi) == 'AVERAGE' else None,
     )
 
     db_obj.status = StatusPersediaan.DISETUJUI

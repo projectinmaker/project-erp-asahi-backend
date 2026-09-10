@@ -668,6 +668,8 @@ def create_sales_retur(
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = True,
     created_by: Optional[UUID] = None,
+    gudang_id: Optional[UUID] = None,
+    pengiriman_id: Optional[UUID] = None,
 ) -> SalesRetur:
     """Buat SalesRetur baru beserta detail.
     Jurnal: D - Retur Penjualan / HPP, K - Piutang Dagang
@@ -699,6 +701,8 @@ def create_sales_retur(
 
         # Buat header
         retur = SalesRetur(
+            pengiriman_id=pengiriman_id,
+            gudang_id=gudang_id,
             no_retur=no_retur,
             tanggal=tanggal,
             sales_invoice_id=sales_invoice_id,
@@ -761,9 +765,15 @@ def update_sales_retur(
     ppn: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    gudang_id: Optional[UUID] = None,
+    pengiriman_id: Optional[UUID] = None,
 ) -> SalesRetur:
     """Update data sales retur (hanya field header)."""
     require_unposted(db_obj)
+    if pengiriman_id is not None:
+        db_obj.pengiriman_id = pengiriman_id
+    if gudang_id is not None:
+        db_obj.gudang_id = gudang_id
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Sales Retur dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -880,6 +890,7 @@ def create_pengiriman(
     alamat_pengiriman: Optional[str] = None,
     keterangan: Optional[str] = None,
     created_by: Optional[UUID] = None,
+    gudang_id: Optional[UUID] = None,
 ) -> PengirimanBarang:
     """Buat PengirimanBarang baru beserta detail.
     Tidak ada jurnal posting (pengiriman tidak mengubah keuangan langsung).
@@ -898,6 +909,7 @@ def create_pengiriman(
 
         # Buat header
         pengiriman = PengirimanBarang(
+            gudang_id=gudang_id,
             no_surat_jalan=no_surat_jalan,
             tanggal=tanggal,
             sales_order_id=sales_order_id,
@@ -942,9 +954,12 @@ def update_pengiriman(
     ekspedisi: Optional[str] = None,
     alamat_pengiriman: Optional[str] = None,
     keterangan: Optional[str] = None,
+    gudang_id: Optional[UUID] = None,
 ) -> PengirimanBarang:
     """Update data pengiriman (hanya field header)."""
     require_unposted(db_obj)
+    if gudang_id is not None:
+        db_obj.gudang_id = gudang_id
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Pengiriman dengan status {db_obj.status.value} tidak bisa diupdate")
 
@@ -999,8 +1014,9 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
     try:
         # Kurangi stok untuk setiap detail barang
         total_hpp = Decimal("0")
+        cost_entries = []
         for detail in db_obj.details:
-            update_stok_barang(
+            movement = update_stok_barang(
                 db=db,
                 barang_id=detail.barang_id,
                 qty_change=detail.qty,
@@ -1009,30 +1025,23 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
                 ref_module=RefModule.SALES_INVOICE,
                 ref_no=db_obj.no_surat_jalan,
                 ref_id=db_obj.id,
+                gudang_id=db_obj.gudang_id,
             )
             harga_pokok = detail.barang.harga_pokok or Decimal("0")
-            total_hpp += Decimal(str(detail.qty)) * harga_pokok
+            total_hpp += movement['total_nilai']
+            from app.services.persediaan_service import _get_akun_persediaan_id
+            inventory_id = _get_akun_persediaan_id(db, detail.barang)
+            expense_id = get_akun_id_or_raise(db, KEY_HPP_PENJUALAN, context=db_obj.no_surat_jalan)
+            movement['mutasi'].inventory_account_id = inventory_id
+            movement['mutasi'].expense_account_id = expense_id
+            if movement['total_nilai']:
+                cost_entries += [JurnalEntryItem(expense_id, debit=movement['total_nilai']), JurnalEntryItem(inventory_id, kredit=movement['total_nilai'])]
 
         db_obj.status = StatusPenjualan.SELESAI
 
         # Posting jurnal HPP (asumsi: barang yang dikirim adalah barang jadi)
         if total_hpp > 0:
-            entries = [
-                JurnalEntryItem(
-                    akun_perkiraan_id=get_akun_id_or_raise(
-                        db, KEY_HPP_PENJUALAN, context=f"Pengiriman {db_obj.no_surat_jalan}"
-                    ),
-                    debit=total_hpp,
-                    keterangan=f"HPP Pengiriman {db_obj.no_surat_jalan}",
-                ),
-                JurnalEntryItem(
-                    akun_perkiraan_id=get_akun_id_or_raise(
-                        db, KEY_PERSEDIAAN_BARANG_JADI, context=f"Pengiriman {db_obj.no_surat_jalan}"
-                    ),
-                    kredit=total_hpp,
-                    keterangan=f"Persediaan keluar Pengiriman {db_obj.no_surat_jalan}",
-                ),
-            ]
+            entries = cost_entries
             jurnal = auto_posting_jurnal(
                 db=db,
                 ref_module=RefModule.SALES_INVOICE,
@@ -1065,18 +1074,8 @@ def finish_sales_retur(db: Session, db_obj: SalesRetur) -> SalesRetur:
     if db_obj.status == StatusPenjualan.SELESAI:
         raise ValueError("Sales Retur sudah selesai")
 
-    # Tambah stok untuk setiap detail barang yang dikembalikan
-    for detail in db_obj.details:
-        update_stok_barang(
-            db=db,
-            barang_id=detail.barang_id,
-            qty_change=detail.qty,
-            mode="TAMBAH",
-            deskripsi=f"Retur Penjualan {db_obj.no_retur}",
-            ref_module=RefModule.SALES_RETUR,
-            ref_no=db_obj.no_retur,
-            ref_id=db_obj.id,
-        )
+    from app.services.stock_return_service import execute_sales_return
+    execute_sales_return(db, db_obj)
 
     db_obj.status = StatusPenjualan.SELESAI
     db.add(db_obj)
