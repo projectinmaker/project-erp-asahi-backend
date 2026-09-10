@@ -55,23 +55,11 @@ def get_nomor_dokumen(
     month_str = tanggal.strftime("%Y-%m")
     pattern = f"{prefix}-{month_str}%"
 
-    # Cari nomor terakhir dengan prefix dan bulan yang sama
-    last_no = (
-        db.query(getattr(model_class, no_column))
-        .filter(getattr(model_class, no_column).like(pattern))
-        .order_by(getattr(model_class, no_column).desc())
-        .first()
-    )
-
-    if last_no and last_no[0]:
-        # Ekstrak angka terakhir: INV-2026-08-003 -> 003 -> 3
-        parts = last_no[0].rsplit("-", 1)
-        try:
-            last_seq = int(parts[1])
-        except (IndexError, ValueError):
-            last_seq = 0
-    else:
-        last_seq = 0
+    from app.services.accounting_control import accounting_lock
+    accounting_lock(db)
+    numbers = db.query(getattr(model_class, no_column)).filter(getattr(model_class, no_column).like(pattern)).all()
+    last_seq = max((int(row[0].rsplit('-', 1)[-1]) for row in numbers
+                    if row[0] and row[0].rsplit('-', 1)[-1].isdigit()), default=0)
 
     next_seq = last_seq + 1
     return f"{prefix}-{month_str}-{next_seq:03d}"
