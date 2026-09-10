@@ -13,7 +13,7 @@ def module_access(module):
         read = request.method in ('GET', 'HEAD', 'OPTIONS')
         name = request.scope['endpoint'].__name__
         allowed = set(FINANCE)
-        if module == 'workflow':
+        if module in ('workflow', 'organisasi'):
             allowed |= {'STAFF_PENJUALAN', 'STAFF_GUDANG'}
         if module in ('penjualan', 'master', 'stok_kartu'):
             allowed.add('STAFF_PENJUALAN')
@@ -25,6 +25,10 @@ def module_access(module):
                 allowed.discard('STAFF_PENJUALAN')
         if module == 'pembelian' and 'penerimaan' in name:
             allowed.add('STAFF_GUDANG')
+        if module == 'organisasi' and name == 'list_cashflow_classifications':
+            allowed = set(FINANCE)
+        if module == 'organisasi' and (name in ('create_organization_unit', 'edit_organization_unit', 'list_reporting_audit', 'set_cashflow_classification')):
+            allowed = set(APPROVERS)
         if module == 'pengguna':
             allowed = {'ADMINISTRATOR'}
         elif name == 'reconcile_inventory_ledger':
@@ -47,7 +51,7 @@ def module_access(module):
             db.info['request_actor'] = user
             key = request.headers.get('Idempotency-Key')
             # Required for document creates; optional for updates/cancels. Scope per actor.
-            required = request.method == 'POST' and name.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle')
+            required = request.method == 'POST' and name.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle', 'organisasi')
             if required and not key:
                 raise HTTPException(400, 'Header Idempotency-Key wajib diisi untuk membuat dokumen')
             if key:
