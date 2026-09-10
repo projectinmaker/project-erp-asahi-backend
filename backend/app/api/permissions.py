@@ -27,6 +27,8 @@ def module_access(module):
             allowed.add('STAFF_GUDANG')
         if module == 'pengguna':
             allowed = {'ADMINISTRATOR'}
+        elif name == 'reconcile_inventory_ledger':
+            allowed = set(FINANCE)
         elif module == 'karyawan':
             allowed = set(APPROVERS)
         elif not read:
@@ -37,13 +39,15 @@ def module_access(module):
         if user_role not in allowed:
             raise HTTPException(403, 'Role pengguna tidak memiliki izin untuk aksi ini')
         if not read:
+            if name == 'rekalkulasi_stok_kartu':
+                raise HTTPException(409, 'Rekalkulasi histori dinonaktifkan; gunakan rekonsiliasi dan penyesuaian yang disetujui')
             # Old stock approval endpoints must not bypass submit + maker/checker.
             if name in ('approve_penyesuaian', 'approve_pemindahan', 'approve_permintaan', 'finish_pengiriman', 'finish_penerimaan'):
                 raise HTTPException(409, 'Gunakan endpoint workflow: submit, approve, lalu execute')
             db.info['request_actor'] = user
             key = request.headers.get('Idempotency-Key')
             # Required for document creates; optional for updates/cancels. Scope per actor.
-            required = request.method == 'POST' and name.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan')
+            required = request.method == 'POST' and name.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle')
             if required and not key:
                 raise HTTPException(400, 'Header Idempotency-Key wajib diisi untuk membuat dokumen')
             if key:
