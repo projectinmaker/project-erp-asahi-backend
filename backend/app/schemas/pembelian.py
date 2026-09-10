@@ -245,6 +245,7 @@ class PurchaseReturDetailResponse(PurchaseReturDetailBase):
 # PURCHASE RETUR
 # ==========================================
 class PurchaseReturBase(BaseSchema):
+    gudang_id: Optional[UUID] = None
     purchase_invoice_id: Optional[UUID] = None
     tanggal: datetime
     purchase_order_id: UUID
@@ -260,6 +261,7 @@ class PurchaseReturCreate(PurchaseReturBase):
 
 
 class PurchaseReturUpdate(BaseSchema):
+    gudang_id: Optional[UUID] = None
     purchase_invoice_id: Optional[UUID] = None
     tanggal: Optional[datetime] = None
     purchase_order_id: Optional[UUID] = None
@@ -298,6 +300,8 @@ class PurchaseReturResponse(PurchaseReturBase):
 # PENERIMAAN BARANG DETAIL
 # ==========================================
 class PenerimaanBarangDetailBase(BaseSchema):
+    harga_perolehan: Optional[Decimal] = None
+    tanggal_kedaluwarsa: Optional[date] = None
     barang_id: UUID
     qty: int = 0
     satuan_id: UUID
@@ -317,6 +321,7 @@ class PenerimaanBarangDetailResponse(PenerimaanBarangDetailBase):
 # PENERIMAAN BARANG
 # ==========================================
 class PenerimaanBarangBase(BaseSchema):
+    gudang_id: Optional[UUID] = None
     tanggal: datetime
     purchase_order_id: UUID
     supplier_id: UUID
@@ -329,6 +334,7 @@ class PenerimaanBarangCreate(PenerimaanBarangBase):
 
 
 class PenerimaanBarangUpdate(BaseSchema):
+    gudang_id: Optional[UUID] = None
     tanggal: Optional[datetime] = None
     purchase_order_id: Optional[UUID] = None
     supplier_id: Optional[UUID] = None

@@ -42,6 +42,7 @@ class JurnalSimpleResponse(BaseSchema):
 # PENYESUAIAN STOK
 # ==========================================
 class PenyesuaianStokBase(BaseSchema):
+    gudang_id: Optional[UUID] = None
     tanggal: datetime
     barang_id: UUID
     tipe: str  # TAMBAH / KURANG
@@ -56,6 +57,7 @@ class PenyesuaianStokCreate(PenyesuaianStokBase):
 
 
 class PenyesuaianStokUpdate(BaseSchema):
+    gudang_id: Optional[UUID] = None
     tanggal: Optional[datetime] = None
     barang_id: Optional[UUID] = None
     tipe: Optional[str] = None
@@ -85,7 +87,7 @@ class PenyesuaianStokResponse(PenyesuaianStokBase):
 class PemindahanBarangBase(BaseSchema):
     tanggal: datetime
     proses: str  # KIRIM / TERIMA
-    dari_gudang_id: UUID
+    dari_gudang_id: Optional[UUID] = None
     ke_gudang_id: UUID
     barang_id: UUID
     qty: int = 0

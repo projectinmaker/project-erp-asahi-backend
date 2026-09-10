@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
@@ -54,6 +54,7 @@ class StokKartuEntryResponse(BaseSchema):
     saldo_qty: int = 0
     saldo_harga: Decimal = Decimal("0")
     saldo_total: Decimal = Decimal("0")
+    saldo_tersedia: bool = True
 
     gudang: Optional[GudangSimpleResponse] = None
 
@@ -69,6 +70,7 @@ class StokKartuLayerInfo(BaseSchema):
     qty_sisa: int
     total_nilai: Decimal
     tanggal_masuk: datetime
+    tanggal_kedaluwarsa: Optional[date] = None
     ref_no: Optional[str] = None
 
 

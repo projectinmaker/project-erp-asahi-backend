@@ -74,6 +74,8 @@ class AsetTetapResponse(AsetTetapBase):
     nilai_buku: Decimal = Decimal("0")
     akumulasi_penyusutan: Decimal = Decimal("0")
     penyusutan_per_bulan: Decimal = Decimal("0")
+    capitalized: bool = False
+    lokasi: Optional[str] = None
     # Relasi
     kategori_aset: Optional[KategoriAsetSimpleResponse] = None
     akun_aset: Optional[AkunPerkiraanSimpleResponse] = None

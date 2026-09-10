@@ -269,6 +269,8 @@ class SalesReturDetailResponse(SalesReturDetailBase):
 # SALES RETUR
 # ==========================================
 class SalesReturBase(BaseSchema):
+    pengiriman_id: Optional[UUID] = None
+    gudang_id: Optional[UUID] = None
     tanggal: datetime
     sales_invoice_id: UUID
     pelanggan_id: UUID
@@ -285,6 +287,8 @@ class SalesReturCreate(SalesReturBase):
 
 
 class SalesReturUpdate(BaseSchema):
+    pengiriman_id: Optional[UUID] = None
+    gudang_id: Optional[UUID] = None
     tanggal: Optional[datetime] = None
     sales_invoice_id: Optional[UUID] = None
     pelanggan_id: Optional[UUID] = None
@@ -343,6 +347,7 @@ class PengirimanBarangDetailResponse(PengirimanBarangDetailBase):
 # PENGIRIMAN BARANG
 # ==========================================
 class PengirimanBarangBase(BaseSchema):
+    gudang_id: Optional[UUID] = None
     tanggal: datetime
     sales_order_id: UUID
     pelanggan_id: UUID
@@ -356,6 +361,7 @@ class PengirimanBarangCreate(PengirimanBarangBase):
 
 
 class PengirimanBarangUpdate(BaseSchema):
+    gudang_id: Optional[UUID] = None
     tanggal: Optional[datetime] = None
     sales_order_id: Optional[UUID] = None
     pelanggan_id: Optional[UUID] = None
