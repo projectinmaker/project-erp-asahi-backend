@@ -99,9 +99,11 @@ def available_actions(user, obj, wf):
 
 
 def describe(db, obj, user):
+    from app.services.organization_service import for_source
     wf = find_workflow(db, obj)
     events = [] if not wf else db.query(WorkflowEvent).filter_by(workflow_id=wf.id).order_by(WorkflowEvent.version).all()
     return {
+        'organization': for_source(db, obj.id),
         'documentType': obj.__tablename__, 'documentId': obj.id,
         'documentNumber': next((getattr(obj, name) for name in ('no_invoice', 'no_form', 'no_retur', 'no_bukti', 'no_transfer', 'no_pesanan', 'no_jurnal', 'no_surat_jalan', 'no_adj', 'no_pemindahan', 'no_permintaan') if hasattr(obj, name)), str(obj.id)),
         'createdBy': obj.created_by, 'submittedBy': wf.submitted_by if wf else None,
@@ -136,6 +138,9 @@ def transition(db, document_type, document_id, action, user, expected_version, r
         if action in ('approve', 'reject') and (role(user) not in APPROVERS or user.id in (obj.created_by, wf.submitted_by)):
             raise HTTPException(403, 'Approval memerlukan manajer/admin lain, bukan pembuat atau pengaju dokumen')
         raise HTTPException(409, 'Aksi tidak diizinkan untuk role atau status dokumen saat ini')
+    if action in ('submit', 'post', 'execute'):
+        from app.services.organization_service import validate, for_source
+        validate(db, for_source(db, obj.id))
     if action == 'submit':
         if document_type == 'asset_event':
             from app.services.asset_cycle_service import prepare

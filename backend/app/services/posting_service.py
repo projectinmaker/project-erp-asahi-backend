@@ -69,6 +69,7 @@ def auto_posting_jurnal(
     status: StatusJurnal = StatusJurnal.POSTED,
     no_jurnal: Optional[str] = None,
     allow_inactive_accounts: bool = False,
+    organization: Optional[dict] = None,
 ) -> JurnalUmum:
     """
     Membuat Jurnal Umum otomatis beserta detailnya (double-entry).
@@ -92,7 +93,8 @@ def auto_posting_jurnal(
     try:
         from app.services.accounting_control import accounting_lock
         accounting_lock(db)
-        tanggal = tanggal or datetime.now(timezone.utc)
+        from app.services.reporting_ledger import local_datetime
+        tanggal = local_datetime(tanggal or datetime.now(timezone.utc))
         # Validasi: cek periode tidak ditutup (inline query untuk menghindari circular import)
         if tanggal:
             _periode_closed = (
@@ -133,7 +135,10 @@ def auto_posting_jurnal(
             no_jurnal = _generate_no_jurnal(db, "JV", tanggal)
 
         # Buat header Jurnal Umum
+        from app.services.organization_service import for_source, validate
+        organization = organization if organization is not None else validate(db, for_source(db, ref_id))
         jurnal = JurnalUmum(
+            **organization,
             no_jurnal=no_jurnal,
             tanggal=tanggal,
             tipe_transaksi=tipe_transaksi or ref_module.value,
@@ -207,6 +212,7 @@ def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = 
         entries=[JurnalEntryItem(d.akun_perkiraan_id, debit=d.kredit, kredit=d.debit,
                                 keterangan=f"Pembalik {original.no_jurnal}") for d in original.details],
         allow_inactive_accounts=True,
+        organization={field: getattr(original, field) for field in ("company_id", "branch_id", "department_id", "cost_center_id", "project_id")},
     )
     reversal.reversal_of_id = original.id
     db.flush()

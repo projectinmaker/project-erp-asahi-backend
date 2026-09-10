@@ -256,12 +256,8 @@ def get_saldo_awal(db: Session) -> dict:
     Jika sudah, return jurnal SALDO_AWAL yang ada (bisa di-edit ulang).
     Jika belum, return list kosong dengan sudah_diset=False.
     """
-    existing = (
-        db.query(JurnalUmum)
-        .filter(JurnalUmum.ref_module == RefModule.SALDO_AWAL)
-        .order_by(JurnalUmum.created_at.desc())
-        .first()
-    )
+    from app.services.reporting_ledger import local_datetime
+    existing = _active_opening_journals(db).order_by(JurnalUmum.created_at.desc(), JurnalUmum.id).first()
 
     if not existing:
         return {
@@ -306,7 +302,7 @@ def get_saldo_awal(db: Session) -> dict:
 
     return {
         "sudah_diset": True,
-        "tanggal": existing.tanggal.strftime("%Y-%m-%d") if existing.tanggal else None,
+        "tanggal": local_datetime(existing.tanggal).date().isoformat() if existing.tanggal else None,
         "items": items,
         "total_debit": total_debit,
         "total_kredit": total_kredit,
@@ -314,110 +310,57 @@ def get_saldo_awal(db: Session) -> dict:
     }
 
 
+def _active_opening_journals(db):
+    from sqlalchemy.orm import aliased
+    from sqlalchemy import select
+    reversal = aliased(JurnalUmum)
+    reversed_ids = select(reversal.reversal_of_id).where(
+        reversal.reversal_of_id.is_not(None), reversal.status == StatusJurnal.POSTED)
+    return db.query(JurnalUmum).filter(JurnalUmum.ref_module == RefModule.SALDO_AWAL,
+        JurnalUmum.status == StatusJurnal.POSTED, ~JurnalUmum.id.in_(reversed_ids))
+
+
+from app.services.accounting_control import atomic_accounting_write
+
+
+@atomic_accounting_write
+def _replace_opening(db, items, tanggal, user_id):
+    """Keep original journals; replace their effective balance atomically."""
+    from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal, reverse_journal, validate_entries
+    seen, entries = set(), []
+    for item in items:
+        identifier = item['akun_perkiraan_id']
+        if identifier in seen:
+            raise ValueError('Akun saldo awal tidak boleh berulang')
+        seen.add(identifier)
+        debit, credit = Decimal(str(item['debit'])), Decimal(str(item['kredit']))
+        if not debit.is_finite() or not credit.is_finite() or debit < 0 or credit < 0:
+            raise ValueError('Saldo awal harus angka valid dan tidak negatif')
+        if debit or credit:
+            entries.append(JurnalEntryItem(identifier, debit, credit, 'Saldo awal'))
+    if entries:
+        validate_entries(db, entries)
+    originals = _active_opening_journals(db).order_by(JurnalUmum.id).all()
+    affected = {row.akun_perkiraan_id for journal in originals for row in journal.details}
+    for journal in originals:
+        reverse_journal(db, journal.id, user_id, 'Penggantian saldo awal')
+    for identifier in affected:
+        account = db.get(AkunPerkiraan, identifier)
+        account.saldo = Decimal('0')
+        account.tanggal = tanggal
+    journal = None
+    if entries:
+        journal = auto_posting_jurnal(db, RefModule.SALDO_AWAL, 'SA-INIT', entries,
+            keterangan='Saldo Awal Perusahaan', tanggal=tanggal, created_by=user_id)
+        for entry in entries:
+            account = db.get(AkunPerkiraan, entry.akun_perkiraan_id)
+            account.saldo = (entry.debit-entry.kredit) * (1 if account.saldo_normal == SaldoNormal.DEBIT else -1)
+            account.tanggal = tanggal
+    return journal
+
+
 def save_saldo_awal(db: Session, items: list, tanggal_str: str, user_id: UUID) -> dict:
-    """Simpan saldo awal.
-
-    1. Hapus jurnal SALDO_AWAL lama jika ada (re-set).
-    2. Validasi total debit == total kredit.
-    3. Buat jurnal baru via posting_service (POSTED).
-    4. Update AkunPerkiraan.saldo dan .tanggal untuk setiap akun.
-    """
-    # 1. Hapus jurnal SALDO_AWAL lama jika ada
-    old_jurnals = (
-        db.query(JurnalUmum)
-        .filter(JurnalUmum.ref_module == RefModule.SALDO_AWAL)
-        .all()
-    )
-    for j in old_jurnals:
-        # Hapus detail dulu
-        db.query(JurnalDetail).filter(
-            JurnalDetail.jurnal_umum_id == j.id
-        ).delete()
-        db.delete(j)
-    db.flush()
-
-    # 2. Filter items yang debit/kredit != 0
-    active_items = [
-        i for i in items
-        if Decimal(str(i["debit"])) != Decimal("0") or Decimal(str(i["kredit"])) != Decimal("0")
-    ]
-
-    if not active_items:
-        return {
-            "sudah_diset": False,
-            "tanggal": None,
-            "items": [],
-            "total_debit": Decimal("0"),
-            "total_kredit": Decimal("0"),
-            "selisih": Decimal("0"),
-        }
-
-    # 3. Validasi balance
-    total_debit = sum(Decimal(str(i["debit"])) for i in active_items)
-    total_kredit = sum(Decimal(str(i["kredit"])) for i in active_items)
-    if total_debit != total_kredit:
-        raise ValueError(
-            f"Saldo awal tidak balance: total debit={total_debit}, total kredit={total_kredit}"
-        )
-
-    # 4. Buat jurnal via posting_service
-    from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal
-
-    tanggal = datetime.strptime(tanggal_str, "%Y-%m-%d")
-
-    entries = []
-    for i in active_items:
-        entries.append(JurnalEntryItem(
-            akun_perkiraan_id=i["akun_perkiraan_id"],
-            debit=Decimal(str(i["debit"])),
-            kredit=Decimal(str(i["kredit"])),
-            keterangan="Saldo awal",
-        ))
-
-    jurnal = auto_posting_jurnal(
-        db=db,
-        ref_module=RefModule.SALDO_AWAL,
-        ref_no="SA-INIT",
-        entries=entries,
-        keterangan="Saldo Awal Perusahaan",
-        tanggal=tanggal,
-        created_by=user_id,
-        status=StatusJurnal.POSTED,
-        no_jurnal="SA-INIT",
-    )
-
-    # 5. Update AkunPerkiraan.saldo dan .tanggal
-    for i in active_items:
-        akun = db.query(AkunPerkiraan).filter(
-            AkunPerkiraan.id == i["akun_perkiraan_id"]
-        ).first()
-        if akun:
-            d = Decimal(str(i["debit"]))
-            k = Decimal(str(i["kredit"]))
-            if akun.saldo_normal == SaldoNormal.DEBIT:
-                akun.saldo = d - k
-            else:
-                akun.saldo = k - d
-            akun.tanggal = tanggal
-
-    db.commit()
-    logger.info(f"Saldo awal diset: {len(active_items)} akun, D={total_debit} K={total_kredit}")
-
-    return {
-        "sudah_diset": True,
-        "tanggal": tanggal_str,
-        "items": [
-            {
-                "akun_perkiraan_id": i["akun_perkiraan_id"],
-                "kode_akun": i["kode_akun"],
-                "nama_akun": i["nama_akun"],
-                "saldo_normal": i["saldo_normal"],
-                "debit": Decimal(str(i["debit"])),
-                "kredit": Decimal(str(i["kredit"])),
-            }
-            for i in active_items
-        ],
-        "total_debit": total_debit,
-        "total_kredit": total_kredit,
-        "selisih": Decimal("0"),
-    }
+    """Replace global opening balances using linked reversals, never deletion."""
+    from app.services.reporting_ledger import local_datetime
+    _replace_opening(db, items, local_datetime(datetime.strptime(tanggal_str, '%Y-%m-%d')), user_id)
+    return get_saldo_awal(db)

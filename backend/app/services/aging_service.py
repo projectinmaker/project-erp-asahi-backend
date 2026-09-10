@@ -4,6 +4,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from app.models import SalesInvoice, PurchaseInvoice, PenerimaanKas, PembayaranKas, PurchaseRetur
 from app.services import settlement_service as settlement
+from app.services.organization_service import apply_scope
+from app.models.transaksi.jurnal import JurnalUmum
+
+def scoped_active(db, model, as_of):
+    return apply_scope(db, settlement.active_documents(db, model, as_of), JurnalUmum)
 
 BUCKETS = ('belum_jatuh_tempo', 'umur_1_30', 'umur_31_60', 'umur_61_90', 'umur_91_plus')
 
@@ -12,7 +17,7 @@ def aging(db, jenis, as_of):
     model = settlement.invoice_model(jenis)
     party = model.pelanggan if jenis == 'piutang' else model.supplier
     invoices = db.query(model).options(joinedload(party), joinedload(model.syarat_bayar)).filter(
-        model.id.in_(settlement.active_documents(db, model, as_of).scalar_subquery())
+        model.id.in_(scoped_active(db, model, as_of).scalar_subquery())
     ).order_by(model.tanggal, model.id).all()
     balances = settlement.balances(db, invoices, as_of)
     by_party = {}
@@ -37,9 +42,9 @@ def aging(db, jenis, as_of):
     totals = {key: sum((r[key] for r in items), Decimal('0')) for key in ('total',) + BUCKETS}
     # Explicitly expose sources that cannot be assigned to an invoice automatically.
     payment = PenerimaanKas if jenis == 'piutang' else PembayaranKas
-    unallocated_count, unallocated_total = db.query(func.count(payment.id), func.coalesce(func.sum(payment.total_nilai), 0)).filter(payment.id.in_(settlement.active_documents(db, payment, as_of).scalar_subquery()), ~payment.alokasi.any()).one()
+    unallocated_count, unallocated_total = db.query(func.count(payment.id), func.coalesce(func.sum(payment.total_nilai), 0)).filter(payment.id.in_(scoped_active(db, payment, as_of).scalar_subquery()), ~payment.alokasi.any()).one()
     unlinked_count, unlinked_total = (0, Decimal('0')) if jenis == 'piutang' else db.query(func.count(PurchaseRetur.id), func.coalesce(func.sum(PurchaseRetur.grand_total), 0)).filter(
-        PurchaseRetur.id.in_(settlement.active_documents(db, PurchaseRetur, as_of).scalar_subquery()),
+        PurchaseRetur.id.in_(scoped_active(db, PurchaseRetur, as_of).scalar_subquery()),
         PurchaseRetur.purchase_invoice_id.is_(None)).one()
     return {'as_of_date': settlement.local_day(as_of).isoformat(), 'items': items, **totals,
             'dokumen_kas_tanpa_alokasi': unallocated_count,

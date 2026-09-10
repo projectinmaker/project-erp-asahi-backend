@@ -25,14 +25,14 @@ from app.services.laporan_service import _saldo_per_akun_list
 
 def _get_periode_bounds(tahun: int, bulan: int) -> Tuple[datetime, datetime]:
     """Return (awal_bulan, akhir_bulan) datetime untuk periode tertentu."""
-    _, last_day = calendar.monthrange(tahun, bulan)
-    date_from = datetime(tahun, bulan, 1, 0, 0, 0)
-    date_to = datetime(tahun, bulan, last_day, 23, 59, 59)
-    return date_from, date_to
+    from app.services.reporting_ledger import month_bounds
+    return month_bounds(tahun, bulan)
 
 
 def is_periode_closed(db: Session, tanggal: datetime) -> bool:
     """Cek apakah tanggal jatuh di periode yang sudah ditutup."""
+    from app.services.reporting_ledger import local_datetime
+    tanggal = local_datetime(tanggal)
     tahun = tanggal.year
     bulan = tanggal.month
     record = (
@@ -113,7 +113,8 @@ def tutup_periode(
     if bulan < 1 or bulan > 12:
         raise ValueError(f"Bulan harus 1-12, diberikan: {bulan}")
 
-    now = datetime.now(timezone.utc)
+    from app.services.reporting_ledger import JAKARTA
+    now = datetime.now(JAKARTA)
     current_year = now.year
     current_month = now.month
 
@@ -154,18 +155,7 @@ def tutup_periode(
     jurnal_penutupan_id = None
     if with_closing_entry:
         try:
-            jurnal_penutupan_id = _create_closing_entry(
-                db=db,
-                tahun=tahun,
-                bulan=bulan,
-                date_from=date_from,
-                date_to=date_to,
-                laba_rugi=laba_rugi,
-                pendapatan=pendapatan,
-                hpp=hpp,
-                beban=beban,
-                user_id=user_id,
-            )
+            jurnal_penutupan_id = _close_by_organization(db, tahun, bulan, date_from, date_to, user_id)
         except Exception as e:
             raise ValueError(f"Jurnal penutupan gagal dibuat: {e}") from e
 
@@ -179,8 +169,7 @@ def tutup_periode(
         pp.closed_at = now
         pp.reopened_by = None
         pp.reopened_at = None
-        if jurnal_penutupan_id:
-            pp.jurnal_penutupan_id = jurnal_penutupan_id
+        pp.jurnal_penutupan_id = jurnal_penutupan_id
     else:
         pp = PenutupanPeriode(
             tahun=tahun,
@@ -216,6 +205,7 @@ def _create_closing_entry(
     hpp: List[dict],
     beban: List[dict],
     user_id: UUID,
+    organization: Optional[dict] = None,
 ) -> Optional[UUID]:
     """Buat jurnal penutupan: zero-out PENDAPATAN/HPP/BEBAN, net ke LABA_RUGI_BERJALAN.
 
@@ -282,6 +272,9 @@ def _create_closing_entry(
 
     # 4. Net ke LABA_RUGI_BERJALAN
     akun_lrb_id = sa_cfg.get_akun_id_or_raise(db, sa_cfg.KEY_LABA_RUGI_BERJALAN, f"Penutupan {tahun}-{bulan:02d}")
+    retained = db.get(AkunPerkiraan, akun_lrb_id)
+    if retained is None or retained.header != HeaderCOA.MODAL:
+        raise ValueError('Setting LABA_RUGI_BERJALAN harus menunjuk akun MODAL')
     if laba_rugi > 0:
         # Laba: kredit LabaRugiBerjalan
         entries.append(JurnalEntryItem(
@@ -307,6 +300,8 @@ def _create_closing_entry(
         tanggal=date_to,
         created_by=user_id,
         status=StatusJurnal.POSTED,
+        allow_inactive_accounts=True,
+        organization=organization,
     )
     logger.info(f"Jurnal penutupan posted: {jurnal.no_jurnal} | {len(entries)} details")
     return jurnal.id
@@ -355,8 +350,14 @@ def buka_periode(
     now = datetime.now(timezone.utc)
     pp.status = StatusPeriode.DIBUKA.value
     db.flush()
+    closing_journals = db.query(JurnalUmum).filter(
+        JurnalUmum.ref_module == RefModule.PENUTUPAN_PERIODE,
+        JurnalUmum.ref_no == f"CL-{tahun}-{bulan:02d}", JurnalUmum.reversal_of_id.is_(None)).all()
+    identifiers = {j.id for j in closing_journals}
     if pp.jurnal_penutupan_id:
-        reverse_journal(db, pp.jurnal_penutupan_id, user_id, "Buka kembali periode")
+        identifiers.add(pp.jurnal_penutupan_id)
+    for identifier in sorted(identifiers, key=str):
+        reverse_journal(db, identifier, user_id, "Buka kembali periode")
     pp.reopened_by = user_id
     pp.reopened_at = now
     if alasan:
@@ -387,3 +388,32 @@ def get_periode_status(db: Session, tahun: int, bulan: int) -> Optional[dict]:
         "status": pp.status,
         "laba_rugi": pp.laba_rugi,
     }
+
+
+def _close_by_organization(db, tahun, bulan, date_from, date_to, user_id):
+    """Close each exact dimension tuple, retaining balanced branch/project journals."""
+    from app.models.organization import FIELDS
+    from app.services import reporting_ledger as gl
+    columns = [getattr(JurnalUmum, field) for field in FIELDS]
+    groups = db.query(*columns).filter(JurnalUmum.status == StatusJurnal.POSTED,
+        JurnalUmum.tanggal >= date_from, JurnalUmum.tanggal <= date_to).distinct().all() or [tuple(None for _ in FIELDS)]
+    first = None
+    previous_scope = db.info.pop('report_scope', None)
+    try:
+        for group in sorted(groups, key=lambda row: tuple(str(v or '') for v in row)):
+            # Exact tuple, including NULL child dimensions, unlike report filters.
+            q = db.query(AkunPerkiraan, func.sum(JurnalDetail.debit), func.sum(JurnalDetail.kredit)).join(
+                JurnalDetail, JurnalDetail.akun_perkiraan_id == AkunPerkiraan.id).join(
+                JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id).filter(AkunPerkiraan.header.in_(gl.PROFIT))
+            for column, value in zip(columns, group):
+                q = q.filter(column == value)
+            rows = {a.id: {'account': a, 'debit': d, 'kredit': k} for a,d,k in
+                    gl.posted(db, q, date_from, date_to).group_by(AkunPerkiraan.id).all()}
+            identifier = _create_closing_entry(db, tahun, bulan, date_from, date_to, gl.profit(rows),
+                gl.header_items(rows, HeaderCOA.PENDAPATAN), gl.header_items(rows, HeaderCOA.HPP),
+                gl.header_items(rows, HeaderCOA.BEBAN), user_id, dict(zip(FIELDS, group)))
+            first = first or identifier
+    finally:
+        if previous_scope is not None:
+            db.info['report_scope'] = previous_scope
+    return first
