@@ -42,3 +42,6 @@ api_router.include_router(workflow.router, prefix="/workflow", tags=["Workflow"]
 
 from app.api.v1.endpoints import settlement
 api_router.include_router(settlement.router, prefix="/pelunasan", tags=["Pelunasan AR/AP"], dependencies=[Depends(module_access("pelunasan"))])
+
+from app.api.v1.endpoints import asset_cycle
+api_router.include_router(asset_cycle.router, prefix='/aset-transaksi', tags=['Siklus Aset'], dependencies=[Depends(module_access('asset_cycle'))])
