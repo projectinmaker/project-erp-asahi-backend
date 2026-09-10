@@ -137,3 +137,5 @@ __all__ = [
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent, IdempotentOperation
 
 from app.models.transaksi.payment_allocation import PaymentAllocation
+from app.models.transaksi.stock_balance import StockBalance
+from app.models.transaksi.asset_event import AssetEvent
