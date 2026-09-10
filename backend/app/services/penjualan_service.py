@@ -404,6 +404,7 @@ def create_sales_invoice(
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = True,
     created_by: Optional[UUID] = None,
+    tanggal_jatuh_tempo=None,
 ) -> SalesInvoice:
     """Buat SalesInvoice baru beserta detail + biaya tambahan."""
     try:
@@ -498,6 +499,8 @@ def create_sales_invoice(
         if auto_post_jurnal:
             post_sales_invoice(db, inv, created_by)
 
+        from app.services.invoice_terms import set_due_date
+        set_due_date(db, inv, tanggal_jatuh_tempo)
         db.commit()
         db.refresh(inv)
         logger.info(f"SalesInvoice created: {no_invoice} | grand_total={grand_total}")
@@ -526,6 +529,7 @@ def update_sales_invoice(
     ppn: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    tanggal_jatuh_tempo=None,
 ) -> SalesInvoice:
     """Update data sales invoice (hanya field header)."""
     require_unposted(db_obj)
@@ -562,6 +566,9 @@ def update_sales_invoice(
     db.add(db_obj)
     from app.services.document_totals import refresh_totals
     refresh_totals(db_obj)
+    from app.services.invoice_terms import set_due_date
+    if tanggal_jatuh_tempo is not None or tanggal is not None or syarat_bayar_id is not None:
+        set_due_date(db, db_obj, tanggal_jatuh_tempo)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -570,6 +577,8 @@ def update_sales_invoice(
 @atomic_accounting_write
 def cancel_sales_invoice(db: Session, db_obj: SalesInvoice, user_id: Optional[UUID] = None) -> SalesInvoice:
     """Batalkan sales invoice."""
+    from app.services.settlement_service import require_no_settlements
+    require_no_settlements(db, db_obj)
     if db_obj.status == StatusPenjualan.DIBATALKAN:
         raise ValueError("Sales Invoice sudah dibatalkan")
     if db.query(SalesRetur.id).filter(
@@ -1142,6 +1151,7 @@ def post_sales_invoice(db: Session, inv, created_by):
             created_by=created_by,
         )
         inv.jurnal_umum_id = jurnal.id
+        inv.akun_kontrol_id = pelanggan.akun_piutang_id
         inv.status = StatusPenjualan.SELESAI
     except Exception as e:
         raise ValueError(f"Jurnal INV gagal diposting: {e}")
@@ -1152,6 +1162,8 @@ def post_sales_retur(db: Session, retur, created_by):
     """Post the existing document; caller owns commit/rollback and workflow checks."""
     from app.services.document_totals import validate_postable
     validate_postable(db, retur)
+    from app.services.settlement_service import validate_return, control_account
+    validate_return(db, retur)
     tanggal = retur.tanggal
     pelanggan = db.get(Pelanggan, retur.pelanggan_id)
     no_retur = retur.no_retur
@@ -1171,7 +1183,7 @@ def post_sales_retur(db: Session, retur, created_by):
         ),
         # Kredit: Piutang Dagang
         JurnalEntryItem(
-            akun_perkiraan_id=pelanggan.akun_piutang_id,
+            akun_perkiraan_id=control_account(db, retur.sales_invoice) if retur.sales_invoice else pelanggan.akun_piutang_id,
             kredit=grand_total,
             keterangan=f"Kurangi piutang {no_retur}",
         ),

@@ -140,6 +140,9 @@ def transition(db, document_type, document_id, action, user, expected_version, r
         if document_type in FINANCIAL - {'jurnal_umum'}:
             from app.services.document_totals import refresh_totals
             refresh_totals(obj)
+            if document_type in ('penerimaan_kas', 'pembayaran_kas'):
+                from app.services.settlement_service import validate_payment
+                validate_payment(db, obj)
         wf.submitted_by = user.id
         wf.approved_by = None
         target = 'PENDING'
@@ -170,6 +173,8 @@ def transition(db, document_type, document_id, action, user, expected_version, r
 
 
 def post_existing(db, obj, actor_id):
+    if obj.__tablename__ == 'purchase_retur' and not obj.purchase_invoice_id:
+        raise ValueError('Pilih purchaseInvoiceId sebelum posting retur pembelian agar hutang invoice dapat diperbarui')
     validate_order_approval(db, obj)
     from app.services import penjualan_service as sales, pembelian_service as purchase, kas_bank_service as cash
     methods = {

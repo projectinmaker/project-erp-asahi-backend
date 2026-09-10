@@ -65,7 +65,7 @@ def validate_postable(db, obj):
     from app.models import Pelanggan, Supplier, KasBankAkun, SalesOrder, SalesInvoice, PurchaseOrder, JurnalUmum
     for field, model in (('pelanggan_id', Pelanggan), ('supplier_id', Supplier),
                          ('kas_bank_id', KasBankAkun), ('dari_kas_bank_id', KasBankAkun), ('ke_kas_bank_id', KasBankAkun)):
-        if hasattr(obj, field):
+        if hasattr(obj, field) and getattr(obj, field) is not None:
             party = db.get(model, getattr(obj, field))
             if not party or party.status != 'AKTIF':
                 raise ValueError(f'Master {field} tidak tersedia atau tidak aktif')

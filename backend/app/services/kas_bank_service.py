@@ -574,6 +574,8 @@ def post_pembayaran(db: Session, pembayaran, created_by):
     """Post the existing document; caller owns commit/rollback and workflow checks."""
     from app.services.document_totals import validate_postable
     validate_postable(db, pembayaran)
+    from app.services.settlement_service import validate_payment
+    validate_payment(db, pembayaran)
     tanggal = pembayaran.tanggal
     kas_bank = db.get(KasBankAkun, pembayaran.kas_bank_id)
     rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in pembayaran.rincian]
@@ -615,6 +617,8 @@ def post_penerimaan(db: Session, penerimaan, created_by):
     """Post the existing document; caller owns commit/rollback and workflow checks."""
     from app.services.document_totals import validate_postable
     validate_postable(db, penerimaan)
+    from app.services.settlement_service import validate_payment
+    validate_payment(db, penerimaan)
     tanggal = penerimaan.tanggal
     kas_bank = db.get(KasBankAkun, penerimaan.kas_bank_id)
     rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in penerimaan.rincian]

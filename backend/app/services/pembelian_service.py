@@ -387,6 +387,8 @@ def create_purchase_invoice(
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = True,
     created_by: Optional[UUID] = None,
+    tanggal_jatuh_tempo=None,
+    syarat_bayar_id=None,
 ) -> PurchaseInvoice:
     """Buat PurchaseInvoice baru beserta detail + biaya tambahan."""
     try:
@@ -456,6 +458,10 @@ def create_purchase_invoice(
         if auto_post_jurnal:
             post_purchase_invoice(db, inv, created_by)
 
+        from app.services.invoice_terms import set_due_date
+        if syarat_bayar_id is not None:
+            inv.syarat_bayar_id = syarat_bayar_id
+        set_due_date(db, inv, tanggal_jatuh_tempo)
         db.commit()
         db.refresh(inv)
         logger.info(f"PurchaseInvoice created: {no_form} | faktur={no_faktur} | grand_total={grand_total}")
@@ -479,6 +485,8 @@ def update_purchase_invoice(
     ppn: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    tanggal_jatuh_tempo=None,
+    syarat_bayar_id=None,
 ) -> PurchaseInvoice:
     """Update data purchase invoice (hanya field header)."""
     require_unposted(db_obj)
@@ -505,6 +513,11 @@ def update_purchase_invoice(
     db.add(db_obj)
     from app.services.document_totals import refresh_totals
     refresh_totals(db_obj)
+    from app.services.invoice_terms import set_due_date
+    if syarat_bayar_id is not None:
+        db_obj.syarat_bayar_id = syarat_bayar_id
+    if tanggal_jatuh_tempo is not None or tanggal is not None or syarat_bayar_id is not None:
+        set_due_date(db, db_obj, tanggal_jatuh_tempo)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -513,6 +526,8 @@ def update_purchase_invoice(
 @atomic_accounting_write
 def cancel_purchase_invoice(db: Session, db_obj: PurchaseInvoice, user_id: Optional[UUID] = None) -> PurchaseInvoice:
     """Batalkan purchase invoice."""
+    from app.services.settlement_service import require_no_settlements
+    require_no_settlements(db, db_obj)
     if db_obj.status == StatusPenjualan.DIBATALKAN:
         raise ValueError("Purchase Invoice sudah dibatalkan")
     if getattr(db_obj, "jurnal_umum_id", None):
@@ -595,6 +610,7 @@ def create_purchase_retur(
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = True,
     created_by: Optional[UUID] = None,
+    purchase_invoice_id=None,
 ) -> PurchaseRetur:
     """Buat PurchaseRetur baru beserta detail.
     Jurnal: D - Utang Dagang, K - Retur Pembelian / Persediaan
@@ -653,9 +669,15 @@ def create_purchase_retur(
         from app.services.document_totals import refresh_totals
         db.flush()
         refresh_totals(retur)
+        if purchase_invoice_id is not None:
+            retur.purchase_invoice_id = purchase_invoice_id
+            from app.services.settlement_service import validate_return
+            validate_return(db, retur)
         if auto_post_jurnal:
             post_purchase_retur(db, retur, created_by)
 
+        if purchase_invoice_id is not None:
+            retur.purchase_invoice_id = purchase_invoice_id
         db.commit()
         db.refresh(retur)
         logger.info(f"PurchaseRetur created: {no_retur} | grand_total={grand_total}")
@@ -678,6 +700,7 @@ def update_purchase_retur(
     ppn: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    purchase_invoice_id=None,
 ) -> PurchaseRetur:
     """Update data purchase retur (hanya field header)."""
     require_unposted(db_obj)
@@ -702,6 +725,11 @@ def update_purchase_retur(
     db.add(db_obj)
     from app.services.document_totals import refresh_totals
     refresh_totals(db_obj)
+    if purchase_invoice_id is not None:
+        db_obj.purchase_invoice_id = purchase_invoice_id
+    if db_obj.purchase_invoice_id:
+        from app.services.settlement_service import validate_return
+        validate_return(db, db_obj)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -1017,6 +1045,7 @@ def post_purchase_invoice(db: Session, inv, created_by):
             created_by=created_by,
         )
         inv.jurnal_umum_id = jurnal.id
+        inv.akun_kontrol_id = supplier.akun_hutang_id
         inv.status = StatusPenjualan.SELESAI
     except Exception as e:
         raise ValueError(f"Jurnal PINV gagal diposting: {e}")
@@ -1027,6 +1056,8 @@ def post_purchase_retur(db: Session, retur, created_by):
     """Post the existing document; caller owns commit/rollback and workflow checks."""
     from app.services.document_totals import validate_postable
     validate_postable(db, retur)
+    from app.services.settlement_service import validate_return, control_account
+    validate_return(db, retur)
     tanggal = retur.tanggal
     supplier = db.get(Supplier, retur.supplier_id)
     no_retur = retur.no_retur
@@ -1038,7 +1069,7 @@ def post_purchase_retur(db: Session, retur, created_by):
     entries = [
         # Debit: Utang Dagang
         JurnalEntryItem(
-            akun_perkiraan_id=supplier.akun_hutang_id,
+            akun_perkiraan_id=control_account(db, retur.purchase_invoice) if retur.purchase_invoice else supplier.akun_hutang_id,
             debit=grand_total,
             keterangan=f"Kurangi utang retur {no_retur}",
         ),
