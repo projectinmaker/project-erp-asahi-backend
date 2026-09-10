@@ -10,6 +10,7 @@ class PenerimaanBarang(BaseModel, BaseMixin):
     __tablename__ = "penerimaan_barang"
 
     no_form = Column(String(30), unique=True, nullable=False, index=True)
+    gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_order.id"), nullable=False)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=False)
