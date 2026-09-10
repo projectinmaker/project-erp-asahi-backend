@@ -265,6 +265,7 @@ def create_purchase_retur(
         details_data = [d.model_dump() for d in data_in.details]
         return svc.create_purchase_retur(
             db=db,
+            gudang_id=data_in.gudang_id,
             purchase_invoice_id=data_in.purchase_invoice_id,
             tanggal=data_in.tanggal,
             purchase_order_id=data_in.purchase_order_id,
@@ -364,6 +365,7 @@ def create_penerimaan(
         details_data = [d.model_dump() for d in data_in.details]
         return svc.create_penerimaan(
             db=db,
+            gudang_id=data_in.gudang_id,
             tanggal=data_in.tanggal,
             purchase_order_id=data_in.purchase_order_id,
             supplier_id=data_in.supplier_id,

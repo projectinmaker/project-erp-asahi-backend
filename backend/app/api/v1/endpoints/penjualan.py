@@ -275,6 +275,8 @@ def create_sales_retur(
         details_data = [d.model_dump() for d in data_in.details]
         return svc.create_sales_retur(
             db=db,
+            pengiriman_id=data_in.pengiriman_id,
+            gudang_id=data_in.gudang_id,
             tanggal=data_in.tanggal,
             sales_invoice_id=data_in.sales_invoice_id,
             pelanggan_id=data_in.pelanggan_id,
@@ -375,6 +377,7 @@ def create_pengiriman(
         details_data = [d.model_dump() for d in data_in.details]
         return svc.create_pengiriman(
             db=db,
+            gudang_id=data_in.gudang_id,
             tanggal=data_in.tanggal,
             sales_order_id=data_in.sales_order_id,
             pelanggan_id=data_in.pelanggan_id,

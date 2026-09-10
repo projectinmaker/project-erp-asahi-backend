@@ -59,6 +59,7 @@ def create_penyesuaian(
     try:
         return svc.create_penyesuaian(
             db=db,
+            gudang_id=data_in.gudang_id,
             tanggal=data_in.tanggal,
             barang_id=data_in.barang_id,
             tipe=data_in.tipe,

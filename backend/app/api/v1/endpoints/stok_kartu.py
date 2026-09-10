@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.api.deps import get_current_db as get_db
 from app.schemas.base import PaginatedResponse
 from app.schemas.stok_kartu import (
     StokKartuEntryResponse,
@@ -116,3 +116,19 @@ def rekalkulasi_stok_kartu(
         raise HTTPException(status_code=500, detail=f"Rekalkulasi gagal: {str(e)}")
 
     return result
+
+
+@router.get('/stok-kartu/rekonsiliasi')
+def reconcile_stock(barang_id: UUID, db: Session = Depends(get_db)):
+    from app.models.master.barang import Barang
+    from app.services.warehouse_service import reconcile
+    barang = db.get(Barang, barang_id)
+    if not barang:
+        raise HTTPException(404, 'Barang tidak ditemukan')
+    return reconcile(db, barang)
+
+
+@router.get('/stok-kartu/rekonsiliasi-buku-besar')
+def reconcile_inventory_ledger(db: Session = Depends(get_db)):
+    from app.services.warehouse_service import reconcile_ledger
+    return reconcile_ledger(db)
