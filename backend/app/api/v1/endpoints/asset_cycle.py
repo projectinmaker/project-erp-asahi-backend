@@ -18,8 +18,11 @@ def create_asset_event(data: AssetEventCreate, db=Depends(get_current_db), user=
 
 
 @router.get('', response_model=list[AssetEventResponse])
-def list_asset_events(aset_id: UUID = Query(..., alias='asetId'), skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), db=Depends(get_current_db)):
-    return db.query(AssetEvent).filter_by(aset_id=aset_id).order_by(AssetEvent.tanggal, AssetEvent.created_at).offset(skip).limit(limit).all()
+def list_asset_events(aset_id: UUID | None = Query(None, alias='asetId'), skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), db=Depends(get_current_db)):
+    query = db.query(AssetEvent)
+    if aset_id is not None:
+        query = query.filter_by(aset_id=aset_id)
+    return query.order_by(AssetEvent.tanggal, AssetEvent.created_at, AssetEvent.id).offset(skip).limit(limit).all()
 
 
 @router.get('/{event_id}', response_model=AssetEventResponse)
