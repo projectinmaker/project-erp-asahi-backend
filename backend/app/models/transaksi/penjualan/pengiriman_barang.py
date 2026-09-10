@@ -10,6 +10,7 @@ class PengirimanBarang(BaseModel, BaseMixin):
     __tablename__ = "pengiriman_barang"
 
     no_surat_jalan = Column(String(30), unique=True, nullable=False, index=True)
+    gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     ekspedisi = Column(String(100), nullable=True)
     sales_order_id = Column(UUID(as_uuid=True), ForeignKey("sales_order.id"), nullable=False)

@@ -10,6 +10,8 @@ class SalesRetur(BaseModel, BaseMixin):
     __tablename__ = "sales_retur"
 
     no_retur = Column(String(30), unique=True, nullable=False, index=True)
+    gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)
+    pengiriman_id = Column(UUID(as_uuid=True), ForeignKey("pengiriman_barang.id"), nullable=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     no_pengembalian = Column(String(50), nullable=True)
     sales_invoice_id = Column(UUID(as_uuid=True), ForeignKey("sales_invoice.id"), nullable=False)
