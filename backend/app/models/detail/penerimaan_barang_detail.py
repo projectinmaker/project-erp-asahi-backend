@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy import Date, Numeric, Column, Integer, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -10,6 +10,8 @@ class PenerimaanBarangDetail(BaseModel, BaseMixin):
 
     penerimaan_barang_id = Column(UUID(as_uuid=True), ForeignKey("penerimaan_barang.id"), nullable=False)
     barang_id = Column(UUID(as_uuid=True), ForeignKey("barang.id"), nullable=False)
+    harga_perolehan = Column(Numeric(18, 2), nullable=True)
+    tanggal_kedaluwarsa = Column(Date, nullable=True)
     qty = Column(Integer, default=0, nullable=False)
     satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id"), nullable=False)
 
