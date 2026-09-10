@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_db, get_current_user
+from app.api.reporting import report_scope
+from app.services.organization_service import apply_scope
 from app.models.master.pengguna import Pengguna
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.detail.jurnal_detail import JurnalDetail
@@ -33,7 +35,8 @@ def _update_manual(db, db_obj, data_in, actor):
     db.flush()
     for e in entries:
         db_obj.details.append(JurnalDetail(akun_perkiraan_id=e.akun_perkiraan_id, debit=e.debit, kredit=e.kredit, keterangan=e.keterangan))
-    db_obj.tanggal = data_in.tanggal
+    from app.services.reporting_ledger import local_datetime
+    db_obj.tanggal = local_datetime(data_in.tanggal)
     db_obj.keterangan = data_in.keterangan
     db_obj.total_debit, db_obj.total_kredit = debit, kredit
     wf = find_workflow(db, db_obj)
@@ -65,9 +68,10 @@ def get_jurnal_list(
     tanggal_akhir: Optional[datetime] = Query(None, alias="tanggalAkhir", description="Filter tanggal akhir"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
+    _scope=Depends(report_scope),
 ):
     """List semua jurnal umum dengan filter dan pagination."""
-    query = db.query(JurnalUmum).options(joinedload(JurnalUmum.creator))
+    query = apply_scope(db, db.query(JurnalUmum).options(joinedload(JurnalUmum.creator)), JurnalUmum)
 
     # Search filter
     if search:

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
@@ -17,10 +17,14 @@ from app.schemas.laporan import (
     RekapKasBankResponse,
     UmurPiutangResponse,
     UmurHutangResponse,
+    ReportValidationResponse,
 )
 from app.services import laporan_service
+from app.services.reporting_ledger import day_start, day_end
 
-router = APIRouter()
+from app.api.reporting import report_scope
+
+router = APIRouter(dependencies=[Depends(report_scope)])
 
 
 # ==========================================
@@ -36,8 +40,10 @@ def get_neraca_saldo(
 ):
     """Neraca Saldo (Trial Balance) — verifikasi Debit = Kredit."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -53,8 +59,10 @@ def get_perubahan_modal(
 ):
     """Laporan Perubahan Modal (Statement of Changes in Equity)."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -70,8 +78,10 @@ def get_laba_rugi(
 ):
     """Laporan Laba Rugi."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -86,7 +96,7 @@ def get_neraca(
 ):
     """Laporan Neraca (posisi keuangan)."""
     try:
-        dt = datetime.strptime(tanggal, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        dt = day_end(datetime.strptime(tanggal, "%Y-%m-%d"))
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -102,8 +112,10 @@ def get_arus_kas(
 ):
     """Laporan Arus Kas."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -122,7 +134,7 @@ def get_umur_piutang(
 ):
     """Laporan Umur Piutang (Aging Receivables)."""
     try:
-        dt = datetime.strptime(as_of, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        dt = day_end(datetime.strptime(as_of, "%Y-%m-%d"))
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -137,7 +149,7 @@ def get_umur_hutang(
 ):
     """Laporan Umur Hutang (Aging Payables)."""
     try:
-        dt = datetime.strptime(as_of, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        dt = day_end(datetime.strptime(as_of, "%Y-%m-%d"))
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -158,8 +170,10 @@ def get_buku_besar(
 ):
     """Rincian Buku Besar per akun."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -182,8 +196,10 @@ def get_mutasi_kas(
 ):
     """Laporan Mutasi Kas."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -199,8 +215,10 @@ def get_mutasi_bank(
 ):
     """Laporan Mutasi Bank."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
@@ -216,9 +234,18 @@ def get_rekap_kas_bank(
 ):
     """Rekap Kas & Bank (saldo awal, masuk, keluar, akhir per akun)."""
     try:
-        date_from = datetime.strptime(dari, "%Y-%m-%d")
-        date_to = datetime.strptime(sampai, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
+            raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
     return laporan_service.get_rekap_kas_bank(db, date_from, date_to)
+
+
+@router.get('/validasi', response_model=ReportValidationResponse)
+def validate_financial_reports(dari: date, sampai: date, db=Depends(get_current_db)):
+    if dari > sampai:
+        raise HTTPException(400, 'Tanggal dari tidak boleh setelah sampai')
+    return laporan_service.validate_reports(db, day_start(dari), day_end(sampai))

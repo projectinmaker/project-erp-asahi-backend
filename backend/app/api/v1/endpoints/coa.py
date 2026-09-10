@@ -122,7 +122,7 @@ def save_saldo_awal(
     """Set/overwrite saldo awal perusahaan.
 
     Membuat jurnal SALDO_AWAL (POSTED). Jika sudah pernah diset,
-    jurnal lama akan dihapus dan diganti yang baru.
+    jurnal lama dibalik, kemudian jurnal baru dibuat dalam satu transaksi.
     """
     from datetime import datetime as dt
     try:
