@@ -135,3 +135,5 @@ __all__ = [
     "StatusPeriode",
 ]
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent, IdempotentOperation
+
+from app.models.transaksi.payment_allocation import PaymentAllocation
