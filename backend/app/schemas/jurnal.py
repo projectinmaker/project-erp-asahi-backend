@@ -39,6 +39,11 @@ class PenggunaSimpleResponse(BaseSchema):
 # JURNAL UMUM - Response
 # ==========================================
 class JurnalUmumListResponse(BaseSchema):
+    company_id: Optional[UUID] = None
+    branch_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
+    cost_center_id: Optional[UUID] = None
+    project_id: Optional[UUID] = None
     """Ringkasan jurnal untuk list (tanpa detail lines)"""
     id: UUID
     no_jurnal: str
@@ -57,6 +62,11 @@ class JurnalUmumListResponse(BaseSchema):
 
 
 class JurnalUmumDetailResponse(BaseSchema):
+    company_id: Optional[UUID] = None
+    branch_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
+    cost_center_id: Optional[UUID] = None
+    project_id: Optional[UUID] = None
     """Jurnal lengkap dengan detail lines"""
     id: UUID
     no_jurnal: str

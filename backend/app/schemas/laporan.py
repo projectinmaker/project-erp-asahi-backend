@@ -28,10 +28,16 @@ class NeracaSaldoItem(BaseSchema):
     saldo_normal: str  # DEBIT / KREDIT
     total_debit: Decimal = Decimal("0")
     total_kredit: Decimal = Decimal("0")
-    saldo: Decimal = Decimal("0")  # net saldo sesuai saldo_normal
+    saldo: Decimal = Decimal("0")  # period movement, normal-side sign
+    saldo_awal: Decimal = Decimal("0")
+    saldo_akhir: Decimal = Decimal("0")
+    saldo_debit: Decimal = Decimal("0")
+    saldo_kredit: Decimal = Decimal("0")
 
 
 class NeracaSaldoResponse(BaseSchema):
+    total_saldo_debit: Decimal = Decimal("0")
+    total_saldo_kredit: Decimal = Decimal("0")
     periode: Periode
     akun: List[NeracaSaldoItem] = []
     total_debit: Decimal = Decimal("0")
@@ -51,6 +57,11 @@ class PerubahanModalItem(BaseSchema):
 
 
 class PerubahanModalResponse(BaseSchema):
+    mutasi_modal_non_penutupan: Decimal = Decimal("0")
+    transfer_penutupan: Decimal = Decimal("0")
+    laba_belum_ditutup_awal: Decimal = Decimal("0")
+    laba_belum_ditutup_akhir: Decimal = Decimal("0")
+    selisih_rekonsiliasi: Decimal = Decimal("0")
     periode: Periode
     akun_modal: List[PerubahanModalItem] = []
     laba_rugi_berjalan: Decimal = Decimal("0")
@@ -73,6 +84,7 @@ class LabaRugiResponse(BaseSchema):
 
 # --- Neraca ---
 class NeracaResponse(BaseSchema):
+    selisih: Decimal = Decimal("0")
     tanggal: str
     aset: List[AkunItem] = []
     kewajiban: List[AkunItem] = []
@@ -84,6 +96,8 @@ class NeracaResponse(BaseSchema):
 
 # --- Arus Kas ---
 class ArusKasItem(BaseSchema):
+    journal_id: Optional[UUID] = None
+    no_jurnal: Optional[str] = None
     nama: str
     jumlah: Decimal = Decimal("0")
 
@@ -94,6 +108,10 @@ class ArusKasBagian(BaseSchema):
 
 
 class ArusKasResponse(BaseSchema):
+    belum_diklasifikasikan: ArusKasBagian
+    jumlah_jurnal_belum_diklasifikasi: int = 0
+    klasifikasi_lengkap: bool = True
+    selisih_rekonsiliasi: Decimal = Decimal("0")
     periode: Periode
     operasional: ArusKasBagian
     investasi: ArusKasBagian
@@ -216,3 +234,17 @@ class RekapKasBankItem(BaseSchema):
 class RekapKasBankResponse(BaseSchema):
     periode: Periode
     akun: List[RekapKasBankItem] = []
+
+
+class InvalidReportingJournal(BaseSchema):
+    journal_id: UUID
+    no_jurnal: str
+
+
+class ReportValidationResponse(BaseSchema):
+    periode: Periode
+    valid: bool
+    checks: dict[str, Decimal]
+    jurnal_tidak_valid: List[InvalidReportingJournal]
+    klasifikasi_arus_kas_lengkap: bool
+    jumlah_jurnal_belum_diklasifikasi: int
