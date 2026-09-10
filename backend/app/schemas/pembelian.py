@@ -3,7 +3,7 @@ Schemas untuk modul Pembelian.
 PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang + Detail tabel.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
@@ -166,6 +166,8 @@ class PurchaseInvoiceDetailResponse(PurchaseInvoiceDetailBase):
 # PURCHASE INVOICE
 # ==========================================
 class PurchaseInvoiceBase(BaseSchema):
+    tanggal_jatuh_tempo: Optional[date] = None
+    syarat_bayar_id: Optional[UUID] = None
     tanggal: datetime
     supplier_id: UUID
     no_faktur: str
@@ -182,6 +184,8 @@ class PurchaseInvoiceCreate(PurchaseInvoiceBase):
 
 
 class PurchaseInvoiceUpdate(BaseSchema):
+    tanggal_jatuh_tempo: Optional[date] = None
+    syarat_bayar_id: Optional[UUID] = None
     tanggal: Optional[datetime] = None
     supplier_id: Optional[UUID] = None
     no_faktur: Optional[str] = None
@@ -241,6 +245,7 @@ class PurchaseReturDetailResponse(PurchaseReturDetailBase):
 # PURCHASE RETUR
 # ==========================================
 class PurchaseReturBase(BaseSchema):
+    purchase_invoice_id: Optional[UUID] = None
     tanggal: datetime
     purchase_order_id: UUID
     supplier_id: UUID
@@ -255,6 +260,7 @@ class PurchaseReturCreate(PurchaseReturBase):
 
 
 class PurchaseReturUpdate(BaseSchema):
+    purchase_invoice_id: Optional[UUID] = None
     tanggal: Optional[datetime] = None
     purchase_order_id: Optional[UUID] = None
     supplier_id: Optional[UUID] = None

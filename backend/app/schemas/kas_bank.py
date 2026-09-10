@@ -10,6 +10,7 @@ from typing import Optional, List
 from uuid import UUID
 
 from app.schemas.base import BaseSchema
+from app.schemas.settlement import AllocationResponse
 
 
 # ==========================================
@@ -83,6 +84,8 @@ class PembayaranKasUpdate(BaseSchema):
 
 
 class PembayaranKasResponse(PembayaranKasBase):
+    supplier_id: Optional[UUID] = None
+    alokasi: List[AllocationResponse] = []
     id: UUID
     no_bukti: str
     total_nilai: Decimal
@@ -139,6 +142,8 @@ class PenerimaanKasUpdate(BaseSchema):
 
 
 class PenerimaanKasResponse(PenerimaanKasBase):
+    pelanggan_id: Optional[UUID] = None
+    alokasi: List[AllocationResponse] = []
     id: UUID
     no_bukti: str
     total_nilai: Decimal

@@ -1,3 +1,4 @@
+from uuid import UUID
 """
 Schemas untuk Laporan/Reporting.
 """
@@ -145,6 +146,11 @@ class MutasiKasBankResponse(BaseSchema):
 
 # --- Umur Piutang / Hutang (Aging) ---
 class UmurInvoice(BaseSchema):
+    invoice_id: Optional[UUID] = None
+    nilai_tagihan: Decimal = Decimal("0")
+    total_bayar: Decimal = Decimal("0")
+    total_retur: Decimal = Decimal("0")
+    status_pembayaran: Optional[str] = None
     no_dokumen: str
     tanggal: str
     jatuh_tempo: str
@@ -153,6 +159,7 @@ class UmurInvoice(BaseSchema):
 
 
 class UmurItem(BaseSchema):
+    pihak_id: Optional[UUID] = None
     nama: str
     total: Decimal = Decimal("0")
     belum_jatuh_tempo: Decimal = Decimal("0")
@@ -164,6 +171,11 @@ class UmurItem(BaseSchema):
 
 
 class UmurPiutangResponse(BaseSchema):
+    dokumen_kas_tanpa_alokasi: int = 0
+    nilai_kas_tanpa_alokasi: Decimal = Decimal("0")
+    retur_tanpa_invoice: int = 0
+    nilai_retur_tanpa_invoice: Decimal = Decimal("0")
+    kelebihan_pelunasan: Decimal = Decimal("0")
     as_of_date: str
     items: List[UmurItem] = []
     total: Decimal = Decimal("0")
@@ -175,6 +187,11 @@ class UmurPiutangResponse(BaseSchema):
 
 
 class UmurHutangResponse(BaseSchema):
+    dokumen_kas_tanpa_alokasi: int = 0
+    nilai_kas_tanpa_alokasi: Decimal = Decimal("0")
+    retur_tanpa_invoice: int = 0
+    nilai_retur_tanpa_invoice: Decimal = Decimal("0")
+    kelebihan_pelunasan: Decimal = Decimal("0")
     as_of_date: str
     items: List[UmurItem] = []
     total: Decimal = Decimal("0")

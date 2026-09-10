@@ -3,7 +3,7 @@ Schemas untuk modul Penjualan.
 SalesOrder, SalesInvoice, SalesRetur, PengirimanBarang + Detail tabel.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
@@ -180,6 +180,7 @@ class SalesInvoiceDetailResponse(SalesInvoiceDetailBase):
 # SALES INVOICE
 # ==========================================
 class SalesInvoiceBase(BaseSchema):
+    tanggal_jatuh_tempo: Optional[date] = None
     tanggal: datetime
     pelanggan_id: UUID
     syarat_bayar_id: Optional[UUID] = None
@@ -201,6 +202,7 @@ class SalesInvoiceCreate(SalesInvoiceBase):
 
 
 class SalesInvoiceUpdate(BaseSchema):
+    tanggal_jatuh_tempo: Optional[date] = None
     tanggal: Optional[datetime] = None
     pelanggan_id: Optional[UUID] = None
     syarat_bayar_id: Optional[UUID] = None
