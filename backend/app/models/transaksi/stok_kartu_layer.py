@@ -8,7 +8,7 @@ dikonsumsi terlebih dahulu.
 Untuk metode AVERAGE, layer ini TIDAK digunakan — cukup update Barang.harga_pokok.
 """
 
-from sqlalchemy import Column, Integer, Numeric, ForeignKey, DateTime, String, Enum as SQLEnum
+from sqlalchemy import Date, Column, Integer, Numeric, ForeignKey, DateTime, String, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -32,6 +32,7 @@ class StokKartuLayer(BaseModel, BaseMixin):
     qty_sisa = Column(Integer, nullable=False)
 
     # Tanggal masuk (digunakan FEFO — semakin dekat expiry, semakin diprioritaskan)
+    tanggal_kedaluwarsa = Column(Date, nullable=True)
     tanggal_masuk = Column(DateTime(timezone=True), nullable=False)
 
     # Referensi sumber transaksi

@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Text, Integer, Numeric, ForeignKey, Enum as SQLEnum, DateTime
+from sqlalchemy import JSON, Column, String, Text, Integer, Numeric, ForeignKey, Enum as SQLEnum, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -19,6 +19,12 @@ class TipeMutasiStok(str, enum.Enum):
 class StokMutasi(BaseModel, BaseMixin):
     __tablename__ = "stok_mutasi"
 
+    warehouse_qty_before = Column(Integer, nullable=True)
+    warehouse_qty_after = Column(Integer, nullable=True)
+    global_value_after = Column(Numeric(18, 2), nullable=True)
+    cost_parts = Column(JSON, nullable=True)
+    inventory_account_id = Column(UUID(as_uuid=True), ForeignKey('akun_perkiraan.id'), nullable=True)
+    expense_account_id = Column(UUID(as_uuid=True), ForeignKey('akun_perkiraan.id'), nullable=True)
     barang_id = Column(UUID(as_uuid=True), ForeignKey("barang.id"), nullable=False)
     tipe = Column(SQLEnum(TipeMutasiStok), nullable=False)
     qty = Column(Integer, default=0, nullable=False)
