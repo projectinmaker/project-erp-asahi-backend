@@ -315,6 +315,13 @@ def seed_phase3_coa_and_settings():
             # sementara ke "Pendapatan (Biaya) Lainnya" (402.000.002). Redirect ke
             # akun lain via halaman Setting Akun kalau mau akun khusus.
             ("PENDAPATAN_ANGKUT", "Pendapatan Angkut", "402", "000", "002"),
+            # Tahap 2: Akun perantara Penerimaan Dalam Proses (GRNI) — opsional.
+            # Default di-map ke "Hutang Usaha" (220.000.000) sebagai fallback.
+            # Admin/Manajer keuangan dapat mengganti ke akun khusus "Penerimaan
+            # Dalam Proses" via halaman Setting Akun setelah membuat akun tersebut
+            # di modul COA. Jika tetap memakai Hutang Usaha, jurnal penerimaan
+            # akan K: Hutang Usaha dan invoice akan D: Hutang Usaha (clearing).
+            ("PENERIMAAN_DALAM_PROSES", "Penerimaan Dalam Proses (GRNI)", "220", "000", "000"),
         ]
 
         inserted_setting = 0
