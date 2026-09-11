@@ -360,7 +360,11 @@ def create_penerimaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat Penerimaan Barang baru (auto-generate no form)."""
+    """Buat Penerimaan Barang baru (auto-generate no form).
+
+    Tahap 2: Field `purchase_invoice_id` opsional untuk anti double-record
+    Persediaan (link ke invoice yang akan dipost nanti).
+    """
     try:
         details_data = [d.model_dump() for d in data_in.details]
         return svc.create_penerimaan(
@@ -373,6 +377,7 @@ def create_penerimaan(
             alamat=data_in.alamat,
             keterangan=data_in.keterangan,
             created_by=current_user.id,
+            purchase_invoice_id=data_in.purchase_invoice_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
