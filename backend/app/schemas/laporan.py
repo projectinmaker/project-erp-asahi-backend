@@ -248,3 +248,81 @@ class ReportValidationResponse(BaseSchema):
     jurnal_tidak_valid: List[InvalidReportingJournal]
     klasifikasi_arus_kas_lengkap: bool
     jumlah_jurnal_belum_diklasifikasi: int
+
+
+# ==========================================
+# Tahap 3 — Rekonsiliasi Persediaan vs Buku Besar
+# ==========================================
+
+class RekonsiliasiPersediaanAkunItem(BaseSchema):
+    id: str
+    kode: str
+    nama: str
+    status: Optional[str] = None
+
+
+class RekonsiliasiPersediaanBarangItem(BaseSchema):
+    id: str
+    kode: str
+    nama: str
+    qty: int = 0
+    nilai_stok: Decimal = Decimal("0")
+    akun_persediaan_id: Optional[str] = None
+    status_mapping: str = "MAPPED"  # MAPPED | FALLBACK
+
+
+class RekonsiliasiPersediaanAkunRow(BaseSchema):
+    akun: RekonsiliasiPersediaanAkunItem
+    saldo_buku_besar: Decimal = Decimal("0")
+    total_nilai_stok: Decimal = Decimal("0")
+    selisih: Decimal = Decimal("0")  # buku_besar - stok
+    status: str = "MATCH"  # MATCH | MISMATCH
+    barang: List[RekonsiliasiPersediaanBarangItem] = []
+
+
+class RekonsiliasiPersediaanBarangBelumDipetakan(BaseSchema):
+    id: str
+    kode: str
+    nama: str
+    qty: int = 0
+    nilai_stok: Decimal = Decimal("0")
+    kategori: Optional[str] = None
+
+
+class RekonsiliasiPersediaanRingkasan(BaseSchema):
+    total_akun_diperiksa: int = 0
+    total_akun_match: int = 0
+    total_akun_mismatch: int = 0
+    total_akun_unmapped: int = 0
+    total_selisih: Decimal = Decimal("0")
+
+
+class RekonsiliasiPersediaanResponse(BaseSchema):
+    as_of: str
+    ringkasan: RekonsiliasiPersediaanRingkasan
+    items: List[RekonsiliasiPersediaanAkunRow] = []
+    barang_belum_dipetakan: List[RekonsiliasiPersediaanBarangBelumDipetakan] = []
+
+
+class RekonsiliasiPersediaanRingkasanResponse(BaseSchema):
+    as_of: str
+    ringkasan: RekonsiliasiPersediaanRingkasan
+
+
+# ==========================================
+# Tahap 3 — Audit Transaksi Persediaan
+# ==========================================
+
+class AuditTransaksiAnomali(BaseSchema):
+    tipe: str  # PENERIMAAN | PENGIRIMAN | RETUR_PEMBELIAN | RETUR_PENJUALAN | PENYESUAIAN
+    id: str
+    no_dokumen: Optional[str] = None
+    status: Optional[str] = None
+    jurnal_umum_id: Optional[str] = None
+    catatan: str
+
+
+class AuditTransaksiPersediaanResponse(BaseSchema):
+    periode: Periode
+    summary: dict
+    anomali: List[AuditTransaksiAnomali] = []
