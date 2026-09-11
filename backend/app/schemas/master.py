@@ -153,6 +153,7 @@ class SupplierCoaResponse(BaseSchema):
 # 3. BARANG
 # ==========================================
 class BarangBase(BaseSchema):
+    akun_persediaan_id: Optional[UUID] = None
     kode: str
     nama: str
     kategori_id: UUID
@@ -165,6 +166,7 @@ class BarangBase(BaseSchema):
 class BarangCreate(BarangBase): pass
 
 class BarangUpdate(BaseSchema):
+    akun_persediaan_id: Optional[UUID] = None
     nama: Optional[str] = None
     kategori_id: Optional[UUID] = None
     satuan_id: Optional[UUID] = None
@@ -175,6 +177,7 @@ class BarangUpdate(BaseSchema):
     jenis_barang: Optional[str] = None
 
 class BarangResponse(BarangBase):
+    akun_persediaan: Optional[COASimpleResponse] = None
     id: UUID
     stok: int
     status: str
