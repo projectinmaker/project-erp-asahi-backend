@@ -14,6 +14,10 @@ class PenerimaanBarang(BaseModel, BaseMixin):
     tanggal = Column(DateTime(timezone=True), nullable=False)
     purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_order.id"), nullable=False)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=False)
+    # Tahap 2: Optional link ke purchase_invoice untuk anti double-record
+    # Persediaan. Jika diisi, saat invoice dipost, sistem akan clear akun
+    # perantara PENERIMAAN_DALAM_PROSES (D) alih-alih D: Pembelian (cara lama).
+    purchase_invoice_id = Column(UUID(as_uuid=True), ForeignKey("purchase_invoice.id"), nullable=True, index=True)
     alamat = Column(Text, nullable=True)
     auto_post_jurnal = Column(Boolean, default=True, nullable=False)
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
@@ -26,4 +30,5 @@ class PenerimaanBarang(BaseModel, BaseMixin):
     supplier = relationship("Supplier")
     jurnal = relationship("JurnalUmum")
     creator = relationship("Pengguna", foreign_keys=[created_by])
+    purchase_invoice = relationship("PurchaseInvoice", foreign_keys=[purchase_invoice_id])
     details = relationship("PenerimaanBarangDetail", back_populates="penerimaan_barang", cascade="all, delete-orphan")
