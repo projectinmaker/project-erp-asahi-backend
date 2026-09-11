@@ -327,6 +327,11 @@ class PenerimaanBarangBase(BaseSchema):
     supplier_id: UUID
     alamat: Optional[str] = None
     keterangan: Optional[str] = None
+    # Tahap 2: Optional link ke purchase_invoice untuk anti double-record
+    # Persediaan. Bila diisi DAN akun PENERIMAAN_DALAM_PROSES sudah di-configure,
+    # saat invoice dipost, sistem akan D: PENERIMAAN_DALAM_PROSES (clearing)
+    # alih-alih D: Pembelian.
+    purchase_invoice_id: Optional[UUID] = None
 
 
 class PenerimaanBarangCreate(PenerimaanBarangBase):
@@ -340,12 +345,14 @@ class PenerimaanBarangUpdate(BaseSchema):
     supplier_id: Optional[UUID] = None
     alamat: Optional[str] = None
     keterangan: Optional[str] = None
+    purchase_invoice_id: Optional[UUID] = None
 
 
 class PenerimaanBarangResponse(PenerimaanBarangBase):
     id: UUID
     no_form: str
     status: str
+    jurnal_umum_id: Optional[UUID] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
