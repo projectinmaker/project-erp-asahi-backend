@@ -401,6 +401,19 @@ def create_supplier_from_coa(
 # ==========================================
 # BARANG ENDPOINTS
 # ==========================================
+@router.get('/barang-akun-persediaan', response_model=PaginatedResponse[COASimpleResponse])
+def get_barang_inventory_accounts(skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
+    search: Optional[str] = None, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    from app.models.akun_perkiraan import AkunPerkiraan
+    from sqlalchemy import or_
+    query = master_service.inventory_account_candidates(db)
+    if search:
+        query = query.filter(or_(AkunPerkiraan.kode.ilike(f'%{search}%'), AkunPerkiraan.nama.ilike(f'%{search}%')))
+    total = query.count()
+    return {'data': query.order_by(AkunPerkiraan.kode, AkunPerkiraan.id).offset(skip).limit(limit).all(),
+            'total': total, 'skip': skip, 'limit': limit}
+
+
 @router.get("/barang", response_model=PaginatedResponse[BarangResponse])
 def get_barang_list(
     skip: int = Query(0, ge=0),
