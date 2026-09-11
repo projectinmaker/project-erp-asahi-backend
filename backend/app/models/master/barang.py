@@ -30,6 +30,8 @@ class Barang(BaseModel, BaseMixin):
     )
     status = Column(String(20), default="AKTIF", nullable=False)
     jenis_barang = Column(String(20), nullable=True)
+    akun_persediaan_id = Column(UUID(as_uuid=True), ForeignKey('akun_perkiraan.id', name='fk_barang_akun_persediaan'), nullable=True, index=True)
+    akun_persediaan = relationship('AkunPerkiraan', foreign_keys=[akun_persediaan_id])
 
     kategori = relationship("KategoriBarang", backref="barangs")
     satuan = relationship("Satuan")
