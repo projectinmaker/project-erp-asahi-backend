@@ -78,6 +78,7 @@ def create_master(
     if table.name == 'barang' and 'stok' in table.c:
         from app.services.accounting_control import accounting_lock
         accounting_lock(db)
+        validate_barang_account(db, data.get('akun_persediaan_id'))
     if allow_reactivate and key and "status" in table.c:
         # Serialize create dengan kode yang sama, termasuk saat belum ada row.
         # Lock otomatis dilepas ketika transaksi commit/rollback.
@@ -115,7 +116,7 @@ def create_master(
                         data[inventory_field] = getattr(existing, inventory_field)
             for field, value in data.items():
                 # COA lama dipertahankan bila request tidak memberi pengganti.
-                if field in ("akun_piutang_id", "akun_hutang_id") and value is None:
+                if field in ("akun_piutang_id", "akun_hutang_id", "akun_persediaan_id") and value is None:
                     continue
                 setattr(existing, field, value)
             existing.status = "AKTIF"
@@ -132,6 +133,11 @@ def create_master(
 def update_master(db: Session, db_obj: Any, schema_in: BaseSchema) -> Any:
     """Fungsi generik untuk update data master yang sudah ada"""
     update_data = schema_in.model_dump(exclude_unset=True)
+    if db_obj.__table__.name == 'barang' and 'akun_persediaan_id' in update_data:
+        from app.services.accounting_control import accounting_lock
+        accounting_lock(db)
+        if update_data['akun_persediaan_id'] != db_obj.akun_persediaan_id:
+            validate_barang_account(db, update_data['akun_persediaan_id'])
     if db_obj.__table__.name == "barang" and any(field in update_data for field in ('stok', 'harga_pokok', 'metode_valuasi')):
         protect_inventory(db, db_obj, update_data)
     for field, value in update_data.items():
@@ -162,3 +168,25 @@ def protect_inventory(db, item, data):
         for field in ('stok', 'harga_pokok', 'metode_valuasi'):
             if field in data and data[field] != getattr(item, field):
                 raise HTTPException(400, 'Stok, biaya, dan metode valuasi tidak boleh diubah langsung setelah ada saldo/mutasi')
+
+
+def inventory_account_candidates(db):
+    """Structural candidates; accounting chooses the actual inventory account."""
+    from app.models.akun_perkiraan import AkunPerkiraan
+    from app.models.master.kas_bank_akun import KasBankAkun
+    from app.models.master.pelanggan import Pelanggan
+    from app.models.master.supplier import Supplier
+    account = AkunPerkiraan
+    query = db.query(account).filter(account.header == 'AKTIVA', account.tingkat == 'DETAIL',
+        account.saldo_normal == 'DEBIT', account.status == 'AKTIF', account.is_subledger == False)
+    for model, field in ((KasBankAkun, 'akun_perkiraan_id'), (Pelanggan, 'akun_piutang_id'), (Supplier, 'akun_hutang_id')):
+        query = query.filter(~db.query(model.id).filter(getattr(model, field) == account.id).exists())
+    return query
+
+
+def validate_barang_account(db, account_id):
+    if account_id is None:
+        return
+    from app.models.akun_perkiraan import AkunPerkiraan
+    if inventory_account_candidates(db).filter(AkunPerkiraan.id == account_id).first() is None:
+        raise HTTPException(400, 'Akun Persediaan harus akun AKTIVA DETAIL, saldo normal DEBIT, AKTIF, bukan subledger atau akun kas/piutang/hutang yang terhubung')

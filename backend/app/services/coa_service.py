@@ -179,6 +179,9 @@ def delete_coa(db: Session, coa: AkunPerkiraan) -> None:
     dipakai transaksi. Kalau sudah dipakai / masih ada dependency, akun
     sebaiknya dinonaktifkan (status=NONAKTIF) lewat PUT, bukan dihapus.
     """
+    from app.models.master.barang import Barang
+    if db.query(Barang.id).filter(Barang.akun_persediaan_id == coa.id).first():
+        raise ValueError('Akun terhubung sebagai akun Persediaan barang; lepaskan mapping sebelum menghapus akun')
     if db.query(JurnalDetail).filter(JurnalDetail.akun_perkiraan_id == coa.id).first():
         raise ValueError(
             "Akun ini sudah punya transaksi jurnal, tidak bisa dihapus. "
