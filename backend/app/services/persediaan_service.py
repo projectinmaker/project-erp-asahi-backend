@@ -32,21 +32,42 @@ from app.utils.nomor_dokumen import get_nomor_dokumen
 
 
 # ==========================================
-# HELPER: Mapping kategori barang -> COA persediaan
+# HELPER: Resolve COA Persediaan (Tahap 2 — prefer mapping barang, fallback kategori/default)
 # ==========================================
 
 def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
-    """Tentukan COA persediaan berdasarkan kategori barang.
+    """Tentukan COA Persediaan untuk barang.
 
-    Mapping keyword pada nama kategori:
-    - 'Bahan Baku' / 'BAKU' -> PERSEDIAAN_BAHAN_BAKU
-    - 'WIP' / 'Dalam Proses' -> PERSEDIAAN_WIP
-    - 'Barang Jadi' / 'JADI' -> PERSEDIAAN_BARANG_JADI
-    - 'Bahan Pembantu' / 'PEMBANTU' -> PERSEDIAAN_BAHAN_PEMBANTU
-    - lainnya -> fallback ke PERSEDIAAN_BAHAN_BAKU (dengan warning)
+    Algoritma (Tahap 2):
+    1. Jika `barang.akun_persediaan_id` diisi -> pakai mapping tersebut.
+    2. Jika tidak, fallback ke mapping kategori/default (Tahap 1 behavior):
+       - 'Bahan Baku' / 'BAKU'      -> PERSEDIAAN_BAHAN_BAKU
+       - 'WIP' / 'Dalam Proses'      -> PERSEDIAAN_WIP
+       - 'Barang Jadi' / 'JADI'      -> PERSEDIAAN_BARANG_JADI
+       - 'Bahan Pembantu' / 'PEMBANTU' -> PERSEDIAAN_BAHAN_PEMBANTU
+       - lainnya                      -> PERSEDIAAN_BAHAN_BAKU (dengan warning)
+
+    Catatan:
+    - Mapping per-barang (Tahap 1) bersifat opsional; barang lama yang belum
+      dipetakan akan tetap menggunakan mapping kategori/default. Ini menjaga
+      kompatibilitas dengan transaksi yang sudah ada.
+    - Akun NONAKTIF yang sudah dipetakan tetap dipakai (mapping historis);
+    - Jika mapping barang mengarah ke akun yang tidak valid secara struktural,
+      akan dibiarkan lewat di sini (validasi struktur dilakukan saat
+      create/update barang di master_service.validate_barang_account).
+
+    Raises:
+        ValueError: jika barang tidak punya kategori ATAU mapping kategori
+                    tidak ditemukan di setting_akun.
     """
+    if getattr(barang, "akun_persediaan_id", None):
+        return barang.akun_persediaan_id
+
     if not barang.kategori:
-        raise ValueError(f"Barang {barang.kode} tidak memiliki kategori")
+        raise ValueError(
+            f"Barang {barang.kode} belum dipetakan ke akun Persediaan "
+            f"dan tidak memiliki kategori untuk fallback"
+        )
 
     nama_upper = barang.kategori.nama.upper()
 
@@ -66,6 +87,39 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
         key = sa_cfg.KEY_PERSEDIAAN_BAHAN_BAKU
 
     return sa_cfg.get_akun_id_or_raise(db, key, f"Barang {barang.kode} ({barang.kategori.nama})")
+
+
+# ==========================================
+# HELPER (Tahap 2): Akun perantara Penerimaan Dalam Proses (GRNI)
+# ==========================================
+
+def _get_akun_penerimaan_dalam_proses_id(db: Session) -> Optional[UUID]:
+    """Ambil UUID akun perantara Penerimaan Dalam Proses (opsional).
+
+    Return:
+        UUID akun perantara, atau None jika belum di-configure di setting_akun.
+
+    Catatan:
+    - Akun perantara dipakai saat `finish_penerimaan` mempost D: Persediaan,
+      K: PENERIMAAN_DALAM_PROSES.
+    - Saat `post_purchase_invoice` terkait, akun ini di-debit (clearing).
+    - Jika None: penerimaan TIDAK mempost jurnal (legacy), invoice tetap D: Pembelian.
+    """
+    return sa_cfg.get_akun_id(db, sa_cfg.KEY_PENERIMAAN_DALAM_PROSES)
+
+
+def _require_inventory_mapping(barang: Barang) -> None:
+    """Validasi bahwa barang sudah punya mapping Persediaan (Tahap 2).
+
+    Saat ini hanya warning; mapping kosong masih diizinkan karena fallback
+    ke kategori/default tetap berfungsi. Helper ini disediakan untuk
+    penguncian di Tahap 3 (rekonsiliasi laporan).
+    """
+    if not getattr(barang, "akun_persediaan_id", None):
+        logger.warning(
+            f"Barang {barang.kode} belum dipetakan ke akun Persediaan; "
+            f"memakai fallback kategori/default."
+        )
 
 
 # ==========================================

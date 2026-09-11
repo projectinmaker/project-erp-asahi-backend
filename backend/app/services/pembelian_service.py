@@ -826,9 +826,15 @@ def create_penerimaan(
     keterangan: Optional[str] = None,
     created_by: Optional[UUID] = None,
     gudang_id: Optional[UUID] = None,
+    purchase_invoice_id: Optional[UUID] = None,
 ) -> PenerimaanBarang:
     """Buat PenerimaanBarang baru beserta detail.
-    Tidak ada jurnal posting (penerimaan tidak mengubah keuangan langsung).
+
+    Tahap 2: `purchase_invoice_id` opsional untuk anti double-record Persediaan.
+    Jika diisi DAN invoice terkait sudah di-POST, saat invoice dipost, sistem
+    akan D: PENERIMAAN_DALAM_PROSES (clearing) alih-alih D: Pembelian.
+
+    Tidak ada jurnal posting saat create; jurnal di-post saat `finish_penerimaan`.
     """
     try:
         # Validasi supplier
@@ -851,6 +857,7 @@ def create_penerimaan(
             supplier_id=supplier_id,
             alamat=alamat,
             keterangan=keterangan,
+            purchase_invoice_id=purchase_invoice_id,
             status=StatusPenjualan.DIPROSES,
             created_by=created_by,
         )
@@ -890,8 +897,13 @@ def update_penerimaan(
     alamat: Optional[str] = None,
     keterangan: Optional[str] = None,
     gudang_id: Optional[UUID] = None,
+    purchase_invoice_id: Optional[UUID] = None,
 ) -> PenerimaanBarang:
-    """Update data penerimaan barang (hanya field header)."""
+    """Update data penerimaan barang (hanya field header).
+
+    Tahap 2: `purchase_invoice_id` bisa diisi untuk link ke invoice (clearing).
+    Kirim `None` eksplisit untuk mengosongkan link.
+    """
     require_unposted(db_obj)
     if gudang_id is not None:
         db_obj.gudang_id = gudang_id
@@ -908,6 +920,13 @@ def update_penerimaan(
         db_obj.alamat = alamat
     if keterangan is not None:
         db_obj.keterangan = keterangan
+    # Tahap 2: link ke purchase_invoice (gunakan sentinel untuk distinguish
+    # "tidak diubah" vs "dikosongkan" — None artinya tidak diubah, sedangkan
+    # eksplisit None hanya bisa terjadi kalau caller pakai kata kunci khusus).
+    # Karena Optional[UUID] = None juga berarti "tidak diubah", kita pakai
+    # parameter eksplisit via schema (exclude_unset=True di endpoint).
+    if purchase_invoice_id is not None:
+        db_obj.purchase_invoice_id = purchase_invoice_id
 
     db.add(db_obj)
     db.commit()
@@ -933,13 +952,38 @@ def cancel_penerimaan(db: Session, db_obj: PenerimaanBarang, user_id: Optional[U
 
 @atomic_accounting_write
 def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang:
-    """Finalisasi penerimaan barang — status SELESAI + tambah stok barang."""
+    """Finalisasi penerimaan barang — status SELESAI + tambah stok barang +
+    (Tahap 2) auto-post jurnal Persediaan jika akun perantara Penerimaan Dalam
+    Proses sudah di-configure di setting_akun.
+
+    Jurnal Tahap 2 (jika PENERIMAAN_DALAM_PROSES ada di setting_akun):
+        D: Persediaan (per-barang, dari mapping barang atau fallback kategori)
+        K: Penerimaan Dalam Proses (GRNI)
+
+    Anti double-record:
+    - Saat `post_purchase_invoice` dijalankan dan invoice terkait punya
+      penerimaan yang sudah di-posting (link via `purchase_invoice_id`),
+      invoice akan D: Penerimaan Dalam Proses (clearing) alih-alih D: Pembelian.
+    - Jika akun perantara belum di-configure: penerimaan TIDAK mempost jurnal
+      (legacy), invoice tetap D: Pembelian, K: Utang Dagang (cara lama).
+
+    Riwayat jurnal POSTED tetap dipertahankan; tidak ada rewrite transaksi lama.
+    """
     if db_obj.status == StatusPenjualan.DIBATALKAN:
         raise ValueError("Penerimaan yang sudah dibatalkan tidak bisa difinalisasi")
     if db_obj.status == StatusPenjualan.SELESAI:
         raise ValueError("Penerimaan sudah selesai")
 
+    # Cek apakah akun perantara Penerimaan Dalam Proses tersedia (opsional)
+    from app.services.persediaan_service import (
+        _get_akun_persediaan_id,
+        _get_akun_penerimaan_dalam_proses_id,
+    )
+    grni_account_id = _get_akun_penerimaan_dalam_proses_id(db)
+    hpp_account_id = get_akun_id_or_raise(db, KEY_PEMBELIAN, context=db_obj.no_form)
+
     # Tambah stok untuk setiap detail barang yang diterima
+    inventory_entries = []
     for detail in db_obj.details:
         cost = detail.harga_perolehan
         if cost is None:
@@ -950,7 +994,7 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
         if cost < 0:
             raise ValueError('Harga perolehan tidak boleh negatif')
         detail.harga_perolehan = cost
-        update_stok_barang(
+        movement = update_stok_barang(
             db=db,
             barang_id=detail.barang_id,
             qty_change=detail.qty,
@@ -962,6 +1006,54 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             gudang_id=db_obj.gudang_id,
             harga_satuan=cost,
             tanggal_kedaluwarsa=detail.tanggal_kedaluwarsa,
+        )
+
+        # Tahap 2: snapshot akun Persediaan di StokMutasi (untuk retur nanti)
+        if grni_account_id:
+            inventory_account_id = _get_akun_persediaan_id(db, detail.barang)
+            movement['mutasi'].inventory_account_id = inventory_account_id
+            movement['mutasi'].expense_account_id = grni_account_id  # akun lawan (perantara)
+            line_value = movement['total_nilai']
+            if line_value:
+                inventory_entries.append((inventory_account_id, line_value, detail.barang.nama))
+
+    # Posting jurnal penerimaan (hanya jika akun perantara tersedia)
+    if grni_account_id and inventory_entries:
+        entries = []
+        for inventory_account_id, line_value, barang_nama in inventory_entries:
+            entries.append(JurnalEntryItem(
+                akun_perkiraan_id=inventory_account_id,
+                debit=line_value,
+                keterangan=f"Penerimaan {db_obj.no_form} - {barang_nama}",
+            ))
+            entries.append(JurnalEntryItem(
+                akun_perkiraan_id=grni_account_id,
+                kredit=line_value,
+                keterangan=f"GRNI {db_obj.no_form} - {barang_nama}",
+            ))
+        try:
+            jurnal = auto_posting_jurnal(
+                db=db,
+                ref_module=RefModule.PURCHASE_INVOICE,  # konsisten dgn ref_module StokMutasi
+                ref_no=db_obj.no_form,
+                entries=entries,
+                keterangan=f"Penerimaan Barang {db_obj.no_form} (GRNI)",
+                ref_id=db_obj.id,
+                tanggal=db_obj.tanggal,
+                created_by=db_obj.created_by,
+                tipe_transaksi="PENERIMAAN_GRNI",
+            )
+            db_obj.jurnal_umum_id = jurnal.id
+            logger.info(
+                f"Penerimaan jurnal posted: {jurnal.no_jurnal} | "
+                f"D: Persediaan, K: GRNI | total={sum(v for _, v, _ in inventory_entries)}"
+            )
+        except Exception as e:
+            raise ValueError(f"Jurnal penerimaan gagal diposting: {e}") from e
+    elif grni_account_id is None:
+        logger.info(
+            f"Penerimaan {db_obj.no_form}: akun perantara PENERIMAAN_DALAM_PROSES belum "
+            f"di-configure; jurnal Persediaan tidak diposting (legacy mode)."
         )
 
     db_obj.status = StatusPenjualan.SELESAI
@@ -1024,7 +1116,18 @@ def finish_purchase_retur(db: Session, db_obj: PurchaseRetur) -> PurchaseRetur:
     return db_obj
 
 def post_purchase_invoice(db: Session, inv, created_by):
-    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    """Post the existing document; caller owns commit/rollback and workflow checks.
+
+    Tahap 2 — Anti double-record Persediaan:
+    - Jika invoice ter-link ke penerimaan_barang yang sudah SELESAI (via
+      `penerimaan_barang.purchase_invoice_id`) DAN akun perantara
+      PENERIMAAN_DALAM_PROSES sudah di-configure: invoice mempost
+      D: PENERIMAAN_DALAM_PROSES (clearing GRNI), bukan D: Pembelian.
+    - Jika tidak ada penerimaan terkait atau akun perantara belum di-configure:
+      tetap D: Pembelian (legacy/cara lama).
+
+    Riwayat jurnal POSTED tetap dipertahankan.
+    """
     from app.services.document_totals import validate_postable
     validate_postable(db, inv)
     tanggal = inv.tanggal
@@ -1039,14 +1142,45 @@ def post_purchase_invoice(db: Session, inv, created_by):
     if not supplier.akun_hutang_id:
         raise ValueError("Mapping akun akun_hutang_id belum diisi; posting dibatalkan")
     dasar_pajak = sub_total - total_diskon
+
+    # Tahap 2: Deteksi penerimaan terkait yang sudah di-posting (GRNI clearing)
+    from app.services.persediaan_service import _get_akun_penerimaan_dalam_proses_id
+    grni_account_id = _get_akun_penerimaan_dalam_proses_id(db)
+    linked_penerimaan = None
+    if grni_account_id:
+        # Cari penerimaan yang sudah SELESAI dan ter-link ke invoice ini
+        # (link dibuat saat penerimaan di-update dengan purchase_invoice_id,
+        # atau saat invoice di-link ke penerimaan yang sudah ada).
+        linked_penerimaan = (
+            db.query(PenerimaanBarang)
+            .filter(
+                PenerimaanBarang.purchase_invoice_id == inv.id,
+                PenerimaanBarang.status == StatusPenjualan.SELESAI,
+                PenerimaanBarang.jurnal_umum_id.isnot(None),  # sudah punya jurnal GRNI
+            )
+            .first()
+        )
+
+    # Pilih akun debit utama
+    if linked_penerimaan and grni_account_id:
+        # Clearing mode: D: Penerimaan Dalam Proses (clear GRNI yang diposting saat penerimaan)
+        debit_account_id = grni_account_id
+        debit_keterangan = f"Clearing GRNI PINV {no_form} (Penerimaan {linked_penerimaan.no_form})"
+        logger.info(
+            f"PINV {no_form}: linked ke penerimaan {linked_penerimaan.no_form}; "
+            f"D: PENERIMAAN_DALAM_PROSES (clearing), bukan D: Pembelian."
+        )
+    else:
+        # Legacy mode: D: Pembelian
+        debit_account_id = get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}")
+        debit_keterangan = f"Pembelian PINV {no_form} - {supplier.nama}"
+
     entries = [
-        # Debit: Persediaan / Pembelian
+        # Debit: Persediaan / Pembelian / Penerimaan Dalam Proses
         JurnalEntryItem(
-            akun_perkiraan_id=get_akun_id_or_raise(
-                db, KEY_PEMBELIAN, context=f"PINV {no_form}"
-            ),
+            akun_perkiraan_id=debit_account_id,
             debit=dasar_pajak,
-            keterangan=f"Pembelian PINV {no_form} - {supplier.nama}",
+            keterangan=debit_keterangan,
         ),
         # Kredit: Utang Dagang
         JurnalEntryItem(

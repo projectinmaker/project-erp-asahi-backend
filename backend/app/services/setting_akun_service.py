@@ -35,6 +35,15 @@ KEY_LABA_RUGI_BERJALAN = "LABA_RUGI_BERJALAN"
 KEY_KAS_DAN_SETARA_KAS = "KAS_DAN_SETARA_KAS"
 KEY_PENDAPATAN_ANGKUT = "PENDAPATAN_ANGKUT"
 
+# Tahap 2: Akun perantara untuk penerimaan barang yang belum diinvois
+# (Goods Received Not Invoiced / GRNI). Bersifat opsional:
+# - Jika di-configure: penerimaan barang mempost D: Persediaan, K: PENERIMAAN_DALAM_PROSES.
+#   Lalu saat purchase invoice terkait dipost, dilakukan D: PENERIMAAN_DALAM_PROSES,
+#   K: Utang Dagang (clearing akun perantara).
+# - Jika belum di-configure: penerimaan barang TIDAK mempost jurnal (legacy),
+#   invoice pembelian tetap D: Pembelian, K: Utang Dagang (cara lama).
+KEY_PENERIMAAN_DALAM_PROSES = "PENERIMAAN_DALAM_PROSES"
+
 # Key-key yang WAJIB di-configure agar auto-posting jurnal Sales/Purchase
 # (Order, Invoice, Retur) tidak gagal. Dipakai untuk startup check.
 CRITICAL_KEYS = [
