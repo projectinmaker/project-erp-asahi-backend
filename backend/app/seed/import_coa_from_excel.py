@@ -134,6 +134,9 @@ def read_excel(filepath: str):
         sys.exit(1)
 
     wb = openpyxl.load_workbook(filepath, data_only=True)
+    if "COA_SYSTEM_MASTER" in wb.sheetnames:
+        wb.close()
+        raise ValueError("Workbook revisi V2 tidak boleh memakai importer full-replace. Gunakan python -m app.seed.coa_revision_import --preview")
     ws = wb.active
 
     rows = []
