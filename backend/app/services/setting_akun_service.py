@@ -44,6 +44,40 @@ KEY_PENDAPATAN_ANGKUT = "PENDAPATAN_ANGKUT"
 #   invoice pembelian tetap D: Pembelian, K: Utang Dagang (cara lama).
 KEY_PENERIMAAN_DALAM_PROSES = "PENERIMAAN_DALAM_PROSES"
 
+# === ASAHI COA Revisi v2 — Keys baru ===
+# Default akun-akun kritis yang direferensikan dari CATATAN_IMPORT_COA_ASAHI.md
+# section 10. Wajib di-configure via PUT /master/setting-akun/{key} sebelum
+# fitur-fitur baru (transfer bank clearing, COGS auto-post, year-end closing)
+# bisa berjalan.
+
+# Akun clearing untuk transfer antar kas/bank (111200 Akun Clearing / Ayat Silang)
+KEY_BANK_CLEARING = "BANK_CLEARING"
+
+# Akun HPP aktual yang diposting saat barang jadi terjual (531001 HPP Produk Jadi)
+KEY_HPP_PRODUK_JADI = "HPP_PRODUK_JADI"
+
+# Akun laba/rugi tahun berjalan (322000) — system account, tidak diposting manual
+KEY_LABA_RUGI_TAHUN_BERJALAN = "LABA_RUGI_TAHUN_BERJALAN"
+
+# Akun laba ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
+KEY_LABA_DITAHAN = "LABA_DITAHAN"
+
+# Mapping key -> expected system_account_type (untuk validasi konfigurasi)
+# Kalau user set key PIUTANG_USAHA ke akun yang bukan AR_CONTROL, service bisa
+# warning (tidak fatal, supaya flexible).
+SETTING_KEY_TO_SYSTEM_ACCOUNT_TYPE = {
+    KEY_PIUTANG_USAHA: "AR_CONTROL",
+    KEY_HUTANG_USAHA: "AP_CONTROL",
+    KEY_BANK_CLEARING: "BANK_CLEARING",
+    KEY_HPP_PRODUK_JADI: "COGS_FINISHED_GOODS",
+    KEY_LABA_RUGI_TAHUN_BERJALAN: "CURRENT_EARNINGS",
+    KEY_LABA_DITAHAN: "RETAINED_EARNINGS",
+    KEY_PERSEDIAAN_BAHAN_BAKU: "INVENTORY_RAW",
+    KEY_PERSEDIAAN_BAHAN_PEMBANTU: "INVENTORY_AUX",
+    KEY_PERSEDIAAN_WIP: "INVENTORY_WIP",
+    KEY_PERSEDIAAN_BARANG_JADI: "INVENTORY_FINISHED",
+}
+
 # Key-key yang WAJIB di-configure agar auto-posting jurnal Sales/Purchase
 # (Order, Invoice, Retur) tidak gagal. Dipakai untuk startup check.
 CRITICAL_KEYS = [
@@ -53,6 +87,11 @@ CRITICAL_KEYS = [
     KEY_PEMBELIAN,
     KEY_PPN_MASUKAN,
     KEY_RETUR_PEMBELIAN,
+    # === ASAHI COA Revisi v2 — keys yang wajib di-configure ===
+    KEY_BANK_CLEARING,
+    KEY_HPP_PRODUK_JADI,
+    KEY_LABA_RUGI_TAHUN_BERJALAN,
+    KEY_LABA_DITAHAN,
 ]
 
 

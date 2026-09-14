@@ -70,13 +70,14 @@ def auto_posting_jurnal(
     no_jurnal: Optional[str] = None,
     allow_inactive_accounts: bool = False,
     organization: Optional[dict] = None,
+    is_manual: bool = False,
 ) -> JurnalUmum:
     """
     Membuat Jurnal Umum otomatis beserta detailnya (double-entry).
 
     Parameter:
         db: SQLAlchemy Session
-        ref_module: Enum RefModule (SALES_INVOICE, PEMBAYARAN, dll)
+        ref_module: enum RefModule (SALES_INVOICE, PEMBAYARAN, dll)
         ref_no: Nomor dokumen sumber (misal INV-2026-08-001)
         entries: List of JurnalEntryItem -- baris-baris jurnal (debit & kredit)
         keterangan: Keterangan umum jurnal
@@ -86,9 +87,27 @@ def auto_posting_jurnal(
         tipe_transaksi: Tipe transaksi (opsional, untuk pelacakan)
         status: Status jurnal (default: POSTED)
         no_jurnal: Nomor jurnal (jika None, akan digenerate otomatis)
+        allow_inactive_accounts: True untuk bypass active check (dipakai
+            reversal jurnal lama supaya bisa membaca akun yang sudah
+            inactive post-migration). Default False.
+        organization: Snapshot org unit (company/branch/dll).
+        is_manual: True kalau jurnal ini user-initiated manual journal
+            (RefModule.MANUAL). False kalau auto-posting dari modul sistem.
+            Dipakai untuk enforce control account rule: control account
+            (AR/AP/INVENTORY) tidak boleh diposting manual, hanya sistem.
 
     Return:
         JurnalUmum object (flushed, belum committed — caller harus commit)
+
+    Validasi baru (ASAHI COA Revisi v2):
+    - Akun control account (is_control_account=True) tidak boleh dipakai
+      jurnal manual (is_manual=True). Hanya sistem yang boleh posting.
+    - Akun legacy-locked (allow_system_posting=False AND
+      allow_manual_posting=False, active=True) tidak boleh dipakai
+      transaksi baru (kecuali allow_inactive_accounts=True untuk
+      reversal histori).
+    - Akun system account (system_account_type di-set, posting rules False)
+      tidak boleh dipakai transaksi sama sekali — nilai di-generate sistem.
     """
     try:
         from app.services.accounting_control import accounting_lock
@@ -112,7 +131,10 @@ def auto_posting_jurnal(
                     f"Tidak bisa posting jurnal ({ref_no})."
                 )
 
-        total_debit, total_kredit = validate_entries(db, entries, allow_inactive_accounts)
+        total_debit, total_kredit = validate_entries(
+            db, entries, allow_inactive_accounts=allow_inactive_accounts,
+            is_manual=is_manual,
+        )
 
         # Default tanggal
         if tanggal is None:
@@ -219,7 +241,35 @@ def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = 
     return reversal
 
 
-def validate_entries(db, entries, allow_inactive_accounts=False):
+def validate_entries(db, entries, allow_inactive_accounts=False, is_manual=False):
+    """Validasi baris-baris jurnal sebelum diposting.
+
+    Parameter:
+        db: SQLAlchemy Session
+        entries: List of JurnalEntryItem
+        allow_inactive_accounts: True untuk bypass active check. Dipakai
+            reversal jurnal lama (supaya akun yang inactive post-migration
+            tetap bisa di-reverse). Default False.
+        is_manual: True kalau jurnal ini dibuat user manual (bukan auto-posting
+            modul sistem). Default False. Dipakai untuk enforce rule:
+            control account tidak boleh dipakai jurnal manual.
+
+    Validasi (ASAHI COA Revisi v2):
+    1. entries minimal 2 baris (debit & kredit)
+    2. Setiap baris: debit/kredit angka valid & tidak negatif
+    3. Setiap baris: debit atau kredit (bukan keduanya, bukan 0)
+    4. Akun harus DETAIL (bukan HEADER/GROUP)
+    5. Akun harus active (kecuali allow_inactive_accounts=True)
+    6. Akun legacy-locked (allow_*_posting=False, active=True) tidak boleh
+       dipakai transaksi baru (kecuali allow_inactive_accounts=True untuk
+       reversal)
+    7. Akun control account (is_control_account=True) tidak boleh dipakai
+       jurnal manual (is_manual=True) — hanya sistem yang boleh posting
+    8. Akun system_account (system_account_type di-set, posting rules False)
+       tidak boleh dipakai transaksi sama sekali (kecuali reversal via
+       allow_inactive_accounts=True)
+    9. Total debit == total kredit (balanced)
+    """
     # Validasi: pastikan entries tidak kosong
     if len(entries) < 2:
         raise ValueError("entries tidak boleh kosong, minimal 2 baris (debit & kredit)")
@@ -235,8 +285,46 @@ def validate_entries(db, entries, allow_inactive_accounts=False):
         account = db.get(AkunPerkiraan, entry.akun_perkiraan_id)
         if account is None or account.tingkat != TingkatAkun.DETAIL:
             raise ValueError("Jurnal hanya boleh memakai akun DETAIL yang tersedia")
-        if not allow_inactive_accounts and account.status != "AKTIF":
+
+        # === Rule 5: active check ===
+        if not allow_inactive_accounts and account.active is False:
+            raise ValueError(
+                f"Akun {account.kode} ({account.nama}) sudah inactive (active=False). "
+                "Tidak bisa dipakai transaksi baru."
+            )
+        # Legacy `status` field juga dicek untuk backward compat (kalau
+        # migration v2 belum dijalankan, account.active mungkin None).
+        if not allow_inactive_accounts and account.status not in (None, "AKTIF"):
             raise ValueError(f"Akun {account.kode} tidak aktif")
+
+        # === Rule 6: legacy-locked check ===
+        # Bypass kalau allow_inactive_accounts=True (reversal histori)
+        if not allow_inactive_accounts and account.is_legacy_locked:
+            raise ValueError(
+                f"Akun {account.kode} ({account.nama}) adalah akun LEGACY yang "
+                "dikunci untuk transaksi baru. Tidak bisa dipakai posting. "
+                "Pilih akun lain (misal HPP Produk Jadi 531001 untuk HPP, atau "
+                "Persediaan 114xxx untuk pembelian)."
+            )
+
+        # === Rule 7: control account manual-post ban ===
+        if is_manual and account.is_control_account and not account.allow_manual_posting:
+            raise ValueError(
+                f"Akun {account.kode} ({account.nama}) adalah CONTROL ACCOUNT "
+                f"({account.subledger_type or account.system_account_type}). "
+                "Tidak bisa dipakai jurnal manual — hanya sistem yang boleh "
+                "posting ke akun ini. Gunakan modul transaksi yang sesuai "
+                "(Penjualan/Pembelian/Kas-Bank/Persediaan)."
+            )
+
+        # === Rule 8: system account ban ===
+        if not allow_inactive_accounts and account.is_system_account:
+            raise ValueError(
+                f"Akun {account.kode} ({account.nama}) adalah SYSTEM ACCOUNT "
+                f"({account.system_account_type}). Nilai akun ini di-generate "
+                "oleh sistem (perhitungan laba rugi / closing periode), tidak "
+                "boleh diposting transaksi langsung."
+            )
 
     # Validasi: pastikan total debit == total kredit (balanced)
     total_debit = sum(e.debit for e in entries)

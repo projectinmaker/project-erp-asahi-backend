@@ -7,7 +7,14 @@ from sqlalchemy import or_
 
 from loguru import logger
 
-from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA, TingkatAkun, SaldoNormal
+from app.models.akun_perkiraan import (
+    AkunPerkiraan,
+    HeaderCOA,
+    TingkatAkun,
+    SaldoNormal,
+    HEADER_TO_ACCOUNT_CLASS,
+    NODE_TYPE_TO_TINGKAT,
+)
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
 from app.models.master.setting_akun import SettingAkun
 from app.models.master.pelanggan import Pelanggan
@@ -15,6 +22,31 @@ from app.models.master.supplier import Supplier
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.schemas.coa import COACreate, COAUpdate
+
+
+# ==========================================
+# Helper: derive account_class from header (backward compat)
+# ==========================================
+def _derive_account_class_from_header(header: HeaderCOA) -> str:
+    """Auto-derive account_class (ASSET/LIABILITY/...) dari header enum lama
+    (AKTIVA/KEWAJIBAN/...). Dipakai kalau COACreate.account_class None."""
+    return HEADER_TO_ACCOUNT_CLASS.get(header, "ASSET")
+
+
+# ==========================================
+# Helper: sync active <-> status (canonical <-> legacy)
+# ==========================================
+def _sync_active_status(coa: AkunPerkiraan) -> None:
+    """Pastikan status (AKTIF/NONAKTIF) dan active (True/False) konsisten.
+
+    Aturan: `active` adalah canonical. Jika `active=True` -> status='AKTIF'.
+    Jika `active=False` -> status='NONAKTIF'.
+    Dipanggil setelah set field di create/update.
+    """
+    if coa.active:
+        coa.status = "AKTIF"
+    else:
+        coa.status = "NONAKTIF"
 
 
 def get_coa_list(
@@ -25,13 +57,20 @@ def get_coa_list(
     tingkat: Optional[TingkatAkun] = None,
     search: Optional[str] = None,
     include_subledger: bool = False,
+    is_control_account: Optional[bool] = None,
+    subledger_type: Optional[str] = None,
+    active_only: Optional[bool] = None,
+    account_class: Optional[str] = None,
+    allow_manual_posting: Optional[bool] = None,
 ) -> Tuple[List[AkunPerkiraan], int]:
     """Mengambil daftar COA beserta total datanya.
 
-    Default exclude COA subledger (auto-created per pelanggan/supplier,
-    misal "Piutang - Budi") dari modul Akun Perkiraan/COA utama — akun ini
-    tetap ada di DB untuk jurnal, tapi tidak perlu tampil di list COA.
-    Set include_subledger=True untuk keperluan lain yang butuh lihat semuanya.
+    Filter baru (ASAHI COA Revisi v2):
+    - is_control_account: filter akun control account (AR/AP/INVENTORY)
+    - subledger_type: filter berdasarkan jenis subledger (AR/AP/INVENTORY)
+    - active_only: True = hanya active, False = hanya inactive, None = semua
+    - account_class: filter ASSET/LIABILITY/EQUITY/REVENUE/COGS/EXPENSE
+    - allow_manual_posting: filter akun yang bisa dipakai jurnal manual
     """
     query = db.query(AkunPerkiraan)
 
@@ -50,6 +89,18 @@ def get_coa_list(
                 AkunPerkiraan.nama.ilike(search_pattern)
             )
         )
+
+    # === New filters ===
+    if is_control_account is not None:
+        query = query.filter(AkunPerkiraan.is_control_account == is_control_account)
+    if subledger_type:
+        query = query.filter(AkunPerkiraan.subledger_type == subledger_type.upper())
+    if active_only is not None:
+        query = query.filter(AkunPerkiraan.active == active_only)
+    if account_class:
+        query = query.filter(AkunPerkiraan.account_class == account_class.upper())
+    if allow_manual_posting is not None:
+        query = query.filter(AkunPerkiraan.allow_manual_posting == allow_manual_posting)
 
     # Hitung total SEBELUM di-slice (penting untuk pagination)
     total = query.count()
@@ -83,11 +134,37 @@ def create_coa(db: Session, coa_in: COACreate) -> AkunPerkiraan:
 
     Jika field jenis_kas_bank diisi ('KAS' atau 'BANK'), akan auto-membuat
     KasBankAkun yang mengaitkan COA ini ke modul Kas & Bank.
+
+    Field baru (ASAHI COA Revisi v2):
+    - account_class: kalau None, di-derive dari `header`.
+    - allow_system_posting / allow_manual_posting: default True kalau None.
+    - is_control_account / reconciliation_required: default False kalau None.
+    - active: default True kalau None, sync ke `status`.
     """
     # Extract jenis_kas_bank sebelum dump (bukan field model)
     jenis_kas_bank = coa_in.jenis_kas_bank
 
-    db_obj = AkunPerkiraan(**coa_in.model_dump(exclude={"jenis_kas_bank"}))
+    # Default untuk field baru kalau None
+    create_data = coa_in.model_dump(exclude={"jenis_kas_bank"})
+
+    if create_data.get("account_class") is None:
+        create_data["account_class"] = _derive_account_class_from_header(coa_in.header)
+
+    # Set defaults untuk posting control & active
+    if create_data.get("allow_system_posting") is None:
+        create_data["allow_system_posting"] = True
+    if create_data.get("allow_manual_posting") is None:
+        create_data["allow_manual_posting"] = True
+    if create_data.get("is_control_account") is None:
+        create_data["is_control_account"] = False
+    if create_data.get("reconciliation_required") is None:
+        create_data["reconciliation_required"] = False
+    if create_data.get("active") is None:
+        create_data["active"] = True
+
+    db_obj = AkunPerkiraan(**create_data)
+    _sync_active_status(db_obj)
+
     db.add(db_obj)
     db.flush()  # Flush dulu untuk dapat ID
 
@@ -97,7 +174,7 @@ def create_coa(db: Session, coa_in: COACreate) -> AkunPerkiraan:
 
     db.commit()
     db.refresh(db_obj)
-    logger.info(f"COA created: {db_obj.kode} - {db_obj.nama}")
+    logger.info(f"COA created: {db_obj.kode} - {db_obj.nama} (class={db_obj.account_class})")
     return db_obj
 
 
@@ -150,10 +227,19 @@ def _auto_create_kas_bank_akun(
 
 
 def update_coa(db: Session, db_obj: AkunPerkiraan, obj_in: COAUpdate) -> AkunPerkiraan:
-    """Update data COA yang sudah ada."""
+    """Update data COA yang sudah ada.
+
+    Sinkronisasi otomatis active <-> status: jika salah satu di-update,
+    field pasangan ikut di-sync supaya konsisten.
+    """
     update_data = obj_in.model_dump(exclude_unset=True)
+
     for field, value in update_data.items():
         setattr(db_obj, field, value)
+
+    # Sync active <-> status setelah apply semua update
+    if "active" in update_data or "status" in update_data:
+        _sync_active_status(db_obj)
 
     db.add(db_obj)
     db.commit()
@@ -177,7 +263,7 @@ def delete_coa(db: Session, coa: AkunPerkiraan) -> None:
 
     Untuk akuntansi, hard-delete hanya aman untuk akun yang belum pernah
     dipakai transaksi. Kalau sudah dipakai / masih ada dependency, akun
-    sebaiknya dinonaktifkan (status=NONAKTIF) lewat PUT, bukan dihapus.
+    sebaiknya dinonaktifkan (active=False) lewat PUT, bukan dihapus.
     """
     from app.models.master.barang import Barang
     if db.query(Barang.id).filter(Barang.akun_persediaan_id == coa.id).first():
@@ -185,7 +271,7 @@ def delete_coa(db: Session, coa: AkunPerkiraan) -> None:
     if db.query(JurnalDetail).filter(JurnalDetail.akun_perkiraan_id == coa.id).first():
         raise ValueError(
             "Akun ini sudah punya transaksi jurnal, tidak bisa dihapus. "
-            "Nonaktifkan akun ini (ubah status jadi NONAKTIF) jika sudah tidak dipakai."
+            "Nonaktifkan akun ini (ubah active=False / status=NONAKTIF) jika sudah tidak dipakai."
         )
 
     if db.query(AkunPerkiraan).filter(AkunPerkiraan.induk_id == coa.id).first():
