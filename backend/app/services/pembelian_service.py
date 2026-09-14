@@ -1,3 +1,5 @@
+from app.services import inventory_receipt_control as receipt_control
+_RECEIPT_LINK_UNSET = object()
 """
 pembelian_service.py
 
@@ -526,6 +528,7 @@ def update_purchase_invoice(
 @atomic_accounting_write
 def cancel_purchase_invoice(db: Session, db_obj: PurchaseInvoice, user_id: Optional[UUID] = None) -> PurchaseInvoice:
     """Batalkan purchase invoice."""
+    receipt_control.require_no_completed_receipts(db, db_obj)
     from app.services.settlement_service import require_no_settlements
     require_no_settlements(db, db_obj)
     if db_obj.status == StatusPenjualan.DIBATALKAN:
@@ -831,7 +834,7 @@ def create_penerimaan(
     """Buat PenerimaanBarang baru beserta detail.
 
     Tahap 2: `purchase_invoice_id` opsional untuk anti double-record Persediaan.
-    Jika diisi DAN invoice terkait sudah di-POST, saat invoice dipost, sistem
+    Jika diisi, selesaikan penerimaan sebelum invoice dipost. Sistem
     akan D: PENERIMAAN_DALAM_PROSES (clearing) alih-alih D: Pembelian.
 
     Tidak ada jurnal posting saat create; jurnal di-post saat `finish_penerimaan`.
@@ -841,6 +844,8 @@ def create_penerimaan(
         supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
         if not supplier:
             raise ValueError(f"Supplier dengan ID {supplier_id} tidak ditemukan")
+
+        receipt_control.validate_link(db, purchase_invoice_id, supplier_id, tanggal)
 
         # Generate nomor form penerimaan
         no_form = get_nomor_dokumen(
@@ -897,7 +902,7 @@ def update_penerimaan(
     alamat: Optional[str] = None,
     keterangan: Optional[str] = None,
     gudang_id: Optional[UUID] = None,
-    purchase_invoice_id: Optional[UUID] = None,
+    purchase_invoice_id=_RECEIPT_LINK_UNSET,
 ) -> PenerimaanBarang:
     """Update data penerimaan barang (hanya field header).
 
@@ -920,13 +925,9 @@ def update_penerimaan(
         db_obj.alamat = alamat
     if keterangan is not None:
         db_obj.keterangan = keterangan
-    # Tahap 2: link ke purchase_invoice (gunakan sentinel untuk distinguish
-    # "tidak diubah" vs "dikosongkan" — None artinya tidak diubah, sedangkan
-    # eksplisit None hanya bisa terjadi kalau caller pakai kata kunci khusus).
-    # Karena Optional[UUID] = None juga berarti "tidak diubah", kita pakai
-    # parameter eksplisit via schema (exclude_unset=True di endpoint).
-    if purchase_invoice_id is not None:
+    if purchase_invoice_id is not _RECEIPT_LINK_UNSET:
         db_obj.purchase_invoice_id = purchase_invoice_id
+    receipt_control.validate_link(db, db_obj.purchase_invoice_id, db_obj.supplier_id, db_obj.tanggal)
 
     db.add(db_obj)
     db.commit()
@@ -980,7 +981,7 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
         _get_akun_penerimaan_dalam_proses_id,
     )
     grni_account_id = _get_akun_penerimaan_dalam_proses_id(db)
-    hpp_account_id = get_akun_id_or_raise(db, KEY_PEMBELIAN, context=db_obj.no_form)
+    receipt_control.validate_execution(db, db_obj, grni_account_id)
 
     # Tambah stok untuk setiap detail barang yang diterima
     inventory_entries = []
@@ -1005,6 +1006,7 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             ref_id=db_obj.id,
             gudang_id=db_obj.gudang_id,
             harga_satuan=cost,
+            tanggal=db_obj.tanggal,
             tanggal_kedaluwarsa=detail.tanggal_kedaluwarsa,
         )
 
@@ -1116,17 +1118,11 @@ def finish_purchase_retur(db: Session, db_obj: PurchaseRetur) -> PurchaseRetur:
     return db_obj
 
 def post_purchase_invoice(db: Session, inv, created_by):
-    """Post the existing document; caller owns commit/rollback and workflow checks.
+    """Clear all linked receipt GRNI snapshots after exact quantity/value checks.
 
-    Tahap 2 — Anti double-record Persediaan:
-    - Jika invoice ter-link ke penerimaan_barang yang sudah SELESAI (via
-      `penerimaan_barang.purchase_invoice_id`) DAN akun perantara
-      PENERIMAAN_DALAM_PROSES sudah di-configure: invoice mempost
-      D: PENERIMAAN_DALAM_PROSES (clearing GRNI), bukan D: Pembelian.
-    - Jika tidak ada penerimaan terkait atau akun perantara belum di-configure:
-      tetap D: Pembelian (legacy/cara lama).
-
-    Riwayat jurnal POSTED tetap dipertahankan.
+    With GRNI configured, receipts must execute before invoice posting.
+    Without GRNI and without linked receipts, preserve the legacy purchase entry.
+    Existing posted journals are never rewritten.
     """
     from app.services.document_totals import validate_postable
     validate_postable(db, inv)
@@ -1143,52 +1139,16 @@ def post_purchase_invoice(db: Session, inv, created_by):
         raise ValueError("Mapping akun akun_hutang_id belum diisi; posting dibatalkan")
     dasar_pajak = sub_total - total_diskon
 
-    # Tahap 2: Deteksi penerimaan terkait yang sudah di-posting (GRNI clearing)
-    from app.services.persediaan_service import _get_akun_penerimaan_dalam_proses_id
-    grni_account_id = _get_akun_penerimaan_dalam_proses_id(db)
-    linked_penerimaan = None
-    if grni_account_id:
-        # Cari penerimaan yang sudah SELESAI dan ter-link ke invoice ini
-        # (link dibuat saat penerimaan di-update dengan purchase_invoice_id,
-        # atau saat invoice di-link ke penerimaan yang sudah ada).
-        linked_penerimaan = (
-            db.query(PenerimaanBarang)
-            .filter(
-                PenerimaanBarang.purchase_invoice_id == inv.id,
-                PenerimaanBarang.status == StatusPenjualan.SELESAI,
-                PenerimaanBarang.jurnal_umum_id.isnot(None),  # sudah punya jurnal GRNI
-            )
-            .first()
-        )
-
-    # Pilih akun debit utama
-    if linked_penerimaan and grni_account_id:
-        # Clearing mode: D: Penerimaan Dalam Proses (clear GRNI yang diposting saat penerimaan)
-        debit_account_id = grni_account_id
-        debit_keterangan = f"Clearing GRNI PINV {no_form} (Penerimaan {linked_penerimaan.no_form})"
-        logger.info(
-            f"PINV {no_form}: linked ke penerimaan {linked_penerimaan.no_form}; "
-            f"D: PENERIMAAN_DALAM_PROSES (clearing), bukan D: Pembelian."
-        )
+    clearing = receipt_control.clearing_entries(db, inv, dasar_pajak)
+    if clearing is None:
+        clearing = {get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}"): dasar_pajak}
+        description = f"Pembelian PINV {no_form} - {supplier.nama}"
     else:
-        # Legacy mode: D: Pembelian
-        debit_account_id = get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}")
-        debit_keterangan = f"Pembelian PINV {no_form} - {supplier.nama}"
-
-    entries = [
-        # Debit: Persediaan / Pembelian / Penerimaan Dalam Proses
-        JurnalEntryItem(
-            akun_perkiraan_id=debit_account_id,
-            debit=dasar_pajak,
-            keterangan=debit_keterangan,
-        ),
-        # Kredit: Utang Dagang
-        JurnalEntryItem(
-            akun_perkiraan_id=supplier.akun_hutang_id,
-            kredit=grand_total,
-            keterangan=f"Utang PINV {no_form}",
-        ),
-    ]
+        description = f"Clearing GRNI PINV {no_form}"
+    entries = [JurnalEntryItem(akun_perkiraan_id=account_id, debit=value,
+                              keterangan=description) for account_id, value in clearing.items()]
+    entries.append(JurnalEntryItem(akun_perkiraan_id=supplier.akun_hutang_id,
+                                  kredit=grand_total, keterangan=f"Utang PINV {no_form}"))
     if total_ppn > 0:
         entries.insert(
             1,

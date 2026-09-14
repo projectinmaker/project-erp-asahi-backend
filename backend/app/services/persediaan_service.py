@@ -105,7 +105,8 @@ def _get_akun_penerimaan_dalam_proses_id(db: Session) -> Optional[UUID]:
     - Saat `post_purchase_invoice` terkait, akun ini di-debit (clearing).
     - Jika None: penerimaan TIDAK mempost jurnal (legacy), invoice tetap D: Pembelian.
     """
-    return sa_cfg.get_akun_id(db, sa_cfg.KEY_PENERIMAAN_DALAM_PROSES)
+    from app.services.inventory_receipt_control import configured_grni
+    return configured_grni(db)
 
 
 def _require_inventory_mapping(barang: Barang) -> None:

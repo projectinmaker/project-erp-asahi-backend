@@ -1,27 +1,8 @@
-"""rekonsiliasi_persediaan_service.py
-
-Tahap 3 — Rekonsiliasi nilai persediaan vs buku besar.
-
-Membandingkan:
-- Sisi stok: total nilai persediaan per barang (dari stock_balance + stok_mutasi)
-- Sisi buku besar: saldo akun Persediaan (dari jurnal_detail yang sudah POSTED,
-  dikelompokkan per akun_persediaan_id barang)
-
-Output:
-- Per akun Persediaan: total saldo buku besar vs total nilai stok barang
-  yang dipetakan ke akun tersebut.
-- Per barang: nilai stoknya vs mapping akunnya.
-- Selisih dan indikator status (MATCH / MISMATCH / UNMAPPED).
-
-Catatan:
-- Akun Persediaan di sisi buku besar = akun DETAIL di header AKTIVA yang
-  pernah dipakai di jurnal_detail. Tidak terbatas pada akun yang dipetakan
-  di barang — bisa juga akun dari fallback kategori/default.
-- Barang tanpa mapping (akun_persediaan_id NULL) tetap dihitung di sisi stok,
-  tapi tidak punya akun pembanding di sisi buku besar -> status UNMAPPED.
-- Riwayat jurnal POSTED tetap dipertahankan; rekonsiliasi bersifat read-only.
-"""
+"""Read-only current stock reconciliation and executed stock document audit."""
 from datetime import datetime
+from fastapi import HTTPException
+from app.services.reporting_ledger import JAKARTA
+from app.models.transaksi.stok_mutasi import StokMutasi
 from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -43,10 +24,18 @@ from app.services.reporting_ledger import local_datetime, day_end, ZERO
 
 def _nilai_stok_per_barang(db: Session, barang_id: UUID) -> Decimal:
     """Total nilai stok untuk satu barang (semua gudang)."""
-    result = db.query(
-        func.coalesce(func.sum(StockBalance.nilai), ZERO)
-    ).filter(StockBalance.barang_id == barang_id).scalar()
-    return Decimal(str(result or 0)).quantize(Decimal("0.01"))
+    from app.services.stok_service import hitung_nilai_stok
+    return hitung_nilai_stok(db, barang_id).quantize(Decimal('0.01'))
+
+
+def _qty(db, barang):
+    qty = db.query(func.sum(StockBalance.qty)).filter_by(barang_id=barang.id).scalar()
+    return qty if qty is not None else (barang.stok or 0)
+
+
+def _require_global_scope(db):
+    if any(db.info.get('report_scope', {}).values()):
+        raise HTTPException(400, 'Rekonsiliasi/audit persediaan hanya tersedia untuk seluruh organisasi; saldo stok belum memiliki dimensi organisasi')
 
 
 def _saldo_akun_persediaan_di_buku_besar(db: Session, akun_id: UUID, as_of: Optional[datetime] = None) -> Decimal:
@@ -98,10 +87,13 @@ def _list_akun_persediaan(db: Session) -> List[AkunPerkiraan]:
         .all()
     )
 
+    historical = db.query(AkunPerkiraan).join(
+        StokMutasi, StokMutasi.inventory_account_id == AkunPerkiraan.id).distinct().all()
+    # Retain old accounts after master mappings change.
     # Dedup by id, preserve order
     seen = set()
     result = []
-    for acc in list(mapped) + list(fallback_rows):
+    for acc in list(mapped) + list(fallback_rows) + list(historical):
         if acc.id not in seen:
             seen.add(acc.id)
             result.append(acc)
@@ -117,89 +109,32 @@ def get_rekonsiliasi_persediaan(
     as_of: Optional[datetime] = None,
     only_mismatch: bool = False,
 ) -> dict:
-    """Rekonsiliasi nilai persediaan vs buku besar per akun Persediaan.
+    """Compare CURRENT global stock with ALL posted ledger entries, including future-dated postings.
 
-    Parameter:
-        db: SQLAlchemy Session
-        as_of: Tanggal cutoff (default: now). Hanya jurnal sampai tanggal ini
-               yang dihitung di sisi buku besar.
-        only_mismatch: Jika True, hanya tampilkan akun/barang yang selisihnya != 0.
-
-    Return:
-        {
-            "as_of": "2026-09-11",
-            "ringkasan": {
-                "total_akun_diperiksa": int,
-                "total_akun_match": int,
-                "total_akun_mismatch": int,
-                "total_akun_unmapped": int,
-                "total_selisih": Decimal,
-            },
-            "items": [
-                {
-                    "akun": {"id", "kode", "nama", "status"},
-                    "saldo_buku_besar": Decimal,
-                    "total_nilai_stok": Decimal,
-                    "selisih": Decimal,  # buku_besar - stok
-                    "status": "MATCH" | "MISMATCH",
-                    "barang": [
-                        {
-                            "id", "kode", "nama",
-                            "qty": int,
-                            "nilai_stok": Decimal,
-                            "akun_persediaan_id": UUID,
-                            "status_mapping": "MAPPED" | "FALLBACK"
-                        }, ...
-                    ]
-                }, ...
-            ],
-            "barang_belum_dipetakan": [
-                {
-                    "id", "kode", "nama",
-                    "qty": int,
-                    "nilai_stok": Decimal,
-                    "kategori": str | None,
-                }, ...
-            ]
-        }
+    Historical dates are rejected until dated stock balance snapshots exist.
     """
-    if as_of is None:
-        as_of = datetime.now()
-
-    # 1. Ambil semua akun Persediaan yang relevan
+    _require_global_scope(db)
+    now = datetime.now(JAKARTA)
+    if as_of is not None and local_datetime(as_of).date() != now.date():
+        raise HTTPException(400, 'Rekonsiliasi historis belum tersedia; gunakan tanggal hari ini atau tanpa as_of')
+    as_of = now
     akun_list = _list_akun_persediaan(db)
-
-    # 2. Ambil semua barang dengan mapping
-    barang_mapped = (
-        db.query(Barang)
-        .filter(Barang.akun_persediaan_id.isnot(None))
-        .order_by(Barang.kode)
-        .all()
-    )
-
-    # Group barang by akun_persediaan_id
     barang_per_akun = {}
-    for b in barang_mapped:
-        barang_per_akun.setdefault(b.akun_persediaan_id, []).append(b)
-
-    # 3. Ambil barang belum dipetakan
-    barang_unmapped = (
-        db.query(Barang)
-        .filter(Barang.akun_persediaan_id.is_(None))
-        .order_by(Barang.kode)
-        .all()
-    )
-
-    # 4. Ambil fallback akun IDs (untuk flagging status_mapping)
-    from app.models.master.setting_akun import SettingAkun
-    fallback_keys = (
-        "PERSEDIAAN_BAHAN_BAKU", "PERSEDIAAN_WIP", "PERSEDIAAN_BARANG_JADI",
-        "PERSEDIAAN_BAHAN_PEMBANTU",
-    )
-    fallback_akun_ids = set(
-        row[0] for row in db.query(SettingAkun.akun_perkiraan_id)
-        .filter(SettingAkun.key.in_(fallback_keys)).all()
-    )
+    barang_unmapped = []
+    from app.services.persediaan_service import _get_akun_persediaan_id
+    for b in db.query(Barang).order_by(Barang.kode).all():
+        try:
+            account_id = _get_akun_persediaan_id(db, b)
+        except ValueError:
+            barang_unmapped.append(b)
+            continue
+        if not any(a.id == account_id for a in akun_list):
+            account = db.get(AkunPerkiraan, account_id)
+            if account is None:
+                barang_unmapped.append(b)
+                continue
+            akun_list.append(account)
+        barang_per_akun.setdefault(account_id, []).append(b)
 
     # 5. Build items per akun
     items = []
@@ -208,7 +143,7 @@ def get_rekonsiliasi_persediaan(
     total_selisih = ZERO
 
     for akun in akun_list:
-        saldo_buku = _saldo_akun_persediaan_di_buku_besar(db, akun.id, as_of)
+        saldo_buku = _saldo_akun_persediaan_di_buku_besar(db, akun.id)
 
         # Total nilai stok untuk barang yang dipetakan ke akun ini
         total_nilai_stok = ZERO
@@ -216,12 +151,12 @@ def get_rekonsiliasi_persediaan(
         for b in barang_per_akun.get(akun.id, []):
             nilai_stok = _nilai_stok_per_barang(db, b.id)
             total_nilai_stok += nilai_stok
-            status_mapping = "FALLBACK" if akun.id in fallback_akun_ids else "MAPPED"
+            status_mapping = "MAPPED" if b.akun_persediaan_id else "FALLBACK"
             barang_details.append({
                 "id": str(b.id),
                 "kode": b.kode,
                 "nama": b.nama,
-                "qty": b.stok or 0,
+                "qty": _qty(db, b),
                 "nilai_stok": nilai_stok,
                 "akun_persediaan_id": str(akun.id),
                 "status_mapping": status_mapping,
@@ -259,22 +194,24 @@ def get_rekonsiliasi_persediaan(
     for b in barang_unmapped:
         nilai_stok = _nilai_stok_per_barang(db, b.id)
         # Hanya tampilkan yang punya nilai stok > 0 (skip barang kosong)
-        if nilai_stok <= 0:
+        if nilai_stok == 0 and _qty(db, b) == 0:
             continue
         kategori_nama = b.kategori.nama if b.kategori else None
         barang_belum_dipetakan.append({
             "id": str(b.id),
             "kode": b.kode,
             "nama": b.nama,
-            "qty": b.stok or 0,
+            "qty": _qty(db, b),
             "nilai_stok": nilai_stok,
             "kategori": kategori_nama,
         })
 
     return {
         "as_of": local_datetime(as_of).date().isoformat(),
+        "basis": "CURRENT_ALL_POSTED",
+        "includes_future_postings": True,
         "ringkasan": {
-            "total_akun_diperiksa": len(items),
+            "total_akun_diperiksa": total_match + total_mismatch,
             "total_akun_match": total_match,
             "total_akun_mismatch": total_mismatch,
             "total_akun_unmapped": len(barang_belum_dipetakan),
@@ -293,6 +230,8 @@ def get_ringkasan_rekonsiliasi(db: Session, as_of: Optional[datetime] = None) ->
     full = get_rekonsiliasi_persediaan(db, as_of=as_of, only_mismatch=False)
     return {
         "as_of": full["as_of"],
+        "basis": full["basis"],
+        "includes_future_postings": full["includes_future_postings"],
         "ringkasan": full["ringkasan"],
     }
 
@@ -306,39 +245,7 @@ def audit_transaksi_persediaan(
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
 ) -> dict:
-    """Audit trail transaksi persediaan: penerimaan, pengiriman, retur, penyesuaian.
-
-    Verifikasi bahwa setiap transaksi yang mengubah stok juga menghasilkan
-    jurnal Persediaan yang sesuai (atau konsisten dengan legacy mode).
-
-    Return:
-        {
-            "periode": {"dari": ..., "sampai": ...},
-            "summary": {
-                "penerimaan_total": int,
-                "penerimaan_dengan_jurnal": int,
-                "penerimaan_tanpa_jurnal": int,
-                "pengiriman_total": int,
-                "pengiriman_dengan_jurnal": int,
-                "pengiriman_tanpa_jurnal": int,
-                "retur_pembelian_total": int,
-                "retur_pembelian_dengan_jurnal": int,
-                "retur_pembelian_tanpa_jurnal": int,
-                "retur_penjualan_total": int,
-                "retur_penjualan_dengan_jurnal": int,
-                "retur_penjualan_tanpa_jurnal": int,
-                "penyesuaian_total": int,
-                "penyesuaian_dengan_jurnal": int,
-                "penyesuaian_tanpa_jurnal": int,
-            },
-            "anomali": [
-                {"tipe": "PENERIMAAN" | "PENGIRIMAN" | ...,
-                 "id": UUID, "no_dokumen": str, "status": str,
-                 "jurnal_umum_id": UUID | None,
-                 "catatan": str}, ...
-            ]
-        }
-    """
+    """Inspect executed stock movements and their stock journals; draft documents are excluded."""
     from app.models.transaksi.pembelian.penerimaan_barang import PenerimaanBarang
     from app.models.transaksi.penjualan.pengiriman_barang import PengirimanBarang
     from app.models.transaksi.pembelian.purchase_retur import PurchaseRetur
@@ -346,54 +253,54 @@ def audit_transaksi_persediaan(
     from app.models.transaksi.persediaan.penyesuaian_stok import PenyesuaianStok
     from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 
-    if date_from is None:
-        date_from = datetime(2000, 1, 1)
-    if date_to is None:
-        date_to = datetime.now()
+    _require_global_scope(db)
+    from app.services.reporting_ledger import day_start
+    date_from = day_start(date_from or datetime(2000, 1, 1))
+    date_to = day_end(date_to or datetime.now(JAKARTA))
+    if date_from > date_to:
+        raise HTTPException(400, 'Tanggal awal tidak boleh melebihi tanggal akhir')
+    anomali, summary = [], {}
 
-    anomali = []
-    summary = {}
-
-    # Helper untuk audit satu model
-    def audit_model(model, label, ref_module_filter=None):
-        q = db.query(model).filter(model.tanggal >= date_from, model.tanggal <= date_to)
-        rows = q.all()
-        total = len(rows)
-        with_jurnal = 0
-        without_jurnal = 0
+    def audit_model(model, label, journal_type=None):
+        rows = db.query(model).filter(model.tanggal >= date_from, model.tanggal <= date_to).all()
+        total = with_jurnal = without_jurnal = 0
         for row in rows:
-            jurnal_id = getattr(row, "jurnal_umum_id", None)
-            # Penyesuaian hanya punya jurnal kalau auto_post_jurnal True dan total > 0
-            auto_post = getattr(row, "auto_post_jurnal", True)
-            total_value = getattr(row, "total", None) or getattr(row, "grand_total", None) or 0
-
-            if jurnal_id is not None:
-                with_jurnal += 1
-            elif auto_post and total_value and Decimal(str(total_value)) > 0:
-                # Seharusnya ada jurnal tapi tidak ada -> anomali
-                without_jurnal += 1
-                anomali.append({
-                    "tipe": label,
-                    "id": str(row.id),
-                    "no_dokumen": getattr(row, "no_form", None) or getattr(row, "no_surat_jalan", None)
-                                  or getattr(row, "no_retur", None) or getattr(row, "no_adj", None),
-                    "status": getattr(row.status, "value", str(row.status)) if row.status else None,
-                    "jurnal_umum_id": None,
-                    "catatan": f"{label} dengan nilai > 0 tetapi tidak ada jurnal (cek auto_post_jurnal atau error posting)",
-                })
+            state = getattr(row.status, 'value', row.status)
+            movements = db.query(StokMutasi).filter_by(ref_id=row.id).all()
+            if state not in ('SELESAI', 'DISETUJUI') and not movements:
+                continue
+            total += 1
+            if journal_type:
+                journal = db.query(JurnalUmum).filter_by(ref_id=row.id, tipe_transaksi=journal_type,
+                                                        status=StatusJurnal.POSTED).first()
             else:
-                # OK: tidak ada jurnal karena memang tidak perlu (auto_post False atau nilai 0)
+                journal = db.get(JurnalUmum, row.jurnal_umum_id) if row.jurnal_umum_id else None
+            valid = bool(journal and journal.status == StatusJurnal.POSTED and
+                         not db.query(JurnalUmum).filter_by(reversal_of_id=journal.id).first())
+            if valid:
+                with_jurnal += 1
+            else:
                 without_jurnal += 1
+                value = sum((abs(m.total_nilai or ZERO) for m in movements), ZERO)
+                if value or (state in ('SELESAI', 'DISETUJUI') and not movements):
+                    legacy = label == 'PENERIMAAN' and not row.purchase_invoice_id
+                    anomali.append({
+                        'tipe': label, 'id': str(row.id),
+                        'no_dokumen': getattr(row, 'no_form', None) or getattr(row, 'no_surat_jalan', None)
+                                       or getattr(row, 'no_retur', None) or getattr(row, 'no_adj', None),
+                        'status': state, 'jurnal_umum_id': str(journal.id) if journal else None,
+                        'catatan': ('Penerimaan tanpa jurnal; periksa mode legacy dan saldo pembukaan persediaan'
+                                    if legacy else 'Transaksi stok tidak memiliki jurnal stok POSTED aktif; periksa mutasi/posting'),
+                    })
+        summary[f'{label.lower()}_total'] = total
+        summary[f'{label.lower()}_dengan_jurnal'] = with_jurnal
+        summary[f'{label.lower()}_tanpa_jurnal'] = without_jurnal
 
-        summary[f"{label.lower()}_total"] = total
-        summary[f"{label.lower()}_dengan_jurnal"] = with_jurnal
-        summary[f"{label.lower()}_tanpa_jurnal"] = without_jurnal
-
-    audit_model(PenerimaanBarang, "PENERIMAAN")
-    audit_model(PengirimanBarang, "PENGIRIMAN")
-    audit_model(PurchaseRetur, "RETUR_PEMBELIAN")
-    audit_model(SalesRetur, "RETUR_PENJUALAN")
-    audit_model(PenyesuaianStok, "PENYESUAIAN")
+    audit_model(PenerimaanBarang, 'PENERIMAAN', 'PENERIMAAN_GRNI')
+    audit_model(PengirimanBarang, 'PENGIRIMAN')
+    audit_model(PurchaseRetur, 'RETUR_PEMBELIAN', 'RETUR_STOCK')
+    audit_model(SalesRetur, 'RETUR_PENJUALAN', 'RETUR_HPP')
+    audit_model(PenyesuaianStok, 'PENYESUAIAN')
 
     from app.services.reporting_ledger import period
     return {
