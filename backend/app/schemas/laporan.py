@@ -298,6 +298,8 @@ class RekonsiliasiPersediaanRingkasan(BaseSchema):
 
 
 class RekonsiliasiPersediaanResponse(BaseSchema):
+    basis: str = "CURRENT_ALL_POSTED"
+    includes_future_postings: bool = True
     as_of: str
     ringkasan: RekonsiliasiPersediaanRingkasan
     items: List[RekonsiliasiPersediaanAkunRow] = []
@@ -305,6 +307,8 @@ class RekonsiliasiPersediaanResponse(BaseSchema):
 
 
 class RekonsiliasiPersediaanRingkasanResponse(BaseSchema):
+    basis: str = "CURRENT_ALL_POSTED"
+    includes_future_postings: bool = True
     as_of: str
     ringkasan: RekonsiliasiPersediaanRingkasan
 
