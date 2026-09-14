@@ -319,6 +319,15 @@ def seed_phase3_coa_and_settings():
             # Aktifkan secara eksplisit melalui PUT setting-akun dengan akun
             # kewajiban DETAIL khusus. Jangan gunakan default Hutang Usaha.
 
+            # === ASAHI COA Revisi v2 — keys baru ===
+            # Akun Clearing / Ayat Silang (111200) — dipakai modul transfer bank
+            ("BANK_CLEARING", "Akun Clearing / Ayat Silang", "111", "200", ""),
+            # HPP Produk Jadi (531001) — dipakai inventory/costing saat barang jadi terjual
+            ("HPP_PRODUK_JADI", "HPP Produk Jadi", "531", "001", ""),
+            # Laba/Rugi Tahun Berjalan (322000) — system account, tidak diposting manual
+            ("LABA_RUGI_TAHUN_BERJALAN", "Laba (Rugi) Tahun Berjalan", "322", "000", ""),
+            # Laba Ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
+            ("LABA_DITAHAN", "Laba (Rugi) Ditahan", "321", "000", ""),
         ]
 
         inserted_setting = 0
