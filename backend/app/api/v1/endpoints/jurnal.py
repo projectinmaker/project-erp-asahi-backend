@@ -187,6 +187,7 @@ def create_jurnal_manual(
             created_by=current_user.id,
             tipe_transaksi="MANUAL",
             status=StatusJurnal.DRAFT,
+            is_manual=True,  # enforce control account ban rule
         )
         db.commit()
     except ValueError as e:
