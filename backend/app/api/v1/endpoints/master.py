@@ -713,11 +713,27 @@ def get_setting_akun_detail(key: str, db: Session = Depends(get_current_db), cur
 
 @router.put("/setting-akun/{key}", response_model=SettingAkunResponse)
 def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    from app.services.inventory_receipt_control import KEY, validate_grni_account
     item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
-    if not item: raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
+    if key == KEY:
+        try:
+            validate_grni_account(db, data_in.akun_perkiraan_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if item is None:
+            item = SettingAkun(key=KEY, label="Penerimaan Dalam Proses (GRNI)",
+                               akun_perkiraan_id=data_in.akun_perkiraan_id)
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            setting_akun_service.clear_cache()
+            return item
+    if not item:
+        raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
     item = master_service.update_master(db, item, data_in)
-    setting_akun_service.clear_cache()  # akun mapping berubah, cache in-memory harus di-refresh
+    setting_akun_service.clear_cache()
     return item
+
 
 
 # ==========================================

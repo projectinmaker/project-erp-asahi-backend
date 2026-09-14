@@ -262,24 +262,16 @@ def validate_financial_reports(dari: date, sampai: date, db=Depends(get_current_
 
 @router.get("/rekonsiliasi-persediaan", response_model=RekonsiliasiPersediaanResponse)
 def get_rekonsiliasi_persediaan(
-    as_of: Optional[str] = Query(None, description="Tanggal cutoff (YYYY-MM-DD). Default: hari ini."),
+    as_of: Optional[str] = Query(None, description="Tanggal hari ini (YYYY-MM-DD); tanggal historis belum tersedia. Saldo terkini mencakup semua jurnal POSTED."),
     only_mismatch: bool = Query(False, description="Hanya tampilkan akun/barang yang selisihnya != 0."),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Rekonsiliasi nilai persediaan (stock_balance) vs saldo akun Persediaan di buku besar.
+    """Rekonsiliasi saldo stok terkini (seluruh gudang/organisasi) dan seluruh jurnal POSTED.
 
-    Membandingkan:
-    - Sisi stok: total nilai persediaan per barang (semua gudang).
-    - Sisi buku besar: saldo akun Persediaan (debit - kredit dari jurnal POSTED).
-
-    Output per akun Persediaan: saldo buku besar vs total nilai stok barang
-    yang dipetakan ke akun tersebut. Selisih != 0 = MISMATCH.
-
-    Juga menampilkan barang yang belum dipetakan (akun_persediaan_id NULL)
-    tapi punya nilai stok > 0 — perlu dilengkapi mapping-nya.
-
-    Riwayat jurnal POSTED tetap dipertahankan; rekonsiliasi bersifat read-only.
+    Termasuk jurnal bertanggal masa depan yang telah diposting. Tanggal historis
+    dan filter organisasi ditolak karena stok belum memiliki snapshot tersebut.
+    Mapping barang diprioritaskan; fallback kategori mengikuti resolver posting.
     """
     from datetime import datetime
     as_of_dt = None
@@ -295,7 +287,7 @@ def get_rekonsiliasi_persediaan(
 
 @router.get("/rekonsiliasi-persediaan/ringkasan", response_model=RekonsiliasiPersediaanRingkasanResponse)
 def get_ringkasan_rekonsiliasi_persediaan(
-    as_of: Optional[str] = Query(None, description="Tanggal cutoff (YYYY-MM-DD). Default: hari ini."),
+    as_of: Optional[str] = Query(None, description="Tanggal hari ini (YYYY-MM-DD); tanggal historis belum tersedia. Saldo terkini mencakup semua jurnal POSTED."),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
