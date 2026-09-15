@@ -13,7 +13,19 @@ class PengirimanBarangDetail(BaseModel, BaseMixin):
     qty = Column(Integer, default=0, nullable=False)
     satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id"), nullable=False)
 
+    # === NEW Phase 4 — Source-line trace (Roadmap §13: "Delivery: sales_order_detail_id") ===
+    # FK ke SalesOrderDetail — identifikasi line SO mana yang dipenuhi oleh delivery line ini.
+    # Nullable untuk backward compat (delivery lama tanpa SO, mis. direct sales tanpa SO).
+    sales_order_detail_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sales_order_detail.id", name="fk_pengiriman_detail_so_detail"),
+        nullable=True,
+        index=True,
+    )
+
     # Relationships
     pengiriman = relationship("PengirimanBarang", back_populates="details")
     barang = relationship("Barang")
     satuan = relationship("Satuan")
+    # Source-line trace
+    sales_order_detail = relationship("SalesOrderDetail", foreign_keys=[sales_order_detail_id])

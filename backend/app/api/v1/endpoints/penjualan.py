@@ -439,6 +439,48 @@ def cancel_pengiriman(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/pengiriman/{pengiriman_id}/reverse", response_model=PengirimanBarangResponse)
+def reverse_pengiriman(
+    pengiriman_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+    reason: Optional[str] = Query(None, description="Alasan reversal (optional)"),
+):
+    """Reverse Pengiriman Barang yang sudah di-finish (status SELESAI).
+
+    Phase 4 — Master Roadmap §13: "Controlled reversal/return flow".
+
+    Berbeda dengan cancel (yang hanya untuk status DRAFT/DIPROSES), reverse
+    bisa untuk pengiriman yang sudah SELESAI — stok sudah berkurang & HPP
+    journal sudah posted.
+
+    Reverse akan:
+    1. Reverse HPP journal (Dr Persediaan / Cr HPP — pembalik dari saat finish)
+    2. Reverse stock movement (call reverse_stock_movement untuk setiap detail)
+       - Restore exact layer FIFO/FEFO (re-create layer dengan cost asli)
+       - Update StockBalance (qty + nilai)
+       - Recalculate master barang.stok & harga_pokok
+    3. Set status PengirimanBarang ke DIBATALKAN
+    4. Catat reversal_of_id di setiap StokMutasi reversal (audit trail)
+
+    Tidak bisa reverse kalau:
+    - Sudah ada invoice yang memakai delivery ini (POSTED/DIPROSES)
+      → batalkan/reverse invoice terlebih dahulu
+    - Stok gudang sudah terpakai transaksi lain (mis. sudah terjual)
+      → akan return error dengan detail stok yang kurang
+    """
+    from app.services.inventory_reversal_service import reverse_delivery
+
+    try:
+        result = reverse_delivery(
+            db, pengiriman_id, current_user.id,
+            reason=reason or "Reversal pengiriman"
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ==========================================
 # INVOICE BELUM BAYAR (untuk Pembayaran Kas)
 # ==========================================

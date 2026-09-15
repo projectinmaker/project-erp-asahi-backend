@@ -425,3 +425,162 @@ def reverse_pemindahan(
         f"2 mutasi stok di-reverse, status diubah ke BATAL"
     )
     return pemindahan
+
+
+# ==========================================
+# Phase 4 — Reverse Delivery (PengirimanBarang)
+# ==========================================
+@atomic_accounting_write
+def reverse_delivery(
+    db: Session,
+    pengiriman_id: UUID,
+    user_id: UUID,
+    reason: str = "Pembatalan pengiriman",
+):
+    """Reverse PengirimanBarang yang sudah di-finish (status SELESAI).
+
+    Phase 4 — Master Roadmap §13: "Controlled reversal/return flow" &
+    §10: "Reversal exact value/layer".
+
+    Berbeda dengan cancel_pengiriman (yang hanya untuk DRAFT/DIPROSES sebelum
+    finish), reverse_delivery bisa untuk pengiriman yang sudah SELESAI — stok
+    sudah berkurang & HPP journal sudah posted.
+
+    Reverse akan:
+    1. Reverse stock movement (call reverse_stock_movement untuk setiap detail)
+       - Restore exact layer FIFO/FEFO (re-create layer dengan cost asli)
+       - Update StockBalance (qty + nilai)
+       - Recalculate master barang.stok & harga_pokok
+    2. Reverse HPP journal via posting_service.reverse_journal
+       - Reverse journal: Dr Persediaan / Cr HPP (pembalik dari Dr HPP / Cr Persediaan)
+    3. Set status PengirimanBarang ke BATAL
+    4. Catat reversal_of_id di setiap StokMutasi reversal (audit trail)
+
+    Catatan:
+    - Untuk delivery, stok movement-nya KELUAR, jadi reversal akan jadi MASUK
+      (re-create layer dengan cost_parts asli).
+    - HPP journal reversal di-handle terpisah via posting_service.
+
+    Parameter:
+        db: SQLAlchemy Session
+        pengiriman_id: UUID PengirimanBarang yang akan di-reverse
+        user_id: UUID user yang melakukan reversal
+        reason: Alasan reversal
+
+    Return:
+        PengirimanBarang object (status=BATAL)
+
+    Raises:
+        ValueError kalau:
+        - Pengiriman tidak ditemukan
+        - Status bukan SELESAI (harus sudah finish dulu)
+        - Sudah di-reverse (one-reversal policy)
+        - Stok tidak mencukupi (sudah terpakai transaksi lain)
+        - Tidak ada mutasi stok yang ditemukan (kemungkinan data corrupt)
+    """
+    from app.models.transaksi.penjualan.pengiriman_barang import (
+        PengirimanBarang, StatusPenjualan,
+    )
+    from app.services.posting_service import reverse_journal
+
+    pengiriman = (
+        db.query(PengirimanBarang)
+        .filter(PengirimanBarang.id == pengiriman_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if pengiriman is None:
+        raise ValueError(f"Pengiriman dengan ID {pengiriman_id} tidak ditemukan")
+
+    if pengiriman.status != StatusPenjualan.SELESAI:
+        raise ValueError(
+            f"Pengiriman {pengiriman.no_surat_jalan} status={pengiriman.status.value}, "
+            f"tidak bisa di-reverse. Hanya pengiriman SELESAI yang bisa di-reverse. "
+            f"Untuk pembatalan sebelum finish, gunakan cancel_pengiriman."
+        )
+
+    # Cek apakah ada invoice yang sudah memakai delivery ini
+    # (kalau ada invoice yang posted referencing delivery details, tidak bisa reverse)
+    from app.models.detail.sales_invoice_detail import SalesInvoiceDetail
+    from app.models.transaksi.penjualan.sales_invoice import SalesInvoice as SI
+
+    # Ambil semua delivery_detail_id untuk pengiriman ini
+    delivery_detail_ids = [d.id for d in pengiriman.details]
+    if delivery_detail_ids:
+        # Cek apakah ada invoice (POSTED) yang reference delivery details ini
+        invoice_using = (
+            db.query(SI.no_invoice)
+            .join(SalesInvoiceDetail, SalesInvoiceDetail.sales_invoice_id == SI.id)
+            .filter(
+                SalesInvoiceDetail.delivery_detail_id.in_(delivery_detail_ids),
+                SI.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+            )
+            .first()
+        )
+        if invoice_using:
+            raise ValueError(
+                f"Tidak bisa reverse pengiriman {pengiriman.no_surat_jalan} — "
+                f"sudah ada invoice {invoice_using[0]} yang memakai delivery ini. "
+                f"Batalkan/reverse invoice terlebih dahulu sebelum reverse delivery."
+            )
+
+    # === 1. Reverse HPP journal (kalau ada) ===
+    if getattr(pengiriman, 'jurnal_umum_id', None):
+        try:
+            reverse_journal(
+                db, pengiriman.jurnal_umum_id, user_id,
+                reason=f"Reverse delivery {pengiriman.no_surat_jalan}: {reason}"
+            )
+            logger.info(
+                f"HPP journal {pengiriman.jurnal_umum_id} reversed for delivery "
+                f"{pengiriman.no_surat_jalan}"
+            )
+        except ValueError as e:
+            raise ValueError(
+                f"Gagal reverse HPP journal untuk delivery {pengiriman.no_surat_jalan}: {e}"
+            ) from e
+
+    # === 2. Reverse stock movement untuk setiap detail ===
+    # Cari semua StokMutasi dengan ref_id=pengiriman.id, ref_module=SALES_DELIVERY
+    from app.models.transaksi.jurnal import RefModule
+    mutasi_list = (
+        db.query(StokMutasi)
+        .filter(
+            StokMutasi.ref_id == pengiriman.id,
+            StokMutasi.ref_module == RefModule.SALES_DELIVERY,
+            StokMutasi.reversal_of_id.is_(None),  # exclude existing reversal
+        )
+        .all()
+    )
+
+    if not mutasi_list:
+        logger.warning(
+            f"Tidak ditemukan mutasi stok untuk delivery {pengiriman.no_surat_jalan}. "
+            f"Mungkin delivery belum di-finish atau data corrupt."
+        )
+    else:
+        # Reverse setiap mutasi (semuanya KELUAR, akan jadi MASUK)
+        for mutasi in mutasi_list:
+            try:
+                reverse_stock_movement(
+                    db, mutasi.id, user_id,
+                    reason=f"Reverse delivery {pengiriman.no_surat_jalan} (detail barang)"
+                )
+            except ValueError as e:
+                raise ValueError(
+                    f"Gagal reverse stock movement untuk delivery {pengiriman.no_surat_jalan}: {e}. "
+                    f"HPP journal sudah di-reverse tapi stock movement gagal — perlu rekonsiliasi manual."
+                ) from e
+
+    # === 3. Set status ===
+    pengiriman.status = StatusPenjualan.DIBATALKAN
+    db.add(pengiriman)
+    db.flush()
+
+    logger.info(
+        f"PengirimanBarang {pengiriman.no_surat_jalan} reversed: "
+        f"{len(mutasi_list)} mutasi stok di-reverse, HPP journal di-reverse, "
+        f"status diubah ke DIBATALKAN"
+    )
+    return pengiriman
