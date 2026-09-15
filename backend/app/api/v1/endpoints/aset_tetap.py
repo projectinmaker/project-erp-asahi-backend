@@ -147,3 +147,99 @@ def aktifkan_kembali(
         return svc.aktifkan_kembali(db, db_obj=item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
+# PHASE 7 — ASSET REGISTER RECONCILIATION
+# ==========================================
+
+@router.get("/rekonsiliasi/register-vs-gl")
+def get_rekonsiliasi_aset(
+    as_of: Optional[str] = Query(None, description="Tanggal as-of (ISO format, e.g. 2026-09-15). Default: now."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Rekonsiliasi Asset Register vs GL (Master Roadmap §24).
+
+    Membandingkan:
+    1. Sum(nilai_perolehan) dari AsetTetap (AKTIF/DALAM_PERBAIKAN)
+       vs Sum(debit - kredit) di GL untuk akun aset (FIXED_ASSET)
+    2. Sum(akumulasi_penyusutan) dari AsetTetap
+       vs Sum(kredit - debit) di GL untuk akun akumulasi penyusutan (ACCUM_DEPR)
+
+    Response:
+    {
+        "basis": "CURRENT_ASSET_REGISTER_VS_ALL_POSTED_JOURNALS",
+        "as_of": "2026-09-15T...",
+        "summary": {
+            "total_nilai_perolehan_register": "12345678.00",
+            "total_akumulasi_penyusutan_register": "3456789.00",
+            "total_nilai_buku_register": "8888889.00",
+            "total_asset_count": 15
+        },
+        "per_akun": [
+            {
+                "akun_aset_id": "uuid",
+                "akun_aset_kode": "121001",
+                "akun_aset_nama": "Bangunan",
+                "nilai_perolehan_register": "5000000.00",
+                "saldo_gl_cost": "5000000.00",
+                "selisih_cost": "0.00",
+                "akun_akumulasi_id": "uuid",
+                "akun_akumulasi_kode": "122001",
+                "akun_akumulasi_nama": "Akumulasi Penyusutan Bangunan",
+                "akumulasi_penyusutan_register": "1000000.00",
+                "saldo_gl_accum": "1000000.00",
+                "selisih_accum": "0.00",
+                "asset_count": 3
+            },
+            ...
+        ],
+        "catatan": "..."
+    }
+    """
+    from app.services.asset_register_reconciliation_service import get_rekonsiliasi_aset as _reconcile
+    from datetime import datetime
+
+    as_of_dt = None
+    if as_of:
+        try:
+            as_of_dt = datetime.fromisoformat(as_of)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Format as_of tidak valid. Pakai ISO format (e.g. 2026-09-15)")
+
+    return _reconcile(db, as_of_dt)
+
+
+@router.get("/rekonsiliasi/register-vs-gl/summary")
+def get_ringkasan_rekonsiliasi_aset(
+    as_of: Optional[str] = Query(None, description="Tanggal as-of (ISO format). Default: now."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ringkasan rekonsiliasi aset (summary only, tanpa detail per akun).
+
+    Dipakai di dashboard / health check.
+
+    Response:
+    {
+        "basis": "CURRENT_ASSET_REGISTER_VS_ALL_POSTED_JOURNALS",
+        "as_of": "2026-09-15T...",
+        "summary": { ... },
+        "reconciliation_status": "MATCH" | "MISMATCH",
+        "akun_count": 5
+    }
+    """
+    from app.services.asset_register_reconciliation_service import (
+        get_ringkasan_rekonsiliasi_aset as _summary,
+    )
+    from datetime import datetime
+
+    as_of_dt = None
+    if as_of:
+        try:
+            as_of_dt = datetime.fromisoformat(as_of)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Format as_of tidak valid. Pakai ISO format (e.g. 2026-09-15)")
+
+    return _summary(db, as_of_dt)
