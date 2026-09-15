@@ -15,7 +15,17 @@ class PenerimaanBarangDetail(BaseModel, BaseMixin):
     qty = Column(Integer, default=0, nullable=False)
     satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id"), nullable=False)
 
+    # === NEW Phase 5 — Source-line trace (Roadmap §19: "Goods Receipt: purchase_order_detail_id") ===
+    purchase_order_detail_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("purchase_order_detail.id", name="fk_penerimaan_detail_po_detail"),
+        nullable=True,
+        index=True,
+    )
+
     # Relationships
     penerimaan_barang = relationship("PenerimaanBarang", back_populates="details")
     barang = relationship("Barang")
     satuan = relationship("Satuan")
+    # Source-line trace
+    purchase_order_detail = relationship("PurchaseOrderDetail", foreign_keys=[purchase_order_detail_id])

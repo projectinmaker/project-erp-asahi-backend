@@ -431,6 +431,51 @@ def cancel_penerimaan(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/penerimaan/{pb_id}/reverse", response_model=PenerimaanBarangResponse)
+def reverse_penerimaan(
+    pb_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+    reason: Optional[str] = Query(None, description="Alasan reversal (optional)"),
+):
+    """Reverse Penerimaan Barang yang sudah di-finish (status SELESAI).
+
+    Phase 5 — Master Roadmap §19: "Direct cancel after stock movement blocked"
+    + §10: "Reversal exact value/layer".
+
+    Berbeda dengan cancel (yang hanya untuk status DRAFT/DIPROSES), reverse
+    bisa untuk penerimaan yang sudah SELESAI — stok sudah bertambah & GRNI
+    journal sudah posted.
+
+    Reverse akan:
+    1. Reverse GRNI journal (Dr GRNI / Cr Persediaan — pembalik dari saat finish)
+    2. Reverse stock movement (call reverse_stock_movement untuk setiap detail)
+       - Hapus exact layer FIFO/FEFO yang dibuat saat receipt asli (kalau masih ada sisa)
+       - Update StockBalance (qty + nilai dikurang)
+       - Recalculate master barang.stok & harga_pokok
+    3. Set status PenerimaanBarang ke DIBATALKAN
+    4. Catat reversal_of_id di setiap StokMutasi reversal (audit trail)
+
+    Tidak bisa reverse kalau:
+    - Sudah ada purchase invoice yang memakai receipt ini (POSTED)
+      → batalkan/reverse invoice terlebih dahulu
+    - Sudah ada purchase retur yang memakai receipt detail (POSTED)
+      → batalkan/reverse retur terlebih dahulu
+    - Stok gudang sudah terpakai transaksi lain (mis. sudah terjual)
+      → akan return error dengan detail stok yang kurang
+    """
+    from app.services.inventory_reversal_service import reverse_receipt
+
+    try:
+        result = reverse_receipt(
+            db, pb_id, current_user.id,
+            reason=reason or "Reversal penerimaan"
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ==========================================
 # INVOICE BELUM BAYAR (untuk Pembayaran Kas)
 # ==========================================

@@ -584,3 +584,192 @@ def reverse_delivery(
         f"status diubah ke DIBATALKAN"
     )
     return pengiriman
+
+
+# ==========================================
+# Phase 5 — Reverse Receipt (PenerimaanBarang)
+# ==========================================
+@atomic_accounting_write
+def reverse_receipt(
+    db: Session,
+    penerimaan_id: UUID,
+    user_id: UUID,
+    reason: str = "Pembatalan penerimaan",
+):
+    """Reverse PenerimaanBarang yang sudah di-finish (status SELESAI).
+
+    Phase 5 — Master Roadmap §19: "Direct cancel after stock movement blocked" +
+    §10: "Reversal exact value/layer".
+
+    Berbeda dengan cancel_penerimaan (yang hanya untuk DRAFT/DIPROSES sebelum
+    finish), reverse_receipt bisa untuk penerimaan yang sudah SELESAI — stok
+    sudah bertambah & GRNI journal sudah posted.
+
+    Reverse akan:
+    1. Cek apakah ada purchase invoice yang sudah POSTED memakai receipt ini
+       (kalau ada, tidak bisa reverse — batalkan invoice dulu)
+    2. Cek apakah ada purchase retur yang sudah POSTED memakai receipt detail
+       (kalau ada, tidak bisa reverse — batalkan retur dulu)
+    3. Reverse GRNI journal via posting_service.reverse_journal
+       - Reverse journal: Dr GRNI / Cr Persediaan (pembalik dari Dr Persediaan / Cr GRNI)
+    4. Reverse stock movement untuk setiap detail via reverse_stock_movement:
+       - Restore exact layer FIFO/FEFO (hapus layer yang dibuat saat receipt asli)
+       - Update StockBalance (qty + nilai dikurang)
+       - Recalculate master barang.stok & harga_pokok
+    5. Set status PenerimaanBarang ke BATAL
+    6. Catat reversal_of_id di setiap StokMutasi reversal (audit trail)
+
+    Catatan:
+    - Untuk receipt, stok movement-nya MASUK, jadi reversal akan jadi KELUAR
+      (hapus layer yang dibuat saat receipt asli, kalau masih ada sisa).
+    - GRNI journal reversal di-handle terpisah via posting_service.
+
+    Parameter:
+        db: SQLAlchemy Session
+        penerimaan_id: UUID PenerimaanBarang yang akan di-reverse
+        user_id: UUID user yang melakukan reversal
+        reason: Alasan reversal
+
+    Return:
+        PenerimaanBarang object (status=BATAL)
+
+    Raises:
+        ValueError kalau:
+        - Penerimaan tidak ditemukan
+        - Status bukan SELESAI (harus sudah finish dulu)
+        - Sudah di-reverse (one-reversal policy)
+        - Sudah ada invoice yang POSTED memakai receipt ini
+        - Sudah ada retur yang POSTED memakai receipt detail
+        - Stok tidak mencukupi (sudah terpakai transaksi lain, mis. sudah terjual)
+        - Tidak ada mutasi stok yang ditemukan (kemungkinan data corrupt)
+    """
+    from app.models.transaksi.pembelian.penerimaan_barang import (
+        PenerimaanBarang, StatusPenjualan,
+    )
+    from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
+    from app.models.transaksi.pembelian.purchase_retur import PurchaseRetur
+    from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
+    from app.models.detail.purchase_retur_detail import PurchaseReturDetail
+    from app.services.posting_service import reverse_journal
+
+    penerimaan = (
+        db.query(PenerimaanBarang)
+        .filter(PenerimaanBarang.id == penerimaan_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if penerimaan is None:
+        raise ValueError(f"Penerimaan dengan ID {penerimaan_id} tidak ditemukan")
+
+    if penerimaan.status != StatusPenjualan.SELESAI:
+        raise ValueError(
+            f"Penerimaan {penerimaan.no_form} status={penerimaan.status.value}, "
+            f"tidak bisa di-reverse. Hanya penerimaan SELESAI yang bisa di-reverse. "
+            f"Untuk pembatalan sebelum finish, gunakan cancel_penerimaan."
+        )
+
+    # === 1. Cek apakah ada invoice POSTED yang memakai receipt ini ===
+    if penerimaan.purchase_invoice_id:
+        inv = db.get(PurchaseInvoice, penerimaan.purchase_invoice_id)
+        if inv and inv.status in (StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI):
+            raise ValueError(
+                f"Tidak bisa reverse penerimaan {penerimaan.no_form} — "
+                f"sudah ada invoice {inv.no_form} yang POSTED memakai receipt ini. "
+                f"Batalkan/reverse invoice terlebih dahulu."
+            )
+
+    # Cek juga via detail (kalau invoice memakai receipt via penerimaan_barang_detail_id)
+    receipt_detail_ids = [d.id for d in penerimaan.details]
+    if receipt_detail_ids:
+        invoice_using = (
+            db.query(PurchaseInvoice.no_form)
+            .join(PurchaseInvoiceDetail, PurchaseInvoiceDetail.purchase_invoice_id == PurchaseInvoice.id)
+            .filter(
+                PurchaseInvoiceDetail.penerimaan_barang_detail_id.in_(receipt_detail_ids),
+                PurchaseInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+            )
+            .first()
+        )
+        if invoice_using:
+            raise ValueError(
+                f"Tidak bisa reverse penerimaan {penerimaan.no_form} — "
+                f"sudah ada invoice {invoice_using[0]} yang memakai receipt detail ini. "
+                f"Batalkan/reverse invoice terlebih dahulu."
+            )
+
+        # Cek juga purchase retur yang sudah POSTED
+        retur_using = (
+            db.query(PurchaseRetur.no_retur)
+            .join(PurchaseReturDetail, PurchaseReturDetail.purchase_retur_id == PurchaseRetur.id)
+            .filter(
+                PurchaseReturDetail.penerimaan_barang_detail_id.in_(receipt_detail_ids),
+                PurchaseRetur.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+            )
+            .first()
+        )
+        if retur_using:
+            raise ValueError(
+                f"Tidak bisa reverse penerimaan {penerimaan.no_form} — "
+                f"sudah ada purchase retur {retur_using[0]} yang memakai receipt detail ini. "
+                f"Batalkan/reverse retur terlebih dahulu."
+            )
+
+    # === 2. Reverse GRNI journal (kalau ada) ===
+    if getattr(penerimaan, 'jurnal_umum_id', None):
+        try:
+            reverse_journal(
+                db, penerimaan.jurnal_umum_id, user_id,
+                reason=f"Reverse receipt {penerimaan.no_form}: {reason}"
+            )
+            logger.info(
+                f"GRNI journal {penerimaan.jurnal_umum_id} reversed for receipt "
+                f"{penerimaan.no_form}"
+            )
+        except ValueError as e:
+            raise ValueError(
+                f"Gagal reverse GRNI journal untuk receipt {penerimaan.no_form}: {e}"
+            ) from e
+
+    # === 3. Reverse stock movement untuk setiap detail ===
+    from app.models.transaksi.jurnal import RefModule
+    mutasi_list = (
+        db.query(StokMutasi)
+        .filter(
+            StokMutasi.ref_id == penerimaan.id,
+            StokMutasi.ref_module == RefModule.PURCHASE_RECEIPT,
+            StokMutasi.reversal_of_id.is_(None),
+        )
+        .all()
+    )
+
+    if not mutasi_list:
+        logger.warning(
+            f"Tidak ditemukan mutasi stok untuk receipt {penerimaan.no_form}. "
+            f"Mungkin receipt belum di-finish atau data corrupt."
+        )
+    else:
+        # Reverse setiap mutasi (semuanya MASUK, akan jadi KELUAR)
+        for mutasi in mutasi_list:
+            try:
+                reverse_stock_movement(
+                    db, mutasi.id, user_id,
+                    reason=f"Reverse receipt {penerimaan.no_form} (detail barang)"
+                )
+            except ValueError as e:
+                raise ValueError(
+                    f"Gagal reverse stock movement untuk receipt {penerimaan.no_form}: {e}. "
+                    f"GRNI journal sudah di-reverse tapi stock movement gagal — perlu rekonsiliasi manual."
+                ) from e
+
+    # === 4. Set status ===
+    penerimaan.status = StatusPenjualan.DIBATALKAN
+    db.add(penerimaan)
+    db.flush()
+
+    logger.info(
+        f"PenerimaanBarang {penerimaan.no_form} reversed: "
+        f"{len(mutasi_list)} mutasi stok di-reverse, GRNI journal di-reverse, "
+        f"status diubah ke DIBATALKAN"
+    )
+    return penerimaan
