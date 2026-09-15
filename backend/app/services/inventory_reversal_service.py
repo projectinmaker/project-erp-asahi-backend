@@ -773,3 +773,102 @@ def reverse_receipt(
         f"status diubah ke DIBATALKAN"
     )
     return penerimaan
+
+
+# ==========================================
+# Phase 6 — Reverse Transfer Bank
+# ==========================================
+@atomic_accounting_write
+def reverse_transfer(
+    db: Session,
+    transfer_id: UUID,
+    user_id: UUID,
+    reason: str = "Pembatalan transfer bank",
+):
+    """Reverse TransferBank yang sudah SELESAI.
+
+    Phase 6 — Master Roadmap §23:
+        "Void reconciliation creates controlled reversal"
+    & §10: "Reversal exact value/layer".
+
+    Berbeda dengan cancel_transfer (yang hanya untuk DRAFT sebelum post),
+    reverse_transfer bisa untuk transfer yang sudah SELESAI — jurnal sudah posted.
+
+    Reverse akan:
+    1. Reverse jurnal transfer via posting_service.reverse_journal
+       - Reverse: Dr Bank Asal / Cr Bank Tujuan / Cr Beban Transfer (pembalik)
+    2. Set status TransferBank ke BATAL
+    3. Catat reversal via audit trail jurnal_umum (reversal_of_id)
+
+    Catatan: Transfer bank TIDAK menggerakkan stock movement, jadi tidak perlu
+    call reverse_stock_movement. Hanya reverse jurnal.
+
+    Parameter:
+        db: SQLAlchemy Session
+        transfer_id: UUID TransferBank yang akan di-reverse
+        user_id: UUID user yang melakukan reversal
+        reason: Alasan reversal
+
+    Return:
+        TransferBank object (status=BATAL)
+
+    Raises:
+        ValueError kalau:
+        - Transfer tidak ditemukan
+        - Status bukan SELESAI (harus sudah posted dulu)
+        - Sudah di-reverse (one-reversal policy via jurnal reversal)
+        - Jurnal tidak ditemukan (kemungkinan data corrupt)
+    """
+    from app.models.transaksi.kas_bank.transfer_bank import (
+        TransferBank, StatusTransaksi,
+    )
+    from app.services.posting_service import reverse_journal
+
+    transfer = (
+        db.query(TransferBank)
+        .filter(TransferBank.id == transfer_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if transfer is None:
+        raise ValueError(f"Transfer dengan ID {transfer_id} tidak ditemukan")
+
+    if transfer.status != StatusTransaksi.SELESAI:
+        raise ValueError(
+            f"Transfer {transfer.no_transfer} status={transfer.status.value}, "
+            f"tidak bisa di-reverse. Hanya transfer SELESAI yang bisa di-reverse. "
+            f"Untuk pembatalan sebelum post, gunakan cancel_transfer."
+        )
+
+    # === 1. Reverse jurnal transfer (kalau ada) ===
+    if not getattr(transfer, 'jurnal_umum_id', None):
+        raise ValueError(
+            f"Transfer {transfer.no_transfer} status SELESAI tapi tidak punya jurnal. "
+            f"Data inconsistent — perlu rekonsiliasi manual."
+        )
+
+    try:
+        reverse_journal(
+            db, transfer.jurnal_umum_id, user_id,
+            reason=f"Reverse transfer {transfer.no_transfer}: {reason}"
+        )
+        logger.info(
+            f"Transfer journal {transfer.jurnal_umum_id} reversed for transfer "
+            f"{transfer.no_transfer}"
+        )
+    except ValueError as e:
+        raise ValueError(
+            f"Gagal reverse jurnal untuk transfer {transfer.no_transfer}: {e}"
+        ) from e
+
+    # === 2. Set status ===
+    transfer.status = StatusTransaksi.BATAL
+    db.add(transfer)
+    db.flush()
+
+    logger.info(
+        f"TransferBank {transfer.no_transfer} reversed: "
+        f"jurnal di-reverse, status diubah ke BATAL"
+    )
+    return transfer
