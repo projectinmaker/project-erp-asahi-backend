@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Text, Integer, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy import Column, String, Text, Integer, Numeric, Date, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -15,6 +15,14 @@ class StatusAsetTetap(str, enum.Enum):
     AKTIF = "AKTIF"
     DIHAPUSKAN = "DIHAPUSKAN"
     DALAM_PERBAIKAN = "DALAM_PERBAIKAN"
+
+
+class AcquisitionSourceType(str, enum.Enum):
+    """Tipe sumber akuisisi aset tetap (Roadmap §24: "Acquisition source trace")."""
+    MANUAL_JOURNAL = "MANUAL_JOURNAL"   # Aset dibeli & dicatat via jurnal manual
+    PURCHASE_INVOICE = "PURCHASE_INVOICE"  # Aset dibeli via Purchase Invoice
+    SALDO_AWAL = "SALDO_AWAL"            # Aset dari saldo awal (opening balance)
+    DIRECT = "DIRECT"                     # Aset dicatat langsung tanpa source dokumen
 
 
 class AsetTetap(BaseModel, BaseMixin):
@@ -41,6 +49,16 @@ class AsetTetap(BaseModel, BaseMixin):
     auto_post_jurnal = Column(Boolean, default=True, nullable=False)
     status = Column(SQLEnum(StatusAsetTetap), default=StatusAsetTetap.AKTIF, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
+
+    # === NEW Phase 7 — Acquisition source trace (Roadmap §24: "Acquisition source trace") ===
+    # Tipe sumber akuisisi: MANUAL_JOURNAL / PURCHASE_INVOICE / SALDO_AWAL / DIRECT
+    acquisition_source_type = Column(String(30), nullable=True, index=True)
+    # ID sumber akuisisi (UUID jurnal_umum.id atau purchase_invoice.id)
+    acquisition_source_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # Nomor dokumen sumber untuk display (mis. JV-2026-09-001 atau PINV-2026-09-001)
+    acquisition_source_no = Column(String(30), nullable=True)
+    # Tanggal akuisisi (bisa beda dari tanggal_mulai penyusutan)
+    acquisition_date = Column(Date, nullable=True)
 
     # Relationship
     kategori_aset = relationship("KategoriAset")
