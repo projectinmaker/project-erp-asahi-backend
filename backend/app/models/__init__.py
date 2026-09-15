@@ -41,7 +41,7 @@ from app.models.transaksi.persediaan.pemindahan_barang import PemindahanBarang, 
 from app.models.transaksi.persediaan.penyesuaian_stok import PenyesuaianStok, TipePenyesuaian
 
 # Transaksi - Aset Tetap
-from app.models.transaksi.aset_tetap.aset_tetap import AsetTetap, MetodePenyusutan, StatusAsetTetap
+from app.models.transaksi.aset_tetap.aset_tetap import AsetTetap, MetodePenyusutan, StatusAsetTetap, AcquisitionSourceType
 
 # Transaksi - Lainnya
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
@@ -62,6 +62,7 @@ from app.models.detail.purchase_order_detail import PurchaseOrderDetail
 from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
 from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
 from app.models.detail.purchase_retur_detail import PurchaseReturDetail
+from app.models.detail.purchase_invoice_receipt_match import PurchaseInvoiceReceiptMatch
 from app.models.detail.barang_satuan import BarangSatuan
 
 __all__ = [
@@ -119,6 +120,7 @@ __all__ = [
     "PenerimaanBarangDetail",
     "PurchaseInvoiceDetail",
     "PurchaseReturDetail",
+    "PurchaseInvoiceReceiptMatch",
     "BarangSatuan",
     # Enums
     "StatusTransaksi",
@@ -128,6 +130,7 @@ __all__ = [
     "TipePenyesuaian",
     "MetodePenyusutan",
     "StatusAsetTetap",
+    "AcquisitionSourceType",
     "MetodeValuasi",
     "RefModule",
     "StatusJurnal",
