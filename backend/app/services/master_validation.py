@@ -176,3 +176,83 @@ def validate_master_code_unique(
                 f"Gunakan kode lain, atau nonaktifkan master existing terlebih dahulu."
             ),
         )
+
+
+# ==========================================
+# Phase 3 — Inventory Core Engine helpers
+# ==========================================
+
+def validate_stock_item_master(
+    db: Session,
+    barang_id: UUID,
+    context: str = "Transaksi",
+    allow_non_stock: bool = False,
+):
+    """Cek apakah Barang valid untuk transaksi stok.
+
+    Phase 3 — Master Roadmap §10:
+    - Barang harus AKTIF (status='AKTIF')
+    - Barang harus stock-tracked (stock_item=True dan item_type != JASA)
+      Kecuali kalau allow_non_stock=True (mis. untuk invoice jasa)
+
+    Dipakai di:
+    - sales_service: finish_pengiriman (delivery) — butuh stock_item=True
+    - pembelian_service: finish_penerimaan (goods receipt) — butuh stock_item=True
+    - persediaan_service: approve_penyesuaian, approve_pemindahan — butuh stock_item=True
+    - stock_return_service: execute_sales_return — butuh stock_item=True
+
+    Parameter:
+        db: SQLAlchemy Session
+        barang_id: UUID barang
+        context: deskripsi transaksi untuk error message
+        allow_non_stock: True kalau transaksi boleh untuk barang non-stock
+            (mis. sales invoice untuk jasa — tapi tanpa stock movement)
+
+    Return:
+        Barang object (akan raise kalau invalid)
+
+    Raises:
+        HTTPException 400 kalau barang non-stock dan allow_non_stock=False
+        HTTPException 404 kalau barang tidak ditemukan
+        HTTPException 400 kalau barang NONAKTIF
+    """
+    from app.models.master.barang import Barang, ItemTypeBarang
+
+    barang = db.get(Barang, barang_id)
+    if barang is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Barang dengan ID {barang_id} tidak ditemukan. {context} dibatalkan.",
+        )
+    if barang.status != "AKTIF":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Barang '{barang.nama}' (kode: {barang.kode}) sudah {barang.status} — "
+                f"tidak boleh dipakai transaksi baru. {context} dibatalkan."
+            ),
+        )
+
+    # Cek stock_item flag (Phase 2 field)
+    if not allow_non_stock:
+        is_jasa = (
+            getattr(barang, 'item_type', None) == ItemTypeBarang.JASA
+            if hasattr(barang, 'item_type') and barang.item_type is not None
+            else False
+        )
+        stock_item = getattr(barang, 'stock_item', True)
+
+        if is_jasa or not stock_item:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Barang '{barang.nama}' (kode: {barang.kode}) adalah barang "
+                    f"non-stock (item_type={barang.item_type.value if barang.item_type else 'null'}, "
+                    f"stock_item={stock_item}). Tidak bisa dipakai transaksi stok. "
+                    f"{context} dibatalkan. "
+                    f"Untuk transaksi jasa, gunakan endpoint yang sesuai "
+                    f"(mis. sales invoice langsung tanpa delivery)."
+                ),
+            )
+
+    return barang

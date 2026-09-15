@@ -587,12 +587,26 @@ def update_pemindahan(
 
 @atomic_accounting_write
 def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBarang:
-    """Setujui pemindahan barang + update stok (kurangi dari asal, tambah ke tujuan)."""
+    """Setujui pemindahan barang + update stok (kurangi dari asal, tambah ke tujuan).
+
+    Phase 3 — Refactor:
+    - Pass ref_module=RefModule.INVENTORY_TRANSFER ke update_stok_barang supaya
+      mutasi stok tercatat dengan source identity yang benar (audit trail).
+    - Set inventory_account_id snapshot di StokMutasi (untuk reversal nanti)
+    - Membuat 2 StokMutasi: PEMINDAHAN_KELUAR (gudang asal) + PEMINDAHAN_MASUK (gudang tujuan)
+      Keduanya link ke ref_id=pemindahan.id, ref_module=INVENTORY_TRANSFER.
+    """
     if db_obj.status != StatusPersediaan.DIAJUKAN:
         raise ValueError(f"Pemindahan Barang dengan status {db_obj.status.value} tidak bisa disetujui")
 
     if db_obj.dari_gudang_id == db_obj.ke_gudang_id:
         raise ValueError("Gudang asal dan tujuan tidak boleh sama")
+
+    # Resolve inventory account snapshot (untuk reversal & audit trail)
+    try:
+        inventory_account_id = _get_akun_persediaan_id(db, db_obj.barang)
+    except ValueError:
+        inventory_account_id = None  # fallback kalau mapping belum di-configure
 
     # Kurangi stok dari gudang asal
     outgoing = update_stok_barang(
@@ -601,18 +615,24 @@ def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBaran
         qty_change=db_obj.qty,
         mode="KURANGI",
         deskripsi=f"Pemindahan keluar {db_obj.no_pemindahan}",
+        ref_module=RefModule.INVENTORY_TRANSFER,
         ref_no=db_obj.no_pemindahan,
         ref_id=db_obj.id,
         gudang_id=db_obj.dari_gudang_id,
     )
+    # Set inventory_account_id snapshot di mutasi keluar
+    if inventory_account_id and outgoing.get('mutasi'):
+        outgoing['mutasi'].inventory_account_id = inventory_account_id
+        outgoing['mutasi'].expense_account_id = inventory_account_id  # untuk transfer, akun lawan sama
 
     # Tambah stok ke gudang tujuan
-    update_stok_barang(
+    incoming = update_stok_barang(
         db=db,
         barang_id=db_obj.barang_id,
         qty_change=db_obj.qty,
         mode="TAMBAH",
         deskripsi=f"Pemindahan masuk {db_obj.no_pemindahan}",
+        ref_module=RefModule.INVENTORY_TRANSFER,
         ref_no=db_obj.no_pemindahan,
         ref_id=db_obj.id,
         gudang_id=db_obj.ke_gudang_id,
@@ -620,12 +640,21 @@ def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBaran
         incoming_parts=outgoing['parts'] or None,
         exact_total=outgoing['total_nilai'] if getattr(db_obj.barang.metode_valuasi, 'value', db_obj.barang.metode_valuasi) == 'AVERAGE' else None,
     )
+    # Set inventory_account_id snapshot di mutasi masuk juga
+    if inventory_account_id and incoming.get('mutasi'):
+        incoming['mutasi'].inventory_account_id = inventory_account_id
+        incoming['mutasi'].expense_account_id = inventory_account_id
 
     db_obj.status = StatusPersediaan.DISETUJUI
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
-    logger.info(f"PemindahanBarang approved: {db_obj.no_pemindahan} | qty={db_obj.qty}")
+    logger.info(
+        f"PemindahanBarang approved: {db_obj.no_pemindahan} | "
+        f"{db_obj.dari_gudang.kode if db_obj.dari_gudang else 'UNASSIGNED'} -> "
+        f"{db_obj.ke_gudang.kode} | qty={db_obj.qty} | "
+        f"ref_module=INVENTORY_TRANSFER"
+    )
     return db_obj
 
 

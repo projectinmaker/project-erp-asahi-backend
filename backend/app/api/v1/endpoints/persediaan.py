@@ -253,6 +253,43 @@ def cancel_pemindahan(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/pemindahan/{pb_id}/reverse", response_model=PemindahanBarangResponse)
+def reverse_pemindahan(
+    pb_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+    reason: Optional[str] = Query(None, description="Alasan reversal (optional)"),
+):
+    """Reverse Pemindahan Barang yang sudah di-approve.
+
+    Phase 3 — Master Roadmap §10: "Reversal exact value/layer".
+
+    Berbeda dengan cancel (yang hanya bisa untuk pemindahan status DIAJUKAN),
+    reverse bisa untuk pemindahan yang sudah DISETUJUI (stock sudah bergerak).
+    Reverse akan:
+    1. Restore layer FIFO/FEFO di gudang asal (re-create layer dengan cost asli)
+    2. Hapus layer FIFO/FEFO di gudang tujuan (kalau masih ada sisa)
+    3. Update StockBalance (qty + nilai) kedua gudang
+    4. Update master barang.stok
+    5. Set status pemindahan ke BATAL
+    6. Catat 2 StokMutasi reversal dengan reversal_of_id link ke mutasi asli
+
+    Catatan: Reverse ini hanya handle stock movement. Jika pemindahan juga
+    menghasilkan jurnal (mis. kalau masa depan gudang punya COA terpisah),
+    caller perlu reverse jurnal terpisah via endpoint jurnal.
+    """
+    from app.services.inventory_reversal_service import reverse_pemindahan as _reverse
+
+    try:
+        result = _reverse(
+            db, pb_id, current_user.id,
+            reason=reason or "Reversal pemindahan"
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ==========================================
 # PERMINTAAN BARANG
 # ==========================================
