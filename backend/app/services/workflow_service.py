@@ -201,6 +201,11 @@ def post_existing(db, obj, actor_id):
         if debit != obj.total_debit or kredit != obj.total_kredit:
             raise ValueError('Total jurnal draft tidak sesuai detail')
         obj.status = StatusJurnal.POSTED
+    elif obj.__tablename__ in ('pembayaran_kas', 'penerimaan_kas'):
+        # Deteksi settlement: kalau punya allocation (relasi `alokasi`), pass is_settlement=True
+        # supaya RefModule canonical (AR_SETTLEMENT / AP_SETTLEMENT) dipakai.
+        is_settlement = bool(getattr(obj, 'alokasi', None))
+        methods[obj.__tablename__](db, obj, actor_id, is_settlement=is_settlement)
     else:
         methods[obj.__tablename__](db, obj, actor_id)
 

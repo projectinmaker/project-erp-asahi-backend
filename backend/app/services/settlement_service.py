@@ -170,7 +170,8 @@ def create_settlement(db, jenis, pihak_id, tanggal, kas_bank_id, no_nukti, alloc
     rows, rincian = prepare(db, jenis, pihak_id, tanggal, allocation_data)
     create = cash.create_penerimaan if jenis == 'piutang' else cash.create_pembayaran
     payment = create(db, no_nukti, tanggal, kas_bank_id, rincian, catatan=catatan,
-                     auto_post_jurnal=False, created_by=created_by)
+                     auto_post_jurnal=False, created_by=created_by,
+                     is_settlement=True)  # ← canonical: AR_SETTLEMENT / AP_SETTLEMENT
     setattr(payment, 'pelanggan_id' if jenis == 'piutang' else 'supplier_id', pihak_id)
     attach(payment, jenis, rows)
     return payment

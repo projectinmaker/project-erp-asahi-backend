@@ -103,12 +103,18 @@ def create_pembayaran(
     catatan: Optional[str] = None,
     auto_post_jurnal: bool = True,
     created_by: UUID = None,
+    is_settlement: bool = False,
 ) -> PembayaranKas:
     """
     Buat PembayaranKas baru beserta rincian.
     - Generate no_bukti otomatis
     - Hitung total_nilai dari sum rincian
     - Auto-post jurnal jika auto_post_jurnal=True dan status=SELESAI
+
+    Parameter:
+        is_settlement: True kalau ini adalah pelunasan AP (punya allocation
+            ke purchase_invoice). Akan memakai RefModule.AP_SETTLEMENT
+            (canonical) di jurnal. Default False.
     """
     try:
         # Generate nomor bukti
@@ -156,7 +162,7 @@ def create_pembayaran(
         db.flush()
         refresh_totals(pembayaran)
         if auto_post_jurnal:
-            post_pembayaran(db, pembayaran, created_by)
+            post_pembayaran(db, pembayaran, created_by, is_settlement=is_settlement)
 
         db.commit()
         db.refresh(pembayaran)
@@ -292,8 +298,15 @@ def create_penerimaan(
     catatan: Optional[str] = None,
     auto_post_jurnal: bool = True,
     created_by: UUID = None,
+    is_settlement: bool = False,
 ) -> PenerimaanKas:
-    """Buat PenerimaanKas baru beserta rincian + auto-post jurnal."""
+    """Buat PenerimaanKas baru beserta rincian + auto-post jurnal.
+
+    Parameter:
+        is_settlement: True kalau ini adalah pelunasan AR (punya allocation
+            ke sales_invoice). Akan memakai RefModule.AR_SETTLEMENT
+            (canonical) di jurnal. Default False.
+    """
     try:
         no_bukti = get_nomor_dokumen(
             db, PenerimaanKas, prefix="REC",
@@ -334,7 +347,7 @@ def create_penerimaan(
         db.flush()
         refresh_totals(penerimaan)
         if auto_post_jurnal:
-            post_penerimaan(db, penerimaan, created_by)
+            post_penerimaan(db, penerimaan, created_by, is_settlement=is_settlement)
 
         db.commit()
         db.refresh(penerimaan)
@@ -570,8 +583,20 @@ def cancel_transfer(db: Session, db_obj: TransferBank, user_id: Optional[UUID] =
     logger.info(f"TransferBank cancelled: {db_obj.no_transfer}")
     return db_obj
 
-def post_pembayaran(db: Session, pembayaran, created_by):
-    """Post the existing document; caller owns commit/rollback and workflow checks."""
+def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = False):
+    """Post the existing document; caller owns commit/rollback and workflow checks.
+
+    Parameter:
+        is_settlement: True kalau pembayaran ini adalah pelunasan AP (punya
+            allocation ke purchase_invoice). Akan memakai RefModule.AP_SETTLEMENT
+            (canonical) supaya jurnal bisa dibedakan dari generic payment
+            (expense / advance / dll). Default False (RefModule.PEMBAYARAN
+            legacy) untuk backward compat.
+
+    RefModule logic sesuai Master Roadmap §8 & §21:
+        - Generic payment (expense, advance, dll) → RefModule.PEMBAYARAN (legacy)
+        - AP settlement (pelunasan hutang ke supplier) → RefModule.AP_SETTLEMENT
+    """
     from app.services.document_totals import validate_postable
     validate_postable(db, pembayaran)
     from app.services.settlement_service import validate_payment
@@ -598,12 +623,20 @@ def post_pembayaran(db: Session, pembayaran, created_by):
             )
         )
 
+    # RefModule: AP_SETTLEMENT kalau punya allocation, PEMBAYARAN kalau generic.
+    ref_module = RefModule.AP_SETTLEMENT if is_settlement else RefModule.PEMBAYARAN
+    keterangan = (
+        f"Pelunasan Hutang (AP Settlement) {no_bukti}"
+        if is_settlement
+        else f"Pembayaran Kas {no_bukti}"
+    )
+
     jurnal = auto_posting_jurnal(
         db=db,
-        ref_module=RefModule.PEMBAYARAN,
+        ref_module=ref_module,
         ref_no=no_bukti,
         entries=entries,
-        keterangan=f"Pembayaran Kas {no_bukti}",
+        keterangan=keterangan,
         ref_id=pembayaran.id,
         tanggal=tanggal,
         created_by=created_by,
@@ -613,8 +646,20 @@ def post_pembayaran(db: Session, pembayaran, created_by):
     return pembayaran
 
 
-def post_penerimaan(db: Session, penerimaan, created_by):
-    """Post the existing document; caller owns commit/rollback and workflow checks."""
+def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = False):
+    """Post the existing document; caller owns commit/rollback and workflow checks.
+
+    Parameter:
+        is_settlement: True kalau penerimaan ini adalah pelunasan AR (punya
+            allocation ke sales_invoice). Akan memakai RefModule.AR_SETTLEMENT
+            (canonical) supaya jurnal bisa dibedakan dari generic receipt
+            (other income / refund / dll). Default False (RefModule.PENERIMAAN
+            legacy) untuk backward compat.
+
+    RefModule logic sesuai Master Roadmap §8 & §15:
+        - Generic receipt (other income, refund customer, dll) → RefModule.PENERIMAAN (legacy)
+        - AR settlement (pelunasan piutang dari pelanggan) → RefModule.AR_SETTLEMENT
+    """
     from app.services.document_totals import validate_postable
     validate_postable(db, penerimaan)
     from app.services.settlement_service import validate_payment
@@ -641,12 +686,20 @@ def post_penerimaan(db: Session, penerimaan, created_by):
             )
         )
 
+    # RefModule: AR_SETTLEMENT kalau punya allocation, PENERIMAAN kalau generic.
+    ref_module = RefModule.AR_SETTLEMENT if is_settlement else RefModule.PENERIMAAN
+    keterangan = (
+        f"Pelunasan Piutang (AR Settlement) {no_bukti}"
+        if is_settlement
+        else f"Penerimaan Kas {no_bukti}"
+    )
+
     jurnal = auto_posting_jurnal(
         db=db,
-        ref_module=RefModule.PENERIMAAN,
+        ref_module=ref_module,
         ref_no=no_bukti,
         entries=entries,
-        keterangan=f"Penerimaan Kas {no_bukti}",
+        keterangan=keterangan,
         ref_id=penerimaan.id,
         tanggal=tanggal,
         created_by=created_by,
