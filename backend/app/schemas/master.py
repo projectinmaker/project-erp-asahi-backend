@@ -5,6 +5,8 @@ from typing import Optional, List
 
 from app.schemas.base import BaseSchema
 from app.models.akun_perkiraan import HeaderCOA, TingkatAkun
+from app.models.master.barang import ItemTypeBarang, MetodeValuasi
+from app.models.transaksi.aset_tetap.aset_tetap import MetodePenyusutan
 
 # ==========================================
 # HELPER SCHEMAS (Untuk Nested Response)
@@ -25,6 +27,17 @@ class SatuanSimpleResponse(BaseSchema):
     id: UUID
     nama: str
 
+class SyaratBayarSimpleResponse(BaseSchema):
+    id: UUID
+    nama: str
+    hari: Optional[int] = None
+
+class OrganizationSimpleResponse(BaseSchema):
+    id: UUID
+    code: str
+    name: str
+    kind: str
+
 # ==========================================
 # 1. PELANGGAN
 # ==========================================
@@ -36,19 +49,32 @@ class PelangganBase(BaseSchema):
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    # NEW Phase 2 fields
+    nitku: Optional[str] = None
+    credit_limit: Optional[Decimal] = None
+    tax_status: Optional[str] = None  # PKP / NON_PKP / null
+    # FK canonical (prefer pakai ini); legacy syarat_bayar_default string tetap dipertahankan
+    syarat_bayar_id: Optional[UUID] = None
+    # LEGACY (akan di-drop di Phase berikutnya)
     syarat_bayar_default: Optional[str] = "Tunai"
 
 class PelangganCreate(PelangganBase):
     akun_piutang_id: Optional[UUID] = None  # kalau diisi, skip auto-create COA (link ke COA existing)
 
 class PelangganUpdate(BaseSchema):
-    kode: Optional[str] = None
+    kode: Optional[str] = None  # immutable setelah dipakai transaksi (di-enforce di service)
     nama: Optional[str] = None
     alamat: Optional[str] = None
     telepon: Optional[str] = None
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    # NEW Phase 2 fields
+    nitku: Optional[str] = None
+    credit_limit: Optional[Decimal] = None
+    tax_status: Optional[str] = None
+    syarat_bayar_id: Optional[UUID] = None
+    # LEGACY
     syarat_bayar_default: Optional[str] = None
     status: Optional[str] = None
 
@@ -56,6 +82,7 @@ class PelangganResponse(PelangganBase):
     id: UUID
     status: str
     akun_piutang: Optional[COASimpleResponse] = None
+    syarat_bayar: Optional[SyaratBayarSimpleResponse] = None  # NEW Phase 2
     created_at: datetime
     updated_at: datetime
 
@@ -69,6 +96,11 @@ class PelangganFromCoaCreate(BaseSchema):
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    # NEW Phase 2
+    nitku: Optional[str] = None
+    credit_limit: Optional[Decimal] = None
+    tax_status: Optional[str] = None
+    syarat_bayar_id: Optional[UUID] = None
     syarat_bayar_default: Optional[str] = "Tunai"
 
 class PelangganCoaResponse(BaseSchema):
@@ -83,6 +115,7 @@ class PelangganCoaResponse(BaseSchema):
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    nitku: Optional[str] = None  # NEW Phase 2
     syarat_bayar_default: Optional[str] = None
     status: str
     is_linked: bool
@@ -98,19 +131,31 @@ class SupplierBase(BaseSchema):
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    # NEW Phase 2 fields
+    nitku: Optional[str] = None
+    credit_limit: Optional[Decimal] = None
+    tax_status: Optional[str] = None  # PKP / NON_PKP / null
+    syarat_bayar_id: Optional[UUID] = None
+    # LEGACY
     syarat_bayar_default: Optional[str] = None
 
 class SupplierCreate(SupplierBase):
     akun_hutang_id: Optional[UUID] = None  # kalau diisi, skip auto-create COA (link ke COA existing)
 
 class SupplierUpdate(BaseSchema):
-    kode: Optional[str] = None
+    kode: Optional[str] = None  # immutable setelah dipakai transaksi
     nama: Optional[str] = None
     alamat: Optional[str] = None
     telepon: Optional[str] = None
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    # NEW Phase 2
+    nitku: Optional[str] = None
+    credit_limit: Optional[Decimal] = None
+    tax_status: Optional[str] = None
+    syarat_bayar_id: Optional[UUID] = None
+    # LEGACY
     syarat_bayar_default: Optional[str] = None
     status: Optional[str] = None
 
@@ -118,6 +163,7 @@ class SupplierResponse(SupplierBase):
     id: UUID
     status: str
     akun_hutang: Optional[COASimpleResponse] = None
+    syarat_bayar: Optional[SyaratBayarSimpleResponse] = None  # NEW Phase 2
     created_at: datetime
     updated_at: datetime
 
@@ -131,6 +177,11 @@ class SupplierFromCoaCreate(BaseSchema):
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    # NEW Phase 2
+    nitku: Optional[str] = None
+    credit_limit: Optional[Decimal] = None
+    tax_status: Optional[str] = None
+    syarat_bayar_id: Optional[UUID] = None
     syarat_bayar_default: Optional[str] = "Tunai"
 
 class SupplierCoaResponse(BaseSchema):
@@ -145,6 +196,7 @@ class SupplierCoaResponse(BaseSchema):
     email: Optional[str] = None
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
+    nitku: Optional[str] = None  # NEW Phase 2
     syarat_bayar_default: Optional[str] = None
     status: str
     is_linked: bool
@@ -157,10 +209,16 @@ class BarangBase(BaseSchema):
     kode: str
     nama: str
     kategori_id: UUID
-    satuan_id: UUID
+    satuan_id: UUID  # base_uom
     harga_pokok: Decimal = 0
     stok_minimum: int = 0
-    metode_valuasi: str = "AVERAGE"
+    metode_valuasi: MetodeValuasi = MetodeValuasi.AVERAGE  # inventory_method
+    # NEW Phase 2 — P0 fields
+    item_type: Optional[ItemTypeBarang] = None  # item_type canonical enum
+    akun_hpp_id: Optional[UUID] = None  # COGS_account
+    akun_penjualan_id: Optional[UUID] = None  # sales_account (revenue)
+    stock_item: bool = True  # stock_item flag (True=stock-tracked, False=non-stock/jasa)
+    # LEGACY
     jenis_barang: Optional[str] = None
 
 class BarangCreate(BarangBase): pass
@@ -172,12 +230,20 @@ class BarangUpdate(BaseSchema):
     satuan_id: Optional[UUID] = None
     harga_pokok: Optional[Decimal] = None
     stok_minimum: Optional[int] = None
-    metode_valuasi: Optional[str] = None
+    metode_valuasi: Optional[MetodeValuasi] = None
     status: Optional[str] = None
+    # NEW Phase 2
+    item_type: Optional[ItemTypeBarang] = None
+    akun_hpp_id: Optional[UUID] = None
+    akun_penjualan_id: Optional[UUID] = None
+    stock_item: Optional[bool] = None
+    # LEGACY
     jenis_barang: Optional[str] = None
 
 class BarangResponse(BarangBase):
     akun_persediaan: Optional[COASimpleResponse] = None
+    akun_hpp: Optional[COASimpleResponse] = None  # NEW Phase 2
+    akun_penjualan: Optional[COASimpleResponse] = None  # NEW Phase 2
     id: UUID
     stok: int
     status: str
@@ -247,18 +313,26 @@ class GudangBase(BaseSchema):
     kode: str
     nama: str
     alamat: Optional[str] = None
+    # NEW Phase 2 — organization scope
+    company_id: Optional[UUID] = None
+    branch_id: Optional[UUID] = None
 
 class GudangCreate(GudangBase): pass
 
 class GudangUpdate(BaseSchema):
     nama: Optional[str] = None
     alamat: Optional[str] = None
+    # NEW Phase 2
+    company_id: Optional[UUID] = None
+    branch_id: Optional[UUID] = None
     status: Optional[str] = None
 
 class GudangResponse(GudangBase):
     id: UUID
     total_barang: int
     status: str
+    company: Optional[OrganizationSimpleResponse] = None  # NEW Phase 2
+    branch: Optional[OrganizationSimpleResponse] = None  # NEW Phase 2
     created_at: datetime
     updated_at: datetime
 
@@ -286,16 +360,32 @@ class SyaratBayarResponse(SyaratBayarBase):
 class KategoriAsetBase(BaseSchema):
     kode: str
     nama: str
+    # NEW Phase 2 — P0 accounting mapping (semua nullable, diisi saat setup)
+    akun_aset_id: Optional[UUID] = None  # asset_cost_account
+    akun_akumulasi_id: Optional[UUID] = None  # accumulated_depreciation_account
+    akun_beban_id: Optional[UUID] = None  # depreciation_expense_account
+    # NEW Phase 2 — default untuk create aset baru
+    default_useful_life: Optional[int] = None  # dalam bulan
+    default_method: Optional[MetodePenyusutan] = None  # GARIS_LURUS / SALDO_MENURUN
 
 class KategoriAsetCreate(KategoriAsetBase): pass
 
 class KategoriAsetUpdate(BaseSchema):
     nama: Optional[str] = None
+    # NEW Phase 2
+    akun_aset_id: Optional[UUID] = None
+    akun_akumulasi_id: Optional[UUID] = None
+    akun_beban_id: Optional[UUID] = None
+    default_useful_life: Optional[int] = None
+    default_method: Optional[MetodePenyusutan] = None
     status: Optional[str] = None
 
 class KategoriAsetResponse(KategoriAsetBase):
     id: UUID
     status: str
+    akun_aset: Optional[COASimpleResponse] = None  # NEW Phase 2
+    akun_akumulasi: Optional[COASimpleResponse] = None  # NEW Phase 2
+    akun_beban: Optional[COASimpleResponse] = None  # NEW Phase 2
     created_at: datetime
     updated_at: datetime
 
@@ -307,6 +397,8 @@ class KasBankAkunBase(BaseSchema):
     nama: str
     jenis: str  # KAS / BANK
     akun_perkiraan_id: UUID
+    # NEW Phase 2 — currency (P0)
+    currency: str = "IDR"  # ISO 4217, default IDR (Phase-1 IDR-only per Roadmap §7)
 
 class KasBankAkunCreate(KasBankAkunBase): pass
 
@@ -314,6 +406,7 @@ class KasBankAkunUpdate(BaseSchema):
     nama: Optional[str] = None
     jenis: Optional[str] = None
     akun_perkiraan_id: Optional[UUID] = None
+    currency: Optional[str] = None  # NEW Phase 2
     status: Optional[str] = None
 
 class KasBankAkunResponse(KasBankAkunBase):

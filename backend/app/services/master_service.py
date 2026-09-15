@@ -131,8 +131,17 @@ def create_master(
     return db_obj
 
 def update_master(db: Session, db_obj: Any, schema_in: BaseSchema) -> Any:
-    """Fungsi generik untuk update data master yang sudah ada"""
+    """Fungsi generik untuk update data master yang sudah ada.
+
+    Phase 2 — Tambah immutable code check (Roadmap §9 Rules: "Codes immutable
+    setelah digunakan"). Kalau user coba ubah kode master yang sudah dipakai
+    transaksi, akan reject dengan pesan jelas.
+    """
     update_data = schema_in.model_dump(exclude_unset=True)
+    # === Phase 2: Immutable code check ===
+    if 'kode' in update_data and update_data['kode'] != db_obj.kode:
+        from app.services.master_validation import validate_immutable_code
+        validate_immutable_code(db, db_obj, update_data['kode'])
     if db_obj.__table__.name == 'barang' and 'akun_persediaan_id' in update_data:
         from app.services.accounting_control import accounting_lock
         accounting_lock(db)
