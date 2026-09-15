@@ -478,14 +478,20 @@ def get_invoice_belum_bayar(
 
     result = []
     for inv in invoices:
-        # Hitung total yang sudah dibayar dari jurnal penerimaan kas
+        # Hitung total yang sudah dibayar dari jurnal penerimaan kas.
+        # Catatan: RefModule PENERIMAAN (legacy) dan AR_SETTLEMENT (canonical)
+        # keduanya harus di-include supaya data historis & transaksi baru
+        # sama-sama terbaca di AR aging.
         total_bayar = Decimal("0")
         if inv.jurnal_umum_id:
             # Cari jurnal penerimaan yang merujuk invoice ini
             bayar_rows = (
                 db.query(sa_func.coalesce(sa_func.sum(JurnalUmum.total_kredit), 0))
                 .filter(
-                    JurnalUmum.ref_module == RefModule.PENERIMAAN,
+                    JurnalUmum.ref_module.in_([
+                        RefModule.PENERIMAAN,      # legacy generic receipt
+                        RefModule.AR_SETTLEMENT,    # canonical AR settlement
+                    ]),
                     JurnalUmum.status == "POSTED",
                 )
                 .scalar()

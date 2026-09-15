@@ -1001,7 +1001,7 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             qty_change=detail.qty,
             mode="TAMBAH",
             deskripsi=f"Penerimaan Barang {db_obj.no_form}",
-            ref_module=RefModule.PURCHASE_INVOICE,
+            ref_module=RefModule.PURCHASE_RECEIPT,
             ref_no=db_obj.no_form,
             ref_id=db_obj.id,
             gudang_id=db_obj.gudang_id,
@@ -1036,7 +1036,7 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
         try:
             jurnal = auto_posting_jurnal(
                 db=db,
-                ref_module=RefModule.PURCHASE_INVOICE,  # konsisten dgn ref_module StokMutasi
+                ref_module=RefModule.PURCHASE_RECEIPT,  # konsisten dgn ref_module StokMutasi
                 ref_no=db_obj.no_form,
                 entries=entries,
                 keterangan=f"Penerimaan Barang {db_obj.no_form} (GRNI)",

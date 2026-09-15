@@ -7,21 +7,45 @@ from app.models.base import BaseMixin
 
 
 class RefModule(str, enum.Enum):
-    PEMBAYARAN = "PEMBAYARAN"
-    PENERIMAAN = "PENERIMAAN"
-    TRANSFER_BANK = "TRANSFER_BANK"
-    SALES_ORDER = "SALES_ORDER"
-    SALES_INVOICE = "SALES_INVOICE"
-    SALES_RETUR = "SALES_RETUR"
-    PURCHASE_ORDER = "PURCHASE_ORDER"
-    PURCHASE_INVOICE = "PURCHASE_INVOICE"
-    PURCHASE_RETUR = "PURCHASE_RETUR"
-    PENYESUAIAN_STOK = "PENYESUAIAN_STOK"
-    PENYUSUTAN = "PENYUSUTAN"
-    SALDO_AWAL = "SALDO_AWAL"
+    """
+    Sumber modul transaksi yang menghasilkan jurnal.
+
+    === LEGACY VALUES (Indonesian names — backward compatibility) ===
+    Nilai-nilai ini tetap dipertahankan karena data historis di database
+    masih memakainya. Service code yang baru WAJIB memakai nilai canonical
+    (English names) di bawah ini:
+    """
+    # === LEGACY (jangan dipakai untuk transaksi baru) ===
+    PEMBAYARAN = "PEMBAYARAN"           # legacy generic payment; lihat AP_SETTLEMENT utk pelunasan AP
+    PENERIMAAN = "PENERIMAAN"           # legacy generic receipt; lihat AR_SETTLEMENT utk pelunasan AR
+    TRANSFER_BANK = "TRANSFER_BANK"     # legacy; lihat BANK_TRANSFER
+    SALES_ORDER = "SALES_ORDER"         # SO tidak membuat jurnal — hanya untuk traceability
+    SALES_INVOICE = "SALES_INVOICE"     # tetap dipakai untuk invoice (AR/Revenue/VAT)
+    SALES_RETUR = "SALES_RETUR"         # tetap dipakai untuk sales return / credit note
+    PURCHASE_ORDER = "PURCHASE_ORDER"   # PO tidak membuat jurnal — hanya untuk traceability
+    PURCHASE_INVOICE = "PURCHASE_INVOICE"  # tetap dipakai untuk invoice (AP/VAT/GRNI clearing)
+    PURCHASE_RETUR = "PURCHASE_RETUR"   # tetap dipakai untuk purchase return / debit note
+    PENYESUAIAN_STOK = "PENYESUAIAN_STOK"  # legacy; lihat INVENTORY_ADJUSTMENT
+    PENYUSUTAN = "PENYUSUTAN"           # legacy; lihat ASSET_DEPRECIATION
+    SALDO_AWAL = "SALDO_AWAL"           # saldo awal
     PENUTUPAN_PERIODE = "PENUTUPAN_PERIODE"
-    REKONSILIASI_BANK = "REKONSILIASI_BANK"
+    REKONSILIASI_BANK = "REKONSILIASI_BANK"  # legacy; lihat BANK_RECONCILIATION
     MANUAL = "MANUAL"
+
+    # === CANONICAL (target architecture per Master Roadmap §8 — RefModule) ===
+    # Nilai-nilai baru sesuai target ASAHI Accounting System. Service code yang
+    # baru WAJIB memakai nilai-nilai ini untuk transaksi baru.
+    SALES_DELIVERY = "SALES_DELIVERY"           # PengirimanBarang (delivery / stock-out + COGS)
+    PURCHASE_RECEIPT = "PURCHASE_RECEIPT"       # PenerimaanBarang (goods receipt / stock-in + GRNI)
+    AR_SETTLEMENT = "AR_SETTLEMENT"            # Pelunasan piutang via PenerimaanKas w/ allocation
+    AP_SETTLEMENT = "AP_SETTLEMENT"            # Pelunasan hutang via PembayaranKas w/ allocation
+    INVENTORY_ADJUSTMENT = "INVENTORY_ADJUSTMENT"  # Penyesuaian stok (opname / adjustment)
+    INVENTORY_TRANSFER = "INVENTORY_TRANSFER"   # Pemindahan barang antar gudang
+    ASSET_CAPITALIZATION = "ASSET_CAPITALIZATION"  # Kapitalisasi aset tetap
+    ASSET_DEPRECIATION = "ASSET_DEPRECIATION"   # Jurnal penyusutan aset tetap (bulanan)
+    ASSET_DISPOSAL = "ASSET_DISPOSAL"           # Penghentian/penjualan aset tetap
+    BANK_TRANSFER = "BANK_TRANSFER"             # Transfer antar kas/bank
+    BANK_RECONCILIATION = "BANK_RECONCILIATION"  # Rekonsiliasi bank
 
 
 class StatusJurnal(str, enum.Enum):

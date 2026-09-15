@@ -469,7 +469,7 @@ def _create_adjustment_journal(
     ref_no = f"RB-{rek.tanggal_akhir.strftime('%Y%m')}-{rek.kas_bank.kode}"
     jurnal = auto_posting_jurnal(
         db=db,
-        ref_module=RefModule.REKONSILIASI_BANK,
+        ref_module=RefModule.BANK_RECONCILIATION,
         ref_no=ref_no,
         entries=entries,
         keterangan=f"Penyesuaian Rekonsiliasi Bank - {rek.kas_bank.nama} per {rek.tanggal_akhir.strftime('%d/%m/%Y')}",

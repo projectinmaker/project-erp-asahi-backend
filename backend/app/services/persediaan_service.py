@@ -303,7 +303,7 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
         harga_satuan=db_obj.biaya_satuan,
         mode=mode,
         deskripsi=f"Penyesuaian Stok {db_obj.no_adj} ({mode})",
-        ref_module=RefModule.PENYESUAIAN_STOK,
+        ref_module=RefModule.INVENTORY_ADJUSTMENT,
         ref_no=db_obj.no_adj,
         ref_id=db_obj.id,
     )
@@ -350,7 +350,7 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
 
             jurnal = auto_posting_jurnal(
                 db=db,
-                ref_module=RefModule.PENYESUAIAN_STOK,
+                ref_module=RefModule.INVENTORY_ADJUSTMENT,
                 ref_no=db_obj.no_adj,
                 entries=entries,
                 keterangan=f"Penyesuaian Stok {db_obj.no_adj} ({db_obj.tipe.value})",

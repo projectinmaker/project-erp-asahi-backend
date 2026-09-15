@@ -1022,7 +1022,7 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
                 qty_change=detail.qty,
                 mode="KURANGI",
                 deskripsi=f"Pengiriman {db_obj.no_surat_jalan}",
-                ref_module=RefModule.SALES_INVOICE,
+                ref_module=RefModule.SALES_DELIVERY,
                 ref_no=db_obj.no_surat_jalan,
                 ref_id=db_obj.id,
                 gudang_id=db_obj.gudang_id,
@@ -1040,11 +1040,13 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
         db_obj.status = StatusPenjualan.SELESAI
 
         # Posting jurnal HPP (asumsi: barang yang dikirim adalah barang jadi)
+        # RefModule: SALES_DELIVERY (bukan SALES_INVOICE) — sesuai Master Roadmap §13:
+        # "Delivery ... RefModule SALES_DELIVERY. Delivery tidak boleh menggunakan SALES_INVOICE."
         if total_hpp > 0:
             entries = cost_entries
             jurnal = auto_posting_jurnal(
                 db=db,
-                ref_module=RefModule.SALES_INVOICE,
+                ref_module=RefModule.SALES_DELIVERY,
                 ref_no=db_obj.no_surat_jalan,
                 entries=entries,
                 keterangan=f"HPP Pengiriman {db_obj.no_surat_jalan}",

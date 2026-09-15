@@ -21,6 +21,42 @@ from app.services.posting_service import validate_entries
 router = APIRouter()
 
 
+# ==========================================
+# FRONTEND WIRE: RefModule enum list
+# ==========================================
+@router.get("/ref-modules", tags=["Jurnal Umum"])
+def list_ref_modules(
+    include_legacy: bool = Query(
+        True,
+        description="Include legacy enum values (untuk filter jurnal historis). "
+                    "Set False untuk dropdown 'transaksi baru' yang hanya boleh pakai enum canonical.",
+    ),
+):
+    """List semua RefModule enum beserta label & group untuk frontend dropdown.
+
+    Dipakai oleh frontend untuk:
+    - Dropdown filter di list jurnal (include_legacy=True, supaya bisa filter
+      data historis yang masih pakai enum legacy)
+    - Display label ramah pengguna di kolom "Sumber Modul" jurnal list
+    - Dropdown "pilih sumber modul" untuk form pembuatan jurnal (kalau perlu)
+
+    Response format:
+        {
+            "data": [
+                {
+                    "value": "SALES_DELIVERY",
+                    "label": "Pengiriman Barang",
+                    "group": "Penjualan",
+                    "is_legacy": false
+                },
+                ...
+            ]
+        }
+    """
+    from app.utils.ref_module_label import list_ref_modules
+    return {"data": list_ref_modules(include_legacy=include_legacy)}
+
+
 @atomic_accounting_write
 def _update_manual(db, db_obj, data_in, actor):
     require_unposted(db_obj)

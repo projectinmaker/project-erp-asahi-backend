@@ -703,7 +703,7 @@ def post_transfer(db: Session, transfer, created_by):
 
     jurnal = auto_posting_jurnal(
         db=db,
-        ref_module=RefModule.TRANSFER_BANK,
+        ref_module=RefModule.BANK_TRANSFER,
         ref_no=no_transfer,
         entries=entries,
         keterangan=f"Transfer Bank {no_transfer}",

@@ -85,17 +85,48 @@ def update_stok_barang_legacy(
 
 
 def _resolve_tipe_mutasi(ref_module: Optional[RefModule], is_masuk: bool) -> TipeMutasiStok:
-    """Resolve TipeMutasiStok berdasarkan RefModule dan arah (masuk/keluar)."""
+    """Resolve TipeMutasiStok berdasarkan RefModule dan arah (masuk/keluar).
+
+    Mendukung baik enum canonical (baru) maupun enum legacy (lama) supaya
+    historical data yang sudah dibackfill maupun yang belum tetap ke-handle
+    dengan benar.
+    """
     if ref_module is None:
         return TipeMutasiStok.MASUK if is_masuk else TipeMutasiStok.KELUAR
 
+    # Mapping untuk mutasi MASUK (stock-in)
+    # - PURCHASE_RECEIPT / PURCHASE_INVOICE: receipt dari supplier (canonical / legacy)
+    # - PURCHASE_RETUR: return ke supplier mengurangi stok → sebenarnya KELUAR,
+    #   tapi dipanggil dengan mode="KURANGI" jadi is_masuk=False; mapping masuk
+    #   tidak akan dipakai untuk PURCHASE_RETUR. Tetap dicatat untuk safety.
+    # - INVENTORY_ADJUSTMENT / PENYESUAIAN_STOK: adjustment TAMBAH
+    # - INVENTORY_TRANSFER: pemindahan masuk ke gudang tujuan
+    # - SALES_RETUR: retur dari customer menambah stok → MASUK
     mapping_masuk = {
+        # canonical
+        RefModule.PURCHASE_RECEIPT: TipeMutasiStok.MASUK,
+        RefModule.INVENTORY_ADJUSTMENT: TipeMutasiStok.PENYESUAIAN_TAMBAH,
+        RefModule.INVENTORY_TRANSFER: TipeMutasiStok.PEMINDAHAN_MASUK,
+        RefModule.SALES_RETUR: TipeMutasiStok.MASUK,
+        # legacy (backward compat — data historis yang belum di-backfill)
         RefModule.PURCHASE_INVOICE: TipeMutasiStok.MASUK,
         RefModule.PURCHASE_RETUR: TipeMutasiStok.MASUK,
         RefModule.PENYESUAIAN_STOK: TipeMutasiStok.PENYESUAIAN_TAMBAH,
     }
 
+    # Mapping untuk mutasi KELUAR (stock-out)
+    # - SALES_DELIVERY / SALES_INVOICE: delivery ke customer (canonical / legacy)
+    # - SALES_RETUR: sebenarnya MASUK, tapi kalau dipanggil keluar (mismatch), anggap KELUAR
+    # - PURCHASE_RETUR: return ke supplier mengurangi stok → KELUAR
+    # - INVENTORY_ADJUSTMENT / PENYESUAIAN_STOK: adjustment KURANG
+    # - INVENTORY_TRANSFER: pemindahan keluar dari gudang asal
     mapping_keluar = {
+        # canonical
+        RefModule.SALES_DELIVERY: TipeMutasiStok.KELUAR,
+        RefModule.INVENTORY_ADJUSTMENT: TipeMutasiStok.PENYESUAIAN_KURANG,
+        RefModule.INVENTORY_TRANSFER: TipeMutasiStok.PEMINDAHAN_KELUAR,
+        RefModule.PURCHASE_RETUR: TipeMutasiStok.KELUAR,
+        # legacy (backward compat)
         RefModule.SALES_INVOICE: TipeMutasiStok.KELUAR,
         RefModule.SALES_RETUR: TipeMutasiStok.KELUAR,
         RefModule.PENYESUAIAN_STOK: TipeMutasiStok.PENYESUAIAN_KURANG,

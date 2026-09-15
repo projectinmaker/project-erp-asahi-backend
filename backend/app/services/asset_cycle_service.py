@@ -125,7 +125,19 @@ def post_event(db, obj, actor_id):
     asset, entries = prepare(db, obj)
     obj.sebelum = snapshot(asset)
     if entries:
-        journal = auto_posting_jurnal(db, RefModule.PENYUSUTAN, 'FA-'+str(obj.id)[:20], entries,
+        # Mapping obj.jenis (event type) -> RefModule canonical sesuai Master Roadmap §8:
+        #   KAPITALISASI / REGISTRASI -> ASSET_CAPITALIZATION
+        #   PENYUSUTAN                -> ASSET_DEPRECIATION
+        #   PELEPASAN                 -> ASSET_DISPOSAL
+        #   MUTASI (lokasi)           -> tidak ada jurnal (entries kosong, skip)
+        jenis_to_ref = {
+            'KAPITALISASI': RefModule.ASSET_CAPITALIZATION,
+            'REGISTRASI':   RefModule.ASSET_CAPITALIZATION,
+            'PENYUSUTAN':   RefModule.ASSET_DEPRECIATION,
+            'PELEPASAN':    RefModule.ASSET_DISPOSAL,
+        }
+        ref_module = jenis_to_ref.get(obj.jenis, RefModule.MANUAL)
+        journal = auto_posting_jurnal(db, ref_module, 'FA-'+str(obj.id)[:20], entries,
             ref_id=obj.id, tanggal=obj.tanggal, created_by=actor_id, tipe_transaksi='ASET_'+obj.jenis)
         obj.jurnal_umum_id = journal.id
     if obj.jenis in ('KAPITALISASI', 'REGISTRASI'):
