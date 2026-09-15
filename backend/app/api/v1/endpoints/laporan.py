@@ -333,3 +333,142 @@ def get_audit_persediaan(
     return rekonsiliasi_persediaan_service.audit_transaksi_persediaan(
         db, date_from=date_from, date_to=date_to
     )
+
+
+# ==========================================
+# PHASE 9 — FINANCIAL RECONCILIATION & ACCOUNTING HEALTH
+# ==========================================
+
+@router.get("/rekonsiliasi/grni")
+def get_grni_reconciliation_endpoint(
+    as_of: Optional[str] = Query(None, description="Tanggal as-of (YYYY-MM-DD). Default: hari ini."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Rekonsiliasi Open GRNI vs GRNI GL (Master Roadmap §26).
+
+    Membandingkan:
+    - Open GRNI = sum penerimaan barang SELESAI yang belum di-invoice
+    - GRNI GL = saldo akun PENERIMAAN_DALAM_PROSES dari POSTED journals
+
+    Selisih harus 0 (tolerance 1 cent).
+    """
+    from app.services.financial_reconciliation_service import get_grni_reconciliation
+    from datetime import datetime
+
+    as_of_dt = None
+    if as_of:
+        try:
+            as_of_dt = datetime.strptime(as_of, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "Format as_of harus YYYY-MM-DD")
+
+    return get_grni_reconciliation(db, as_of_dt)
+
+
+@router.get("/rekonsiliasi/cashflow-vs-bs")
+def get_cashflow_vs_bs_reconciliation_endpoint(
+    dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
+    sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Rekonsiliasi Cash Flow Ending Cash vs Balance Sheet Cash (Master Roadmap §26).
+
+    Membandingkan:
+    - Cash Flow Ending = saldo akhir kas/bank dari laporan arus kas
+    - Balance Sheet Cash = total saldo akun kas/bank di neraca per tanggal akhir
+
+    Selisih harus 0.
+    """
+    from app.services.financial_reconciliation_service import (
+        get_cash_flow_vs_balance_sheet_reconciliation,
+    )
+    from datetime import datetime
+
+    try:
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+    except ValueError:
+        raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
+
+    return get_cash_flow_vs_balance_sheet_reconciliation(db, date_from, date_to)
+
+
+@router.get("/rekonsiliasi/equity-vs-bs")
+def get_equity_vs_bs_reconciliation_endpoint(
+    dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
+    sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Rekonsiliasi Changes in Equity Closing vs Balance Sheet Equity (Master Roadmap §26).
+
+    Membandingkan:
+    - Equity Closing = total modal akhir dari laporan perubahan modal
+    - Balance Sheet Equity = total ekuitas di neraca per tanggal akhir
+
+    Selisih harus 0.
+    """
+    from app.services.financial_reconciliation_service import (
+        get_equity_vs_balance_sheet_reconciliation,
+    )
+    from datetime import datetime
+
+    try:
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+    except ValueError:
+        raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
+
+    return get_equity_vs_balance_sheet_reconciliation(db, date_from, date_to)
+
+
+@router.get("/accounting-health")
+def get_accounting_health_endpoint(
+    as_of: Optional[str] = Query(None, description="Tanggal as-of (YYYY-MM-DD). Default: hari ini."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Accounting Health Dashboard — aggregate semua reconciliation status (Master Roadmap §27).
+
+    Menampilkan status MATCH/MISMATCH untuk 11 reconciliation checks:
+    1. Trial Balance (Debit = Credit)
+    2. Balance Sheet (Assets = Liabilities + Equity)
+    3. AR Aging = AR GL
+    4. AP Aging = AP GL
+    5. Inventory Valuation = Inventory GL
+    6. Fixed Asset Register = FA GL
+    7. Cash/Bank Ledger = Cash/Bank GL
+    8. Open GRNI = GRNI GL
+    9. Cash Flow Ending = Balance Sheet Cash
+    10. Changes in Equity Closing = Balance Sheet Equity
+    11. Cash Flow Movement (Opening + Change - Ending = 0)
+
+    Response:
+    {
+        "as_of": "2026-09-15T...",
+        "overall_status": "HEALTHY" | "ISSUES_FOUND",
+        "reconciliations": [
+            {"name": "Trial Balance", "status": "MATCH", "selisih": "0.00", "detail": "..."},
+            ...
+        ],
+        "summary": {
+            "total_checks": 11,
+            "match_count": 10,
+            "mismatch_count": 1,
+            "not_configured_count": 0
+        }
+    }
+    """
+    from app.services.accounting_health_service import get_accounting_health
+    from datetime import datetime
+
+    as_of_dt = None
+    if as_of:
+        try:
+            as_of_dt = datetime.strptime(as_of, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "Format as_of harus YYYY-MM-DD")
+
+    return get_accounting_health(db, as_of_dt)
