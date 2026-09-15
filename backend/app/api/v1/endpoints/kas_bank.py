@@ -318,3 +318,38 @@ def cancel_transfer(
         return svc.cancel_transfer(db, db_obj=item, user_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/transfer/{transfer_id}/reverse", response_model=TransferBankResponse)
+def reverse_transfer(
+    transfer_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+    reason: Optional[str] = Query(None, description="Alasan reversal (optional)"),
+):
+    """Reverse Transfer Bank yang sudah SELESAI.
+
+    Phase 6 — Master Roadmap §23: "Void reconciliation creates controlled reversal".
+
+    Berbeda dengan cancel (yang hanya untuk status DRAFT), reverse bisa untuk
+    transfer yang sudah SELESAI — jurnal sudah posted.
+
+    Reverse akan:
+    1. Reverse jurnal transfer via posting_service.reverse_journal
+       - Reverse: Dr Bank Asal / Cr Bank Tujuan / Cr Beban Transfer (pembalik)
+    2. Set status TransferBank ke BATAL
+    3. Catat reversal via audit trail jurnal_umum (reversal_of_id)
+
+    Catatan: Transfer bank TIDAK menggerakkan stock movement, jadi tidak perlu
+    call reverse_stock_movement. Hanya reverse jurnal.
+    """
+    from app.services.inventory_reversal_service import reverse_transfer as _reverse
+
+    try:
+        result = _reverse(
+            db, transfer_id, current_user.id,
+            reason=reason or "Reversal transfer"
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
