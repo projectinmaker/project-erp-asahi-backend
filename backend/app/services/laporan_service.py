@@ -177,6 +177,19 @@ def get_dashboard_beban_biaya(db, bulan, tahun):
 
 
 def get_dashboard_tren_penjualan(db, bulan, tahun):
+    """Tren penjualan 6 bulan terakhir.
+
+    Phase 10 — Master Roadmap §27:
+        "Jika memakai Invoice Grand Total, label = Invoice Turnover"
+        "Jangan label invoice grand total sebagai accounting Revenue"
+
+    Catatan: Widget ini menampilkan INVOICE TURNOVER (sum of SalesInvoice.grand_total),
+    BUKAN accounting Revenue dari GL. Frontend harus label sebagai "Invoice Turnover"
+    atau "Penjualan (Faktur)", bukan "Revenue" atau "Pendapatan".
+
+    Untuk accounting Revenue yang akurat, gunakan endpoint /laporan/laba-rugi
+    yang derive dari GL.
+    """
     labels = ('Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des')
     items = []
     for offset in range(5, -1, -1):
@@ -187,15 +200,59 @@ def get_dashboard_tren_penjualan(db, bulan, tahun):
         total = db.query(func.coalesce(func.sum(SalesInvoice.grand_total), 0)).filter(
             SalesInvoice.id.in_(active.scalar_subquery()), SalesInvoice.tanggal >= start, SalesInvoice.tanggal <= end).scalar()
         items.append({'bulan': f'{labels[month]} {year}', 'total': total})
-    return {'items': items}
+    return {'items': items, 'label_note': 'Invoice Turnover (bukan GL Revenue). Untuk Revenue akurat, gunakan /laporan/laba-rugi.'}
 
 
-def get_dashboard_faktur_jatuh_tempo(db, as_of=None):
+def get_dashboard_faktur_jatuh_tempo(db, as_of=None, overdue_only=False):
+    """Widget faktur jatuh tempo.
+
+    Phase 10 — Master Roadmap §27:
+        "Overdue widget hanya overdue invoices"
+        "Remaining outstanding, bukan original invoice amount"
+
+    Parameter:
+        overdue_only: True = hanya tampilkan invoice yang overdue (jatuh_tempo < as_of)
+                      False (default) = tampilkan semua faktur jatuh tempo (existing behavior)
+
+    Perubahan Phase 10:
+    - Gunakan sisa_tagihan (remaining outstanding) bukan nilai (original amount)
+    - Tambah filter overdue_only
+    - Tambah flag 'is_overdue' di setiap item
+    """
     report = aging(db, 'piutang', as_of or settlement.today())
-    items = [dict(no_faktur=r['no_dokumen'], pelanggan=p['nama'], jumlah=r['nilai'],
-                  jatuh_tempo=r['jatuh_tempo'], status='JATUH TEMPO' if r['umur_hari'] > 0 else r['status_pembayaran'])
-             for p in report['items'] for r in p['rincian']]
-    items.sort(key=lambda r: (r['jatuh_tempo'], r['no_faktur']))
+    items = []
+    as_of_date = as_of or settlement.today()
+    as_of_day = gl.local_day(as_of_date)
+
+    for p in report['items']:
+        for r in p['rincian']:
+            # Phase 10: gunakan sisa_tagihan (remaining outstanding) bukan nilai (original)
+            remaining = r.get('sisa_tagihan', r.get('nilai', 0))
+            jatuh_tempo = r.get('jatuh_tempo')
+            is_overdue = False
+            if jatuh_tempo:
+                try:
+                    jt_date = jatuh_tempo if isinstance(jatuh_tempo, date) else datetime.strptime(str(jatuh_tempo), '%Y-%m-%d').date()
+                    is_overdue = jt_date < as_of_day and remaining > 0
+                except (ValueError, TypeError):
+                    is_overdue = False
+
+            # Skip kalau overdue_only=True dan not overdue
+            if overdue_only and not is_overdue:
+                continue
+
+            items.append(dict(
+                no_faktur=r['no_dokumen'],
+                pelanggan=p['nama'],
+                jumlah=remaining,  # Phase 10: remaining outstanding, bukan original
+                jatuh_tempo=str(jatuh_tempo) if jatuh_tempo else '-',
+                status='OVERDUE' if is_overdue else (r.get('status_pembayaran', '')),
+                is_overdue=is_overdue,
+                original_nilai=r.get('nilai', 0),  # keep original for reference
+            ))
+
+    # Sort: overdue dulu, lalu by jatuh_tempo
+    items.sort(key=lambda r: (not r['is_overdue'], r['jatuh_tempo'], r['no_faktur']))
     return {'items': items[:20]}
 
 
