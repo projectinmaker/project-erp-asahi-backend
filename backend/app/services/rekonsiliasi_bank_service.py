@@ -132,16 +132,27 @@ def create_rekonsiliasi(
 
     1. Validasi kas_bank exists dan aktif
     2. Cek belum ada rekonsiliasi SELESAI untuk kas_bank + tanggal yang sama
-    3. Compute saldo_buku dari jurnal
-    4. Hitung selisih = saldo_bank - saldo_buku
-    5. Simpan header DRAFT
+       (duplikat check)
+    3. Cek cutoff lock: tidak ada rekonsiliasi SELESAI setelah tanggal_akhir
+       (Roadmap §23: "Reconciled cutoff lock")
+    4. Compute saldo_buku dari jurnal
+    5. Hitung selisih = saldo_bank - saldo_buku
+    6. Simpan header DRAFT
     """
-    kb = db.query(KasBankAkun).filter(
-        KasBankAkun.id == kas_bank_akun_id,
-        KasBankAkun.status == "AKTIF",
-    ).first()
-    if not kb:
-        raise ValueError(f"Kas/Bank tidak ditemukan atau tidak aktif")
+    # === Phase 6: pakai helper validate_active_kas_bank ===
+    from app.services.cash_bank_validation import (
+        validate_active_kas_bank, validate_reconciliation_cutoff_lock,
+    )
+    try:
+        kb = validate_active_kas_bank(db, kas_bank_akun_id, "Rekonsiliasi Bank")
+    except ValueError:
+        # Fallback kalau helper tidak tersedia (untuk backward compat)
+        kb = db.query(KasBankAkun).filter(
+            KasBankAkun.id == kas_bank_akun_id,
+            KasBankAkun.status == "AKTIF",
+        ).first()
+        if not kb:
+            raise ValueError(f"Kas/Bank tidak ditemukan atau tidak aktif")
 
     # Cek duplikat: tidak boleh ada rekonsiliasi SELESAI untuk periode yang sama
     existing = (
@@ -157,6 +168,17 @@ def create_rekonsiliasi(
         raise ValueError(
             f"Sudah ada rekonsiliasi SELESAI untuk {kb.nama} per {tanggal_akhir.strftime('%d/%m/%Y')}"
         )
+
+    # === Phase 6: Cek cutoff lock ===
+    # Tidak boleh ada rekonsiliasi SELESAI dengan tanggal_akhir > tanggal_akhir baru
+    # (Roadmap §23: "Reconciled cutoff lock")
+    try:
+        validate_reconciliation_cutoff_lock(
+            db, kas_bank_akun_id, tanggal_akhir,
+            context=f"Rekonsiliasi {kb.nama} per {tanggal_akhir.strftime('%d/%m/%Y')}",
+        )
+    except ValueError as e:
+        raise ValueError(str(e))
 
     # Compute saldo buku
     saldo_buku = compute_saldo_buku(db, kas_bank_akun_id, tanggal_akhir)
