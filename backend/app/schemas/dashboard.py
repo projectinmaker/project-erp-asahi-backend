@@ -45,6 +45,7 @@ class TrenPenjualanItem(BaseSchema):
 
 class TrenPenjualanWidget(BaseSchema):
     items: List[TrenPenjualanItem] = []
+    label_note: Optional[str] = None
 
 
 class FakturJatuhTempoItem(BaseSchema):
@@ -53,6 +54,8 @@ class FakturJatuhTempoItem(BaseSchema):
     jumlah: Decimal = Decimal("0")
     jatuh_tempo: str
     status: str
+    is_overdue: bool = False
+    original_nilai: Optional[Decimal] = None
 
 
 class FakturJatuhTempoWidget(BaseSchema):
@@ -71,6 +74,41 @@ class AktivitasTerbaruWidget(BaseSchema):
     items: List[AktivitasItem] = []
 
 
+# === Phase 10 — Widget Baru ===
+
+class InventoryValueWidget(BaseSchema):
+    """Widget Inventory Value (Roadmap §27: "Inventory Value dari backend SUM StockBalance.nilai")."""
+    total_nilai: Decimal = Decimal("0")
+    total_qty: int = 0
+    barang_count: int = 0
+    as_of: Optional[str] = None
+
+
+class LowStockItem(BaseSchema):
+    barang_id: str
+    kode: str
+    nama: str
+    stok: int = 0
+    stok_minimum: int = 0
+    selisih: int = 0
+
+
+class LowStockWidget(BaseSchema):
+    """Widget Low Stock (Roadmap §27: "Low Stock count backend full dataset")."""
+    count: int = 0
+    items: List[LowStockItem] = []
+
+
+class AccountingHealthSummaryWidget(BaseSchema):
+    """Widget Accounting Health (Roadmap §27: "Accounting Health visible")."""
+    overall_status: str = "UNKNOWN"
+    match_count: int = 0
+    mismatch_count: int = 0
+    not_configured_count: int = 0
+    total_checks: int = 0
+    error: Optional[str] = None
+
+
 class DashboardSummaryResponse(BaseSchema):
     laba_rugi: LabaRugiWidget
     cashflow: CashflowWidget
@@ -78,3 +116,7 @@ class DashboardSummaryResponse(BaseSchema):
     tren_penjualan: TrenPenjualanWidget
     faktur_jatuh_tempo: FakturJatuhTempoWidget
     aktivitas_terbaru: AktivitasTerbaruWidget
+    # Phase 10 — 3 widget baru
+    inventory_value: Optional[InventoryValueWidget] = None
+    low_stock: Optional[LowStockWidget] = None
+    accounting_health: Optional[AccountingHealthSummaryWidget] = None
