@@ -319,6 +319,82 @@ def _get_akun_id_by_kode(db: Session, kode: str) -> UUID:
 # BUKA PERIODE
 # ============================================================
 
+def _validate_reopen_authorization(user) -> None:
+    """Cek apakah user berhak membuka kembali periode yang sudah ditutup.
+
+    Sesuai Master Roadmap §25:
+        "Reopen reason + authorization"
+
+    Hanya manajer/admin yang boleh reopen periode — finance user biasa
+    tidak boleh, supaya tidak ada unilateral reopening yang bisa mengganggu
+    audit trail periode yang sudah ditutup.
+
+    Raises:
+        HTTPException 403 kalau user bukan manajer/admin
+    """
+    from fastapi import HTTPException
+    from app.services.workflow_service import role, APPROVERS
+    if role(user) not in APPROVERS:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Hanya manajer/admin yang boleh membuka kembali periode yang sudah ditutup. "
+                "Hubungi manajer/admin jika perlu reopen periode."
+            ),
+        )
+
+
+def _validate_sequential_reopen(db: Session, tahun: int, bulan: int) -> None:
+    """Cek apakah tidak ada periode setelah (tahun, bulan) yang masih DITUTUP.
+
+    Sesuai Master Roadmap §25:
+        "Sequential reopen"
+
+    Logic:
+    - Cari PenutupanPeriode dengan status DITUTUP yang lebih baru dari (tahun, bulan)
+    - Kalau ada, reject dengan pesan jelas — harus reopen periode terbaru dulu,
+      baru bisa reopen periode yang lebih lama.
+
+    Tujuan: prevent user reopen periode lama padahal periode setelahnya masih
+    DITUTUP, yang bisa menyebabkan inkonsistensi data (jurnal baru di periode
+    lama tidak akan ter-closing di periode setelahnya yang sudah lock).
+
+    Parameter:
+        db: SQLAlchemy Session
+        tahun: tahun periode yang akan di-reopen
+        bulan: bulan periode yang akan di-reopen
+
+    Raises:
+        ValueError kalau ada periode setelahnya yang masih DITUTUP
+    """
+    # Hitung periode_after = (tahun, bulan) + 1 month
+    after_tahun = tahun + (1 if bulan == 12 else 0)
+    after_bulan = 1 if bulan == 12 else bulan + 1
+
+    # Cari periode DITUTUP setelah (tahun, bulan)
+    later_closed = (
+        db.query(PenutupanPeriode)
+        .filter(
+            PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+            # Periode setelah (tahun, bulan): tahun > target OR (tahun == target AND bulan > target)
+            (
+                (PenutupanPeriode.tahun > tahun) |
+                ((PenutupanPeriode.tahun == tahun) & (PenutupanPeriode.bulan > bulan))
+            ),
+        )
+        .order_by(PenutupanPeriode.tahun.desc(), PenutupanPeriode.bulan.desc())
+        .first()
+    )
+
+    if later_closed:
+        raise ValueError(
+            f"Tidak bisa membuka periode {tahun}-{bulan:02d} karena masih ada periode "
+            f"setelahnya yang DITUTUP: {later_closed.tahun}-{later_closed.bulan:02d}. "
+            f"Buka kembali periode terbaru ({later_closed.tahun}-{later_closed.bulan:02d}) "
+            f"terlebih dahulu, lalu buka periode ini secara berurutan (sequential reopen)."
+        )
+
+
 @atomic_accounting_write
 def buka_periode(
     db: Session,
@@ -326,14 +402,30 @@ def buka_periode(
     bulan: int,
     user_id: UUID,
     alasan: Optional[str] = None,
+    user=None,
 ) -> PenutupanPeriode:
     """Buka kembali periode yang sudah ditutup.
+
+    Phase 8 — Sesuai Master Roadmap §25:
+        - "Reopen reason + authorization" — wajib alasan + user harus manajer/admin
+        - "Sequential reopen" — tidak boleh reopen periode lama kalau periode setelahnya masih DITUTUP
 
     Catatan: Jurnal penutupan TIDAK dihapus (untuk audit trail).
     Jurnal pembalik dibuat setelah periode dibuka, dalam transaksi yang sama.
     """
     if bulan < 1 or bulan > 12:
         raise ValueError(f"Bulan harus 1-12, diberikan: {bulan}")
+
+    # === Phase 8: Enforce authorization (manager/admin only) ===
+    if user is not None:
+        _validate_reopen_authorization(user)
+
+    # === Phase 8: Enforce reason required ===
+    if not alasan or not alasan.strip():
+        raise ValueError(
+            "Alasan pembukaan kembali periode wajib diisi. "
+            "Contoh: 'Koreksi jurnal periode sebelumnya', 'Adjustment audit', dll."
+        )
 
     pp = (
         db.query(PenutupanPeriode)
@@ -346,6 +438,9 @@ def buka_periode(
     )
     if not pp:
         raise ValueError(f"Periode {tahun}-{bulan:02d} tidak ditemukan atau tidak dalam status DITUTUP.")
+
+    # === Phase 8: Enforce sequential reopen ===
+    _validate_sequential_reopen(db, tahun, bulan)
 
     now = datetime.now(timezone.utc)
     pp.status = StatusPeriode.DIBUKA.value
@@ -360,13 +455,131 @@ def buka_periode(
         reverse_journal(db, identifier, user_id, "Buka kembali periode")
     pp.reopened_by = user_id
     pp.reopened_at = now
-    if alasan:
-        pp.keterangan = f"[DIBUKA] {alasan}"
+    pp.keterangan = f"[DIBUKA] {alasan.strip()}"
 
     db.commit()
     db.refresh(pp)
-    logger.info(f"Periode {tahun}-{bulan:02d} dibuka kembali oleh user {user_id}")
+    logger.info(f"Periode {tahun}-{bulan:02d} dibuka kembali oleh user {user_id} | alasan: {alasan}")
     return pp
+
+
+# ============================================================
+# PRE-CLOSE READINESS (Roadmap §25: "Pre-close readiness")
+# ============================================================
+
+def get_pre_close_readiness(
+    db: Session,
+    tahun: int,
+    bulan: int,
+) -> dict:
+    """Cek readiness sebelum menutup periode.
+
+    Sesuai Master Roadmap §25:
+        "Pre-close readiness"
+
+    Returns dict dengan:
+    - ready: bool — True kalau semua check pass
+    - periode: (tahun, bulan)
+    - checks: dict berisi hasil setiap check
+    - blocking_issues: list of issues yang block closing
+    """
+    from app.services.laporan_service import validate_reports
+    from app.services.reporting_ledger import month_bounds
+
+    date_from, date_to = month_bounds(tahun, bulan)
+
+    # 1. Validate reports (Trial Balance, Balance Sheet, Equity, Cash Flow)
+    report_validation = validate_reports(db, date_from, date_to)
+
+    # 2. Cek apakah ada jurnal DRAFT di periode ini (belum diposting)
+    draft_journals = (
+        db.query(JurnalUmum)
+        .filter(
+            JurnalUmum.tanggal >= date_from,
+            JurnalUmum.tanggal <= date_to,
+            JurnalUmum.status == StatusJurnal.DRAFT,
+        )
+        .count()
+    )
+
+    # 3. Cek apakah ada dokumen transaksi yang belum diposting (Sales Invoice, Purchase Invoice, dll)
+    # Untuk P0, cukup cek jurnal DRAFT. Cek dokumen transaksi bisa ditambah di Phase P1.
+
+    # 4. Cek apakah periode sebelumnya sudah ditutup (sequential closing)
+    prev_tahun = tahun - (1 if bulan == 1 else 0)
+    prev_bulan = 12 if bulan == 1 else bulan - 1
+    prev_periode = (
+        db.query(PenutupanPeriode)
+        .filter(
+            PenutupanPeriode.tahun == prev_tahun,
+            PenutupanPeriode.bulan == prev_bulan,
+        )
+        .first()
+    )
+    prev_closed = (
+        prev_periode is not None and
+        prev_periode.status == StatusPeriode.DITUTUP.value
+    )
+
+    # 5. Cek apakah periode ini belum ditutup
+    current_periode = (
+        db.query(PenutupanPeriode)
+        .filter(PenutupanPeriode.tahun == tahun, PenutupanPeriode.bulan == bulan)
+        .first()
+    )
+    already_closed = (
+        current_periode is not None and
+        current_periode.status == StatusPeriode.DITUTUP.value
+    )
+
+    # Build checks dict
+    checks = {
+        'trial_balance_balanced': report_validation['checks']['neraca_saldo_mutasi'] == 0,
+        'trial_balance_ending_balanced': report_validation['checks']['neraca_saldo_akhir'] == 0,
+        'balance_sheet_balanced': report_validation['checks']['persamaan_neraca'] == 0,
+        'equity_reconciled': report_validation['checks']['perubahan_modal'] == 0,
+        'cash_flow_reconciled': report_validation['checks']['arus_kas'] == 0,
+        'no_draft_journals': draft_journals == 0,
+        'no_invalid_journals': len(report_validation['jurnal_tidak_valid']) == 0,
+        'previous_period_closed': prev_closed,
+        'period_not_already_closed': not already_closed,
+    }
+
+    # Blocking issues
+    blocking_issues = []
+    if not checks['trial_balance_balanced']:
+        blocking_issues.append(f"Trial Balance tidak balance: selisih mutasi = {report_validation['checks']['neraca_saldo_mutasi']}")
+    if not checks['trial_balance_ending_balanced']:
+        blocking_issues.append(f"Trial Balance tidak balance: selisih saldo akhir = {report_validation['checks']['neraca_saldo_akhir']}")
+    if not checks['balance_sheet_balanced']:
+        blocking_issues.append(f"Neraca tidak balance: persamaan = {report_validation['checks']['persamaan_neraca']}")
+    if not checks['equity_reconciled']:
+        blocking_issues.append(f"Perubahan modal tidak reconcile: selisih = {report_validation['checks']['perubahan_modal']}")
+    if not checks['cash_flow_reconciled']:
+        blocking_issues.append(f"Arus kas tidak reconcile: selisih = {report_validation['checks']['arus_kas']}")
+    if not checks['no_draft_journals']:
+        blocking_issues.append(f"Ada {draft_journals} jurnal DRAFT yang belum diposting di periode ini")
+    if not checks['no_invalid_journals']:
+        blocking_issues.append(f"Ada {len(report_validation['jurnal_tidak_valid'])} jurnal tidak valid (unbalanced / akun non-DETAIL / dll)")
+    if not checks['previous_period_closed']:
+        blocking_issues.append(f"Periode sebelumnya ({prev_tahun}-{prev_bulan:02d}) belum ditutup — tutup dulu secara berurutan")
+    if not checks['period_not_already_closed']:
+        blocking_issues.append(f"Periode {tahun}-{bulan:02d} sudah ditutup — tidak perlu tutup lagi")
+
+    ready = len(blocking_issues) == 0
+
+    return {
+        'ready': ready,
+        'periode': {'tahun': tahun, 'bulan': bulan},
+        'checks': checks,
+        'blocking_issues': blocking_issues,
+        'detail': {
+            'report_validation': report_validation,
+            'draft_journals_count': draft_journals,
+            'invalid_journals_count': len(report_validation['jurnal_tidak_valid']),
+            'previous_period': {'tahun': prev_tahun, 'bulan': prev_bulan, 'closed': prev_closed},
+        },
+    }
 
 
 # ============================================================
