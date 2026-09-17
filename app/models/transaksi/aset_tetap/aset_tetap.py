@@ -46,7 +46,7 @@ class AsetTetap(BaseModel, BaseMixin):
     penyusutan_per_bulan = Column(Numeric(18, 2), default=0, nullable=False)
     tanggal_mulai = Column(DateTime(timezone=True), nullable=False)
     catatan = Column(Text, nullable=True)
-    auto_post_jurnal = Column(Boolean, default=True, nullable=False)
+    auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Phase H: deprecated
     status = Column(SQLEnum(StatusAsetTetap), default=StatusAsetTetap.AKTIF, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
 
