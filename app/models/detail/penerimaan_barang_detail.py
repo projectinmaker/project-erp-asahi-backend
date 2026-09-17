@@ -1,0 +1,31 @@
+from sqlalchemy import Date, Numeric, Column, Integer, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from app.database import BaseModel
+from app.models.base import BaseMixin
+
+
+class PenerimaanBarangDetail(BaseModel, BaseMixin):
+    __tablename__ = "penerimaan_barang_detail"
+
+    penerimaan_barang_id = Column(UUID(as_uuid=True), ForeignKey("penerimaan_barang.id"), nullable=False)
+    barang_id = Column(UUID(as_uuid=True), ForeignKey("barang.id"), nullable=False)
+    harga_perolehan = Column(Numeric(18, 2), nullable=True)
+    tanggal_kedaluwarsa = Column(Date, nullable=True)
+    qty = Column(Integer, default=0, nullable=False)
+    satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id"), nullable=False)
+
+    # === NEW Phase 5 — Source-line trace (Roadmap §19: "Goods Receipt: purchase_order_detail_id") ===
+    purchase_order_detail_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("purchase_order_detail.id", name="fk_penerimaan_detail_po_detail"),
+        nullable=True,
+        index=True,
+    )
+
+    # Relationships
+    penerimaan_barang = relationship("PenerimaanBarang", back_populates="details")
+    barang = relationship("Barang")
+    satuan = relationship("Satuan")
+    # Source-line trace
+    purchase_order_detail = relationship("PurchaseOrderDetail", foreign_keys=[purchase_order_detail_id])

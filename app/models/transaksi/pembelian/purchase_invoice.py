@@ -1,0 +1,54 @@
+from sqlalchemy import Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from app.database import BaseModel
+from app.models.base import BaseMixin
+from app.models.transaksi.penjualan.sales_order import StatusPenjualan
+
+
+class InvoiceType(str, __import__('enum').Enum):
+    """Tipe Purchase Invoice (Catatan Purchase Invoice §5)."""
+    INVENTORY = "INVENTORY"              # Invoice untuk barang yang sudah di-receipt (GRNI clearing)
+    NON_INVENTORY = "NON_INVENTORY"      # Invoice untuk expense/service (langsung Dr Expense / Cr AP)
+    FIXED_ASSET = "FIXED_ASSET"          # Invoice untuk aset tetap (Dr Fixed Asset / Cr AP)
+
+
+class PurchaseInvoice(BaseModel, BaseMixin):
+    __tablename__ = "purchase_invoice"
+
+    no_form = Column(String(30), unique=True, nullable=False, index=True)
+    no_faktur = Column(String(50), nullable=False)
+    tanggal = Column(DateTime(timezone=True), nullable=False)
+    tanggal_jatuh_tempo = Column(Date, nullable=True)
+    akun_kontrol_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=True)
+    syarat_bayar_id = Column(UUID(as_uuid=True), ForeignKey("syarat_bayar.id"), nullable=True)
+    syarat_bayar = relationship("SyaratBayar")
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=False)
+    alamat = Column(Text, nullable=True)
+    diskon_global = Column(Numeric(5, 2), default=0, nullable=True)
+    ppn = Column(Numeric(5, 2), default=11, nullable=False)
+    sub_total = Column(Numeric(18, 2), default=0, nullable=False)
+    total_diskon = Column(Numeric(18, 2), default=0, nullable=False)
+    total_ppn = Column(Numeric(18, 2), default=0, nullable=False)
+    total_biaya_tambahan = Column(Numeric(18, 2), default=0, nullable=False)
+    grand_total = Column(Numeric(18, 2), default=0, nullable=False)
+
+    # LEGACY - DEPRECATED
+    auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Changed default to False
+    jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
+
+    keterangan = Column(Text, nullable=True)
+    status = Column(SQLEnum(StatusPenjualan), default=StatusPenjualan.DRAFT, nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
+
+    # === NEW Phase D — Catatan Purchase Invoice §5 ===
+    purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_order.id", name="fk_pinvoice_po"), nullable=True, index=True)
+    invoice_type = Column(String(20), nullable=True)  # INVENTORY / NON_INVENTORY / FIXED_ASSET
+
+    # Relationships
+    supplier = relationship("Supplier")
+    purchase_order = relationship("PurchaseOrder", foreign_keys=[purchase_order_id])
+    jurnal = relationship("JurnalUmum")
+    creator = relationship("Pengguna", foreign_keys=[created_by])
+    details = relationship("PurchaseInvoiceDetail", back_populates="purchase_invoice", cascade="all, delete-orphan")
+    biaya_tambahan = relationship("TransaksiBiaya", back_populates="purchase_invoice", cascade="all, delete-orphan")

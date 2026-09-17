@@ -1,0 +1,1275 @@
+"""
+penjualan_service.py
+
+Service layer untuk modul Penjualan.
+Menghandle CRUD + auto-posting jurnal untuk:
+- SalesOrder (+ SalesOrderDetail + TransaksiBiaya)
+- SalesInvoice (+ SalesInvoiceDetail + TransaksiBiaya)
+- SalesRetur (+ SalesReturDetail)
+- PengirimanBarang (+ PengirimanBarangDetail)
+"""
+
+from app.services.accounting_control import atomic_accounting_write, require_unposted, require_no_stock_movement
+from app.services.posting_service import reverse_journal
+
+from datetime import datetime, date
+from decimal import Decimal
+from typing import List, Optional, Tuple
+from uuid import UUID
+
+from loguru import logger
+from sqlalchemy.orm import Session, joinedload
+
+from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
+from app.models.transaksi.penjualan.sales_invoice import SalesInvoice
+from app.models.transaksi.penjualan.sales_retur import SalesRetur
+from app.models.transaksi.penjualan.pengiriman_barang import PengirimanBarang
+from app.models.detail.sales_order_detail import SalesOrderDetail
+from app.models.detail.sales_invoice_detail import SalesInvoiceDetail
+from app.models.detail.sales_retur_detail import SalesReturDetail
+from app.models.detail.pengiriman_barang_detail import PengirimanBarangDetail
+from app.models.transaksi.transaksi_biaya import TransaksiBiaya
+from app.models.master.pelanggan import Pelanggan
+from app.models.transaksi.jurnal import RefModule
+from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
+from app.services.stok_service import update_stok_barang
+from app.services.decimal_utils import safe_decimal, safe_int
+from app.services.setting_akun_service import (
+    get_akun_id_or_raise,
+    KEY_PENDAPATAN_PENJUALAN,
+    KEY_PPN_KELUARAN,
+    KEY_RETUR_PENJUALAN,
+    KEY_PENDAPATAN_ANGKUT,
+    KEY_HPP_PENJUALAN,
+    KEY_PERSEDIAAN_BARANG_JADI,
+)
+from app.utils.nomor_dokumen import get_nomor_dokumen
+
+
+# ==========================================
+# HELPER: Hitung total dari detail
+# ==========================================
+def _hitung_total_detail(details_data: list) -> Decimal:
+    """Hitung sub_total dari list detail (harga * qty - diskon)."""
+    return sum(Decimal(str(d.get("sub_total", d.get("harga", 0)) * Decimal(str(d.get("qty", 0))))) for d in details_data)
+
+
+def _hitung_total_biaya(biaya_data: list) -> Decimal:
+    """Hitung total biaya tambahan."""
+    return sum((safe_decimal(b.get("jumlah")) for b in biaya_data), Decimal("0"))
+
+
+def _hitung_grand_total(
+    sub_total: Decimal,
+    total_diskon: Decimal,
+    ppn_pct: Decimal,
+    total_biaya_tambahan: Decimal,
+) -> Tuple[Decimal, Decimal, Decimal]:
+    """Hitung total_ppn dan grand_total.
+    ppn = (sub_total - total_diskon) * ppn_pct / 100
+    grand_total = sub_total - total_diskon + ppn + total_biaya_tambahan
+    """
+    dasar_pajak = sub_total - total_diskon
+    total_ppn = dasar_pajak * ppn_pct / Decimal("100")
+    grand_total = dasar_pajak + total_ppn + total_biaya_tambahan
+    return total_ppn, grand_total
+
+
+def _create_biaya_tambahan(db: Session, model_obj, biaya_data: list, fk_field: str):
+    """Buat TransaksiBiaya rows untuk SO atau SINV."""
+    for b in biaya_data:
+        tb = TransaksiBiaya(
+            nama=b["nama"],
+            jumlah=Decimal(str(b["jumlah"])),
+            **{fk_field: model_obj.id},
+        )
+        db.add(tb)
+
+
+# ==========================================
+# SALES ORDER
+# ==========================================
+
+def get_sales_order_list(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    pelanggan_id: Optional[UUID] = None,
+    tanggal_from: Optional[date] = None,
+    tanggal_to: Optional[date] = None,
+) -> Tuple[List[SalesOrder], int]:
+    """Ambil daftar sales order dengan filter & pagination."""
+    query = db.query(SalesOrder).options(
+        joinedload(SalesOrder.pelanggan),
+        joinedload(SalesOrder.syarat_bayar),
+        joinedload(SalesOrder.creator),
+        joinedload(SalesOrder.details).joinedload(SalesOrderDetail.barang),
+        joinedload(SalesOrder.biaya_tambahan),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(
+            SalesOrder.no_pesanan.ilike(pattern)
+            | SalesOrder.keterangan.ilike(pattern)
+        )
+    if status:
+        query = query.filter(SalesOrder.status == status)
+    if pelanggan_id:
+        query = query.filter(SalesOrder.pelanggan_id == pelanggan_id)
+    if tanggal_from:
+        query = query.filter(SalesOrder.tanggal >= tanggal_from)
+    if tanggal_to:
+        query = query.filter(SalesOrder.tanggal <= tanggal_to)
+
+    total = query.count()
+    data = query.order_by(SalesOrder.created_at.desc()).offset(skip).limit(limit).all()
+    return data, total
+
+
+def get_sales_order_by_id(db: Session, so_id: UUID) -> Optional[SalesOrder]:
+    """Ambil 1 sales order berdasarkan ID dengan detail."""
+    return (
+        db.query(SalesOrder)
+        .options(
+            joinedload(SalesOrder.pelanggan),
+            joinedload(SalesOrder.syarat_bayar),
+            joinedload(SalesOrder.creator),
+            joinedload(SalesOrder.jurnal),
+            joinedload(SalesOrder.details).joinedload(SalesOrderDetail.barang),
+            joinedload(SalesOrder.biaya_tambahan),
+        )
+        .filter(SalesOrder.id == so_id)
+        .first()
+    )
+
+
+@atomic_accounting_write
+def create_sales_order(
+    db: Session,
+    tanggal: datetime,
+    pelanggan_id: UUID,
+    details_data: list,
+    biaya_data: Optional[list] = None,
+    syarat_bayar_id: Optional[UUID] = None,
+    fob: Optional[str] = None,
+    ekspedisi: Optional[str] = None,
+    tanggal_pengiriman: Optional[datetime] = None,
+    penjual: Optional[str] = None,
+    alamat_pengiriman: Optional[str] = None,
+    diskon_global: Optional[Decimal] = Decimal("0"),
+    ppn: Decimal = Decimal("11"),
+    keterangan: Optional[str] = None,
+    auto_post_jurnal: bool = True,
+    created_by: Optional[UUID] = None,
+) -> SalesOrder:
+    """Buat SalesOrder baru beserta detail + biaya tambahan.
+    - Generate no_pesanan otomatis
+    - Hitung sub_total, total_diskon, ppn, grand_total dari detail
+    - Order tidak melakukan posting jurnal; pencatatan dilakukan pada invoice.
+    """
+    try:
+        biaya_data = biaya_data or []
+
+        # Validasi pelanggan
+        pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
+        if not pelanggan:
+            raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
+
+        # Hitung sub_total dan total_diskon dari detail
+        sub_total = Decimal("0")
+        total_diskon = Decimal("0")
+        for d in details_data:
+            harga = safe_decimal(d.get("harga"))
+            qty = safe_int(d.get("qty"))
+            diskon = safe_decimal(d.get("diskon"))
+            line_total = harga * qty
+            diskon_nilai = line_total * diskon / Decimal("100")
+            sub_total += line_total
+            total_diskon += diskon_nilai
+            d["sub_total"] = line_total - diskon_nilai  # Update sub_total per line
+
+        total_biaya_tambahan = _hitung_total_biaya(biaya_data)
+        total_ppn, grand_total = _hitung_grand_total(
+            sub_total, total_diskon, ppn, total_biaya_tambahan
+        )
+
+        # Generate nomor pesanan
+        no_pesanan = get_nomor_dokumen(
+            db, SalesOrder, prefix="SO",
+            no_column="no_pesanan", tanggal=tanggal.date()
+        )
+
+        # Buat header
+        so = SalesOrder(
+            no_pesanan=no_pesanan,
+            tanggal=tanggal,
+            pelanggan_id=pelanggan_id,
+            syarat_bayar_id=syarat_bayar_id,
+            fob=fob,
+            ekspedisi=ekspedisi,
+            tanggal_pengiriman=tanggal_pengiriman,
+            penjual=penjual,
+            alamat_pengiriman=alamat_pengiriman,
+            diskon_global=diskon_global,
+            ppn=ppn,
+            sub_total=sub_total,
+            total_diskon=total_diskon,
+            total_ppn=total_ppn,
+            total_biaya_tambahan=total_biaya_tambahan,
+            grand_total=grand_total,
+            auto_post_jurnal=False,
+            status=StatusPenjualan.DRAFT,
+            keterangan=keterangan,
+            created_by=created_by,
+        )
+        db.add(so)
+        db.flush()
+
+        # Buat detail
+        for d in details_data:
+            detail = SalesOrderDetail(
+                sales_order_id=so.id,
+                barang_id=d["barang_id"],
+                harga=Decimal(str(d["harga"])),
+                qty=int(d["qty"]),
+                diskon=safe_decimal(d.get("diskon")),
+                sub_total=Decimal(str(d["sub_total"])),
+            )
+            db.add(detail)
+
+        # Buat biaya tambahan
+        _create_biaya_tambahan(db, so, biaya_data, "sales_order_id")
+
+        # Order tidak mengakui pendapatan/piutang atau pembelian/utang.
+        db.commit()
+        db.refresh(so)
+        logger.info(f"SalesOrder created: {no_pesanan} | grand_total={grand_total}")
+        return so
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating SalesOrder: {e}")
+        raise
+
+
+@atomic_accounting_write
+def update_sales_order(
+    db: Session,
+    db_obj: SalesOrder,
+    tanggal: Optional[datetime] = None,
+    pelanggan_id: Optional[UUID] = None,
+    syarat_bayar_id: Optional[UUID] = None,
+    fob: Optional[str] = None,
+    ekspedisi: Optional[str] = None,
+    tanggal_pengiriman: Optional[datetime] = None,
+    penjual: Optional[str] = None,
+    alamat_pengiriman: Optional[str] = None,
+    diskon_global: Optional[Decimal] = None,
+    ppn: Optional[Decimal] = None,
+    keterangan: Optional[str] = None,
+    auto_post_jurnal: Optional[bool] = None,
+) -> SalesOrder:
+    """Update data sales order (hanya field header, tidak re-calculate detail)."""
+    require_unposted(db_obj)
+    if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
+        raise ValueError(f"Sales Order dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    if tanggal is not None:
+        db_obj.tanggal = tanggal
+    if pelanggan_id is not None:
+        db_obj.pelanggan_id = pelanggan_id
+    if syarat_bayar_id is not None:
+        db_obj.syarat_bayar_id = syarat_bayar_id
+    if fob is not None:
+        db_obj.fob = fob
+    if ekspedisi is not None:
+        db_obj.ekspedisi = ekspedisi
+    if tanggal_pengiriman is not None:
+        db_obj.tanggal_pengiriman = tanggal_pengiriman
+    if penjual is not None:
+        db_obj.penjual = penjual
+    if alamat_pengiriman is not None:
+        db_obj.alamat_pengiriman = alamat_pengiriman
+    if diskon_global is not None:
+        db_obj.diskon_global = diskon_global
+    if ppn is not None:
+        db_obj.ppn = ppn
+    if keterangan is not None:
+        db_obj.keterangan = keterangan
+    if auto_post_jurnal is not None:
+        db_obj.auto_post_jurnal = auto_post_jurnal
+
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+@atomic_accounting_write
+def cancel_sales_order(db: Session, db_obj: SalesOrder, user_id: Optional[UUID] = None) -> SalesOrder:
+    """Batalkan sales order."""
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Sales Order sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
+    db_obj.status = StatusPenjualan.DIBATALKAN
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"SalesOrder cancelled: {db_obj.no_pesanan}")
+    return db_obj
+
+
+# ==========================================
+# SALES INVOICE
+# ==========================================
+
+def get_sales_invoice_list(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    pelanggan_id: Optional[UUID] = None,
+    tanggal_from: Optional[date] = None,
+    tanggal_to: Optional[date] = None,
+) -> Tuple[List[SalesInvoice], int]:
+    """Ambil daftar sales invoice dengan filter & pagination."""
+    query = db.query(SalesInvoice).options(
+        joinedload(SalesInvoice.pelanggan),
+        joinedload(SalesInvoice.syarat_bayar),
+        joinedload(SalesInvoice.sales_order),
+        joinedload(SalesInvoice.creator),
+        joinedload(SalesInvoice.details).joinedload(SalesInvoiceDetail.barang),
+        joinedload(SalesInvoice.biaya_tambahan),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(
+            SalesInvoice.no_invoice.ilike(pattern)
+            | SalesInvoice.keterangan.ilike(pattern)
+        )
+    if status:
+        query = query.filter(SalesInvoice.status == status)
+    if pelanggan_id:
+        query = query.filter(SalesInvoice.pelanggan_id == pelanggan_id)
+    if tanggal_from:
+        query = query.filter(SalesInvoice.tanggal >= tanggal_from)
+    if tanggal_to:
+        query = query.filter(SalesInvoice.tanggal <= tanggal_to)
+
+    total = query.count()
+    data = query.order_by(SalesInvoice.created_at.desc()).offset(skip).limit(limit).all()
+    return data, total
+
+
+def get_sales_invoice_by_id(db: Session, inv_id: UUID) -> Optional[SalesInvoice]:
+    """Ambil 1 sales invoice berdasarkan ID dengan detail."""
+    return (
+        db.query(SalesInvoice)
+        .options(
+            joinedload(SalesInvoice.pelanggan),
+            joinedload(SalesInvoice.syarat_bayar),
+            joinedload(SalesInvoice.sales_order),
+            joinedload(SalesInvoice.creator),
+            joinedload(SalesInvoice.jurnal),
+            joinedload(SalesInvoice.details).joinedload(SalesInvoiceDetail.barang),
+            joinedload(SalesInvoice.biaya_tambahan),
+        )
+        .filter(SalesInvoice.id == inv_id)
+        .first()
+    )
+
+
+@atomic_accounting_write
+def create_sales_invoice(
+    db: Session,
+    tanggal: datetime,
+    pelanggan_id: UUID,
+    details_data: list,
+    biaya_data: Optional[list] = None,
+    syarat_bayar_id: Optional[UUID] = None,
+    sales_order_id: Optional[UUID] = None,
+    fob: Optional[str] = None,
+    ekspedisi: Optional[str] = None,
+    tanggal_pengiriman: Optional[datetime] = None,
+    alamat_pengiriman: Optional[str] = None,
+    mata_uang: str = "IDR",
+    diskon_global: Optional[Decimal] = Decimal("0"),
+    ppn: Decimal = Decimal("11"),
+    keterangan: Optional[str] = None,
+    auto_post_jurnal: bool = True,
+    created_by: Optional[UUID] = None,
+    tanggal_jatuh_tempo=None,
+) -> SalesInvoice:
+    """Buat SalesInvoice baru beserta detail + biaya tambahan."""
+    try:
+        if sales_order_id:
+            order = db.get(SalesOrder, sales_order_id)
+            if order is None or order.pelanggan_id != pelanggan_id:
+                raise ValueError("Sales Order tidak tersedia atau pelanggan tidak cocok")
+            if order.status == StatusPenjualan.DIBATALKAN:
+                raise ValueError("Sales Order sudah dibatalkan")
+            if order.jurnal_umum_id:
+                from app.models.transaksi.jurnal import JurnalUmum
+                if not db.query(JurnalUmum.id).filter(JurnalUmum.reversal_of_id == order.jurnal_umum_id).first():
+                    raise ValueError("Sales Order lama masih memiliki jurnal. Rekonsiliasi jurnal order sebelum membuat invoice.")
+        biaya_data = biaya_data or []
+
+        # Validasi pelanggan
+        pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
+        if not pelanggan:
+            raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
+
+        # Hitung sub_total dan total_diskon dari detail
+        sub_total = Decimal("0")
+        total_diskon = Decimal("0")
+        for d in details_data:
+            harga = safe_decimal(d.get("harga"))
+            qty = safe_int(d.get("qty"))
+            diskon = safe_decimal(d.get("diskon"))
+            line_total = harga * qty
+            diskon_nilai = line_total * diskon / Decimal("100")
+            sub_total += line_total
+            total_diskon += diskon_nilai
+            d["sub_total"] = line_total - diskon_nilai
+
+        total_biaya_tambahan = _hitung_total_biaya(biaya_data)
+        total_ppn, grand_total = _hitung_grand_total(
+            sub_total, total_diskon, ppn, total_biaya_tambahan
+        )
+
+        # Generate nomor invoice
+        no_invoice = get_nomor_dokumen(
+            db, SalesInvoice, prefix="INV",
+            no_column="no_invoice", tanggal=tanggal.date()
+        )
+
+        # Buat header
+        inv = SalesInvoice(
+            no_invoice=no_invoice,
+            tanggal=tanggal,
+            pelanggan_id=pelanggan_id,
+            syarat_bayar_id=syarat_bayar_id,
+            sales_order_id=sales_order_id,
+            fob=fob,
+            ekspedisi=ekspedisi,
+            tanggal_pengiriman=tanggal_pengiriman,
+            alamat_pengiriman=alamat_pengiriman,
+            mata_uang=mata_uang,
+            diskon_global=diskon_global,
+            ppn=ppn,
+            sub_total=sub_total,
+            total_diskon=total_diskon,
+            total_ppn=total_ppn,
+            total_biaya_tambahan=total_biaya_tambahan,
+            grand_total=grand_total,
+            auto_post_jurnal=auto_post_jurnal,
+            status=StatusPenjualan.DRAFT,
+            keterangan=keterangan,
+            created_by=created_by,
+        )
+        db.add(inv)
+        db.flush()
+
+        # Buat detail
+        for d in details_data:
+            detail = SalesInvoiceDetail(
+                sales_invoice_id=inv.id,
+                barang_id=d["barang_id"],
+                harga=Decimal(str(d["harga"])),
+                qty=int(d["qty"]),
+                diskon=safe_decimal(d.get("diskon")),
+                sub_total=Decimal(str(d["sub_total"])),
+            )
+            db.add(detail)
+
+        # Buat biaya tambahan
+        _create_biaya_tambahan(db, inv, biaya_data, "sales_invoice_id")
+
+        # Auto-post jurnal (piutang dagang D, pendapatan penjualan K)
+        # Guard: skip jika pelanggan belum punya akun piutang (Phase 3 akan ganti mekanisme COA)
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(inv)
+        if auto_post_jurnal:
+            post_sales_invoice(db, inv, created_by)
+
+        from app.services.invoice_terms import set_due_date
+        set_due_date(db, inv, tanggal_jatuh_tempo)
+        db.commit()
+        db.refresh(inv)
+        logger.info(f"SalesInvoice created: {no_invoice} | grand_total={grand_total}")
+        return inv
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating SalesInvoice: {e}")
+        raise
+
+
+@atomic_accounting_write
+def update_sales_invoice(
+    db: Session,
+    db_obj: SalesInvoice,
+    tanggal: Optional[datetime] = None,
+    pelanggan_id: Optional[UUID] = None,
+    syarat_bayar_id: Optional[UUID] = None,
+    sales_order_id: Optional[UUID] = None,
+    fob: Optional[str] = None,
+    ekspedisi: Optional[str] = None,
+    tanggal_pengiriman: Optional[datetime] = None,
+    alamat_pengiriman: Optional[str] = None,
+    mata_uang: Optional[str] = None,
+    diskon_global: Optional[Decimal] = None,
+    ppn: Optional[Decimal] = None,
+    keterangan: Optional[str] = None,
+    auto_post_jurnal: Optional[bool] = None,
+    tanggal_jatuh_tempo=None,
+) -> SalesInvoice:
+    """Update data sales invoice (hanya field header)."""
+    require_unposted(db_obj)
+    if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
+        raise ValueError(f"Sales Invoice dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    if tanggal is not None:
+        db_obj.tanggal = tanggal
+    if pelanggan_id is not None:
+        db_obj.pelanggan_id = pelanggan_id
+    if syarat_bayar_id is not None:
+        db_obj.syarat_bayar_id = syarat_bayar_id
+    if sales_order_id is not None:
+        db_obj.sales_order_id = sales_order_id
+    if fob is not None:
+        db_obj.fob = fob
+    if ekspedisi is not None:
+        db_obj.ekspedisi = ekspedisi
+    if tanggal_pengiriman is not None:
+        db_obj.tanggal_pengiriman = tanggal_pengiriman
+    if alamat_pengiriman is not None:
+        db_obj.alamat_pengiriman = alamat_pengiriman
+    if mata_uang is not None:
+        db_obj.mata_uang = mata_uang
+    if diskon_global is not None:
+        db_obj.diskon_global = diskon_global
+    if ppn is not None:
+        db_obj.ppn = ppn
+    if keterangan is not None:
+        db_obj.keterangan = keterangan
+    if auto_post_jurnal is not None:
+        db_obj.auto_post_jurnal = auto_post_jurnal
+
+    db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
+    from app.services.invoice_terms import set_due_date
+    if tanggal_jatuh_tempo is not None or tanggal is not None or syarat_bayar_id is not None:
+        set_due_date(db, db_obj, tanggal_jatuh_tempo)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+@atomic_accounting_write
+def cancel_sales_invoice(db: Session, db_obj: SalesInvoice, user_id: Optional[UUID] = None) -> SalesInvoice:
+    """Batalkan sales invoice."""
+    from app.services.settlement_service import require_no_settlements
+    require_no_settlements(db, db_obj)
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Sales Invoice sudah dibatalkan")
+    if db.query(SalesRetur.id).filter(
+        SalesRetur.sales_invoice_id == db_obj.id,
+        SalesRetur.status != StatusPenjualan.DIBATALKAN,
+    ).first():
+        raise ValueError("Invoice masih memiliki retur aktif. Selesaikan pembatalan/koreksi retur terlebih dahulu.")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
+    db_obj.status = StatusPenjualan.DIBATALKAN
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"SalesInvoice cancelled: {db_obj.no_invoice}")
+    return db_obj
+
+
+# ==========================================
+# SALES RETUR
+# ==========================================
+
+def get_sales_retur_list(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    pelanggan_id: Optional[UUID] = None,
+    tanggal_from: Optional[date] = None,
+    tanggal_to: Optional[date] = None,
+) -> Tuple[List[SalesRetur], int]:
+    """Ambil daftar sales retur dengan filter & pagination."""
+    query = db.query(SalesRetur).options(
+        joinedload(SalesRetur.sales_invoice),
+        joinedload(SalesRetur.pelanggan),
+        joinedload(SalesRetur.creator),
+        joinedload(SalesRetur.details).joinedload(SalesReturDetail.barang),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(
+            SalesRetur.no_retur.ilike(pattern)
+            | SalesRetur.keterangan.ilike(pattern)
+        )
+    if status:
+        query = query.filter(SalesRetur.status == status)
+    if pelanggan_id:
+        query = query.filter(SalesRetur.pelanggan_id == pelanggan_id)
+    if tanggal_from:
+        query = query.filter(SalesRetur.tanggal >= tanggal_from)
+    if tanggal_to:
+        query = query.filter(SalesRetur.tanggal <= tanggal_to)
+
+    total = query.count()
+    data = query.order_by(SalesRetur.created_at.desc()).offset(skip).limit(limit).all()
+    return data, total
+
+
+def get_sales_retur_by_id(db: Session, retur_id: UUID) -> Optional[SalesRetur]:
+    """Ambil 1 sales retur berdasarkan ID dengan detail."""
+    return (
+        db.query(SalesRetur)
+        .options(
+            joinedload(SalesRetur.sales_invoice),
+            joinedload(SalesRetur.pelanggan),
+            joinedload(SalesRetur.creator),
+            joinedload(SalesRetur.jurnal),
+            joinedload(SalesRetur.details).joinedload(SalesReturDetail.barang),
+        )
+        .filter(SalesRetur.id == retur_id)
+        .first()
+    )
+
+
+@atomic_accounting_write
+def create_sales_retur(
+    db: Session,
+    tanggal: datetime,
+    sales_invoice_id: UUID,
+    pelanggan_id: UUID,
+    details_data: list,
+    alamat_pengembalian: Optional[str] = None,
+    no_pengembalian: Optional[str] = None,
+    diskon_global: Optional[Decimal] = Decimal("0"),
+    ppn: Decimal = Decimal("11"),
+    keterangan: Optional[str] = None,
+    auto_post_jurnal: bool = True,
+    created_by: Optional[UUID] = None,
+    gudang_id: Optional[UUID] = None,
+    pengiriman_id: Optional[UUID] = None,
+) -> SalesRetur:
+    """Buat SalesRetur baru beserta detail.
+    Jurnal: D - Retur Penjualan / HPP, K - Piutang Dagang
+    """
+    try:
+        # Validasi pelanggan
+        pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
+        if not pelanggan:
+            raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
+
+        # Hitung sub_total dari detail
+        sub_total = Decimal("0")
+        for d in details_data:
+            harga = safe_decimal(d.get("harga"))
+            qty = safe_int(d.get("qty"))
+            line_total = harga * qty
+            sub_total += line_total
+            d["sub_total"] = line_total
+
+        total_ppn, grand_total = _hitung_grand_total(
+            sub_total, Decimal("0"), ppn, Decimal("0")
+        )
+
+        # Generate nomor retur
+        no_retur = get_nomor_dokumen(
+            db, SalesRetur, prefix="RET-J",
+            no_column="no_retur", tanggal=tanggal.date()
+        )
+
+        # Buat header
+        retur = SalesRetur(
+            pengiriman_id=pengiriman_id,
+            gudang_id=gudang_id,
+            no_retur=no_retur,
+            tanggal=tanggal,
+            sales_invoice_id=sales_invoice_id,
+            pelanggan_id=pelanggan_id,
+            alamat_pengembalian=alamat_pengembalian,
+            no_pengembalian=no_pengembalian,
+            diskon_global=diskon_global,
+            ppn=ppn,
+            sub_total=sub_total,
+            total_ppn=total_ppn,
+            grand_total=grand_total,
+            auto_post_jurnal=auto_post_jurnal,
+            status=StatusPenjualan.DRAFT,
+            keterangan=keterangan,
+            created_by=created_by,
+        )
+        db.add(retur)
+        db.flush()
+
+        # Buat detail
+        for d in details_data:
+            detail = SalesReturDetail(
+                sales_retur_id=retur.id,
+                barang_id=d["barang_id"],
+                harga=Decimal(str(d["harga"])),
+                qty=int(d["qty"]),
+                sub_total=Decimal(str(d["sub_total"])),
+            )
+            db.add(detail)
+
+        # Auto-post jurnal (D: Retur Penjualan, K: Piutang Dagang)
+        # Guard: skip jika pelanggan belum punya akun piutang (Phase 3 akan ganti mekanisme COA)
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(retur)
+        if auto_post_jurnal:
+            post_sales_retur(db, retur, created_by)
+
+        db.commit()
+        db.refresh(retur)
+        logger.info(f"SalesRetur created: {no_retur} | grand_total={grand_total}")
+        return retur
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating SalesRetur: {e}")
+        raise
+
+
+@atomic_accounting_write
+def update_sales_retur(
+    db: Session,
+    db_obj: SalesRetur,
+    tanggal: Optional[datetime] = None,
+    sales_invoice_id: Optional[UUID] = None,
+    pelanggan_id: Optional[UUID] = None,
+    alamat_pengembalian: Optional[str] = None,
+    no_pengembalian: Optional[str] = None,
+    diskon_global: Optional[Decimal] = None,
+    ppn: Optional[Decimal] = None,
+    keterangan: Optional[str] = None,
+    auto_post_jurnal: Optional[bool] = None,
+    gudang_id: Optional[UUID] = None,
+    pengiriman_id: Optional[UUID] = None,
+) -> SalesRetur:
+    """Update data sales retur (hanya field header)."""
+    require_unposted(db_obj)
+    if pengiriman_id is not None:
+        db_obj.pengiriman_id = pengiriman_id
+    if gudang_id is not None:
+        db_obj.gudang_id = gudang_id
+    if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
+        raise ValueError(f"Sales Retur dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    if tanggal is not None:
+        db_obj.tanggal = tanggal
+    if sales_invoice_id is not None:
+        db_obj.sales_invoice_id = sales_invoice_id
+    if pelanggan_id is not None:
+        db_obj.pelanggan_id = pelanggan_id
+    if alamat_pengembalian is not None:
+        db_obj.alamat_pengembalian = alamat_pengembalian
+    if no_pengembalian is not None:
+        db_obj.no_pengembalian = no_pengembalian
+    if diskon_global is not None:
+        db_obj.diskon_global = diskon_global
+    if ppn is not None:
+        db_obj.ppn = ppn
+    if keterangan is not None:
+        db_obj.keterangan = keterangan
+    if auto_post_jurnal is not None:
+        db_obj.auto_post_jurnal = auto_post_jurnal
+
+    db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+@atomic_accounting_write
+def cancel_sales_retur(db: Session, db_obj: SalesRetur, user_id: Optional[UUID] = None) -> SalesRetur:
+    """Batalkan sales retur."""
+    require_no_stock_movement(db_obj)
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Sales Retur sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
+    db_obj.status = StatusPenjualan.DIBATALKAN
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"SalesRetur cancelled: {db_obj.no_retur}")
+    return db_obj
+
+
+# ==========================================
+# PENGIRIMAN BARANG
+# ==========================================
+
+def get_pengiriman_list(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    pelanggan_id: Optional[UUID] = None,
+    tanggal_from: Optional[date] = None,
+    tanggal_to: Optional[date] = None,
+) -> Tuple[List[PengirimanBarang], int]:
+    """Ambil daftar pengiriman barang dengan filter & pagination."""
+    query = db.query(PengirimanBarang).options(
+        joinedload(PengirimanBarang.sales_order),
+        joinedload(PengirimanBarang.pelanggan),
+        joinedload(PengirimanBarang.creator),
+        joinedload(PengirimanBarang.details).joinedload(PengirimanBarangDetail.barang),
+        joinedload(PengirimanBarang.details).joinedload(PengirimanBarangDetail.satuan),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(
+            PengirimanBarang.no_surat_jalan.ilike(pattern)
+            | PengirimanBarang.keterangan.ilike(pattern)
+        )
+    if status:
+        query = query.filter(PengirimanBarang.status == status)
+    if pelanggan_id:
+        query = query.filter(PengirimanBarang.pelanggan_id == pelanggan_id)
+    if tanggal_from:
+        query = query.filter(PengirimanBarang.tanggal >= tanggal_from)
+    if tanggal_to:
+        query = query.filter(PengirimanBarang.tanggal <= tanggal_to)
+
+    total = query.count()
+    data = query.order_by(PengirimanBarang.created_at.desc()).offset(skip).limit(limit).all()
+    return data, total
+
+
+def get_pengiriman_by_id(db: Session, pengiriman_id: UUID) -> Optional[PengirimanBarang]:
+    """Ambil 1 pengiriman berdasarkan ID dengan detail."""
+    return (
+        db.query(PengirimanBarang)
+        .options(
+            joinedload(PengirimanBarang.sales_order),
+            joinedload(PengirimanBarang.pelanggan),
+            joinedload(PengirimanBarang.creator),
+            joinedload(PengirimanBarang.details).joinedload(PengirimanBarangDetail.barang),
+            joinedload(PengirimanBarang.details).joinedload(PengirimanBarangDetail.satuan),
+        )
+        .filter(PengirimanBarang.id == pengiriman_id)
+        .first()
+    )
+
+
+@atomic_accounting_write
+def create_pengiriman(
+    db: Session,
+    tanggal: datetime,
+    sales_order_id: UUID,
+    pelanggan_id: UUID,
+    details_data: list,
+    ekspedisi: Optional[str] = None,
+    alamat_pengiriman: Optional[str] = None,
+    keterangan: Optional[str] = None,
+    created_by: Optional[UUID] = None,
+    gudang_id: Optional[UUID] = None,
+) -> PengirimanBarang:
+    """Buat PengirimanBarang baru beserta detail.
+    Tidak ada jurnal posting (pengiriman tidak mengubah keuangan langsung).
+    """
+    try:
+        # Validasi pelanggan
+        pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
+        if not pelanggan:
+            raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
+
+        # Generate nomor surat jalan
+        no_surat_jalan = get_nomor_dokumen(
+            db, PengirimanBarang, prefix="KB",
+            no_column="no_surat_jalan", tanggal=tanggal.date()
+        )
+
+        # Buat header
+        pengiriman = PengirimanBarang(
+            gudang_id=gudang_id,
+            no_surat_jalan=no_surat_jalan,
+            tanggal=tanggal,
+            sales_order_id=sales_order_id,
+            pelanggan_id=pelanggan_id,
+            ekspedisi=ekspedisi,
+            alamat_pengiriman=alamat_pengiriman,
+            keterangan=keterangan,
+            status=StatusPenjualan.DIPROSES,
+            created_by=created_by,
+        )
+        db.add(pengiriman)
+        db.flush()
+
+        # Buat detail
+        for d in details_data:
+            detail = PengirimanBarangDetail(
+                pengiriman_id=pengiriman.id,
+                barang_id=d["barang_id"],
+                qty=int(d["qty"]),
+                satuan_id=d["satuan_id"],
+            )
+            db.add(detail)
+
+        db.commit()
+        db.refresh(pengiriman)
+        logger.info(f"PengirimanBarang created: {no_surat_jalan}")
+        return pengiriman
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating PengirimanBarang: {e}")
+        raise
+
+
+@atomic_accounting_write
+def update_pengiriman(
+    db: Session,
+    db_obj: PengirimanBarang,
+    tanggal: Optional[datetime] = None,
+    sales_order_id: Optional[UUID] = None,
+    pelanggan_id: Optional[UUID] = None,
+    ekspedisi: Optional[str] = None,
+    alamat_pengiriman: Optional[str] = None,
+    keterangan: Optional[str] = None,
+    gudang_id: Optional[UUID] = None,
+) -> PengirimanBarang:
+    """Update data pengiriman (hanya field header)."""
+    require_unposted(db_obj)
+    if gudang_id is not None:
+        db_obj.gudang_id = gudang_id
+    if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
+        raise ValueError(f"Pengiriman dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    if tanggal is not None:
+        db_obj.tanggal = tanggal
+    if sales_order_id is not None:
+        db_obj.sales_order_id = sales_order_id
+    if pelanggan_id is not None:
+        db_obj.pelanggan_id = pelanggan_id
+    if ekspedisi is not None:
+        db_obj.ekspedisi = ekspedisi
+    if alamat_pengiriman is not None:
+        db_obj.alamat_pengiriman = alamat_pengiriman
+    if keterangan is not None:
+        db_obj.keterangan = keterangan
+
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+@atomic_accounting_write
+def cancel_pengiriman(db: Session, db_obj: PengirimanBarang, user_id: Optional[UUID] = None) -> PengirimanBarang:
+    """Batalkan pengiriman."""
+    require_no_stock_movement(db_obj)
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Pengiriman sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
+    db_obj.status = StatusPenjualan.DIBATALKAN
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"PengirimanBarang cancelled: {db_obj.no_surat_jalan}")
+    return db_obj
+
+
+@atomic_accounting_write
+def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang:
+    """Finalisasi pengiriman barang — status SELESAI + kurangi stok barang +
+    posting jurnal HPP (D: HPP Penjualan, K: Persediaan Barang Jadi).
+
+    Phase C fix (Catatan Audit Delivery §3):
+    - qty > 0 validation
+    - gudang_id required
+    - over-delivery validation (via sales_validation helper)
+    """
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Pengiriman yang sudah dibatalkan tidak bisa difinalisasi")
+    if db_obj.status == StatusPenjualan.SELESAI:
+        raise ValueError("Pengiriman sudah selesai")
+
+    # === Phase C: gudang_id required ===
+    if not db_obj.gudang_id:
+        raise ValueError(
+            "Gudang wajib diisi untuk pengiriman barang. "
+            "Transaksi stok baru harus warehouse-explicit (Catatan Audit Delivery §3)."
+        )
+
+    # === Phase C: qty > 0 + over-delivery validation per detail ===
+    from app.services.sales_validation import validate_over_delivery
+    for detail in db_obj.details:
+        if detail.qty <= 0:
+            raise ValueError(
+                f"Qty pengiriman harus > 0 (baris {detail.barang.kode if detail.barang else 'unknown'}: {detail.qty})"
+            )
+        # Phase C: over-delivery check (kalau detail punya sales_order_detail_id)
+        if detail.sales_order_detail_id:
+            try:
+                validate_over_delivery(
+                    db, detail.sales_order_detail_id, detail.qty,
+                    exclude_pengiriman_detail_id=detail.id,
+                    context=f"Pengiriman {db_obj.no_surat_jalan}",
+                )
+            except Exception as e:
+                # HTTPException from validate_over_delivery
+                raise ValueError(str(getattr(e, 'detail', str(e))))
+
+    try:
+        # Kurangi stok untuk setiap detail barang
+        total_hpp = Decimal("0")
+        cost_entries = []
+        for detail in db_obj.details:
+            movement = update_stok_barang(
+                db=db,
+                barang_id=detail.barang_id,
+                qty_change=detail.qty,
+                mode="KURANGI",
+                deskripsi=f"Pengiriman {db_obj.no_surat_jalan}",
+                ref_module=RefModule.SALES_DELIVERY,
+                ref_no=db_obj.no_surat_jalan,
+                ref_id=db_obj.id,
+                gudang_id=db_obj.gudang_id,
+            )
+            harga_pokok = detail.barang.harga_pokok or Decimal("0")
+            total_hpp += movement['total_nilai']
+            from app.services.persediaan_service import _get_akun_persediaan_id
+            inventory_id = _get_akun_persediaan_id(db, detail.barang)
+            expense_id = get_akun_id_or_raise(db, KEY_HPP_PENJUALAN, context=db_obj.no_surat_jalan)
+            movement['mutasi'].inventory_account_id = inventory_id
+            movement['mutasi'].expense_account_id = expense_id
+            if movement['total_nilai']:
+                cost_entries += [JurnalEntryItem(expense_id, debit=movement['total_nilai']), JurnalEntryItem(inventory_id, kredit=movement['total_nilai'])]
+
+        db_obj.status = StatusPenjualan.SELESAI
+
+        # Posting jurnal HPP (asumsi: barang yang dikirim adalah barang jadi)
+        # RefModule: SALES_DELIVERY (bukan SALES_INVOICE) — sesuai Master Roadmap §13:
+        # "Delivery ... RefModule SALES_DELIVERY. Delivery tidak boleh menggunakan SALES_INVOICE."
+        if total_hpp > 0:
+            entries = cost_entries
+            jurnal = auto_posting_jurnal(
+                db=db,
+                ref_module=RefModule.SALES_DELIVERY,
+                ref_no=db_obj.no_surat_jalan,
+                entries=entries,
+                keterangan=f"HPP Pengiriman {db_obj.no_surat_jalan}",
+                ref_id=db_obj.id,
+                tanggal=db_obj.tanggal,
+                created_by=db_obj.created_by,
+            )
+            db_obj.jurnal_umum_id = jurnal.id
+
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        logger.info(f"PengirimanBarang finished: {db_obj.no_surat_jalan} | stok dikurangi | HPP={total_hpp}")
+        return db_obj
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error finishing PengirimanBarang {db_obj.no_surat_jalan}: {e}")
+        raise
+
+
+@atomic_accounting_write
+def finish_sales_retur(db: Session, db_obj: SalesRetur) -> SalesRetur:
+    """Finalisasi sales retur — status SELESAI + tambah stok barang kembali."""
+    if db_obj.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Sales Retur yang sudah dibatalkan tidak bisa difinalisasi")
+    if db_obj.status == StatusPenjualan.SELESAI:
+        raise ValueError("Sales Retur sudah selesai")
+
+    from app.services.stock_return_service import execute_sales_return
+    execute_sales_return(db, db_obj)
+
+    db_obj.status = StatusPenjualan.SELESAI
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"SalesRetur finished: {db_obj.no_retur} | stok ditambahkan")
+    return db_obj
+
+
+def post_sales_invoice(db: Session, inv, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    from app.services.document_totals import validate_postable
+    validate_postable(db, inv)
+    tanggal = inv.tanggal
+    pelanggan = db.get(Pelanggan, inv.pelanggan_id)
+    no_invoice = inv.no_invoice
+    sub_total = inv.sub_total
+    total_diskon = inv.total_diskon
+    total_ppn = inv.total_ppn
+    total_biaya_tambahan = inv.total_biaya_tambahan
+    grand_total = inv.grand_total
+    if not pelanggan.akun_piutang_id:
+        raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
+    dasar_pajak = sub_total - total_diskon
+    entries = [
+        JurnalEntryItem(
+            akun_perkiraan_id=pelanggan.akun_piutang_id,
+            debit=grand_total,
+            keterangan=f"INV {no_invoice} - {pelanggan.nama}",
+        ),
+        JurnalEntryItem(
+            akun_perkiraan_id=get_akun_id_or_raise(
+                db, KEY_PENDAPATAN_PENJUALAN, context=f"INV {no_invoice}"
+            ),
+            kredit=dasar_pajak,
+            keterangan=f"Pendapatan INV {no_invoice}",
+        ),
+    ]
+    if total_ppn > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PPN_KELUARAN, context=f"INV {no_invoice}"
+                ),
+                kredit=total_ppn,
+                keterangan=f"PPN INV {no_invoice}",
+            )
+        )
+
+    if total_biaya_tambahan > 0:
+        # Kredit: Pendapatan Angkut — mengimbangi grand_total (Debit
+        # Piutang) yang sudah termasuk biaya tambahan, supaya jurnal balance.
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PENDAPATAN_ANGKUT, context=f"INV {no_invoice}"
+                ),
+                kredit=total_biaya_tambahan,
+                keterangan=f"Biaya tambahan INV {no_invoice}",
+            )
+        )
+
+    try:
+        jurnal = auto_posting_jurnal(
+            db=db,
+            ref_module=RefModule.SALES_INVOICE,
+            ref_no=no_invoice,
+            entries=entries,
+            keterangan=f"Sales Invoice {no_invoice}",
+            ref_id=inv.id,
+            tanggal=tanggal,
+            created_by=created_by,
+        )
+        inv.jurnal_umum_id = jurnal.id
+        inv.akun_kontrol_id = pelanggan.akun_piutang_id
+        inv.status = StatusPenjualan.SELESAI
+    except Exception as e:
+        raise ValueError(f"Jurnal INV gagal diposting: {e}")
+    return inv
+
+
+def post_sales_retur(db: Session, retur, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks.
+
+    Phase E fix (Catatan Sales Return §3):
+    - Auto-call validate_returnable_qty per detail (prevent over-return)
+    - Reject if return price != source invoice price
+    """
+    from app.services.document_totals import validate_postable
+    validate_postable(db, retur)
+    from app.services.settlement_service import validate_return, control_account
+    validate_return(db, retur)
+
+    # === Phase E: validate returnable qty per detail ===
+    from app.services.sales_validation import validate_returnable_qty
+    for detail in retur.details:
+        if detail.sales_invoice_detail_id:
+            try:
+                validate_returnable_qty(
+                    db, detail.sales_invoice_detail_id, detail.qty,
+                    exclude_retur_detail_id=detail.id,
+                    context=f"Sales Retur {retur.no_retur}",
+                )
+            except Exception as e:
+                raise ValueError(str(getattr(e, 'detail', str(e))))
+
+        # === Phase E: enforce return price = source invoice price ===
+        if detail.sales_invoice_detail_id:
+            from app.models.detail.sales_invoice_detail import SalesInvoiceDetail
+            inv_detail = db.get(SalesInvoiceDetail, detail.sales_invoice_detail_id)
+            if inv_detail and detail.harga != inv_detail.harga:
+                raise ValueError(
+                    f"Harga retur ({detail.harga}) tidak boleh berbeda dari harga invoice sumber "
+                    f"({inv_detail.harga}) untuk barang {detail.barang.kode if detail.barang else 'unknown'}. "
+                    f"(Catatan Sales Return §3: Financial return harus memakai harga snapshot Invoice sumber)"
+                )
+
+    tanggal = retur.tanggal
+    pelanggan = db.get(Pelanggan, retur.pelanggan_id)
+    no_retur = retur.no_retur
+    sub_total = retur.sub_total
+    total_ppn = retur.total_ppn
+    grand_total = retur.grand_total
+    if not pelanggan.akun_piutang_id:
+        raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
+    entries = [
+        # Debit: Retur Penjualan
+        JurnalEntryItem(
+            akun_perkiraan_id=get_akun_id_or_raise(
+                db, KEY_RETUR_PENJUALAN, context=f"Retur {no_retur}"
+            ),
+            debit=grand_total - total_ppn,
+            keterangan=f"Retur Penjualan {no_retur}",
+        ),
+        # Kredit: Piutang Dagang
+        JurnalEntryItem(
+            akun_perkiraan_id=control_account(db, retur.sales_invoice) if retur.sales_invoice else pelanggan.akun_piutang_id,
+            kredit=grand_total,
+            keterangan=f"Kurangi piutang {no_retur}",
+        ),
+    ]
+    if total_ppn > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PPN_KELUARAN, context=f"Retur {no_retur}"
+                ),
+                debit=total_ppn,
+                keterangan=f"PPN Retur {no_retur}",
+            )
+        )
+
+    try:
+        jurnal = auto_posting_jurnal(
+            db=db,
+            ref_module=RefModule.SALES_RETUR,
+            ref_no=no_retur,
+            entries=entries,
+            keterangan=f"Sales Retur {no_retur}",
+            ref_id=retur.id,
+            tanggal=tanggal,
+            created_by=created_by,
+        )
+        retur.jurnal_umum_id = jurnal.id
+    except Exception as e:
+        raise ValueError(f"Jurnal Retur gagal diposting: {e}")
+    return retur

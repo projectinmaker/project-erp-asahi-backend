@@ -1,0 +1,769 @@
+"""
+kas_bank_service.py
+
+Service layer untuk modul Kas & Bank.
+Menghandle CRUD + auto-posting jurnal untuk:
+- PembayaranKas (+ PembayaranRincian)
+- PenerimaanKas (+ PenerimaanRincian)
+- TransferBank
+"""
+
+from app.services.accounting_control import atomic_accounting_write, require_unposted, require_no_stock_movement
+from app.services.posting_service import reverse_journal
+
+from datetime import datetime, date
+from decimal import Decimal
+from typing import List, Optional, Tuple
+from uuid import UUID
+
+from loguru import logger
+from sqlalchemy.orm import Session, joinedload
+
+from app.models.transaksi.kas_bank.pembayaran import PembayaranKas, StatusTransaksi
+from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas
+from app.models.transaksi.kas_bank.transfer_bank import TransferBank
+from app.models.detail.pembayaran_rincian import PembayaranRincian
+from app.models.detail.penerimaan_rincian import PenerimaanRincian
+from app.models.master.kas_bank_akun import KasBankAkun
+from app.models.master.pengguna import Pengguna
+from app.models.transaksi.jurnal import RefModule
+from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
+from app.services.setting_akun_service import get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK
+from app.utils.nomor_dokumen import get_nomor_dokumen
+
+
+# ==========================================
+# PEMBAYARAN KAS
+# ==========================================
+
+def get_pembayaran_list(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    kas_bank_id: Optional[UUID] = None,
+    tanggal_from: Optional[date] = None,
+    tanggal_to: Optional[date] = None,
+) -> Tuple[List[PembayaranKas], int]:
+    """Ambil daftar pembayaran kas dengan filter & pagination."""
+    query = db.query(PembayaranKas).options(
+        joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+        joinedload(PembayaranKas.creator),
+        joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
+        joinedload(PembayaranKas.jurnal),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(
+            PembayaranKas.no_bukti.ilike(pattern)
+            | PembayaranKas.penerima.ilike(pattern)
+            | PembayaranKas.no_nukti.ilike(pattern)
+        )
+
+    if status:
+        query = query.filter(PembayaranKas.status == status)
+    if kas_bank_id:
+        query = query.filter(PembayaranKas.kas_bank_id == kas_bank_id)
+    if tanggal_from:
+        query = query.filter(PembayaranKas.tanggal >= tanggal_from)
+    if tanggal_to:
+        query = query.filter(PembayaranKas.tanggal <= tanggal_to)
+
+    total = query.count()
+    data = query.order_by(PembayaranKas.created_at.desc()).offset(skip).limit(limit).all()
+    return data, total
+
+
+def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[PembayaranKas]:
+    """Ambil 1 pembayaran berdasarkan ID dengan rincian."""
+    return (
+        db.query(PembayaranKas)
+        .options(
+            joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+            joinedload(PembayaranKas.creator),
+            joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
+            joinedload(PembayaranKas.jurnal),
+        )
+        .filter(PembayaranKas.id == pembayaran_id)
+        .first()
+    )
+
+
+@atomic_accounting_write
+def create_pembayaran(
+    db: Session,
+    no_nukti: str,
+    tanggal: datetime,
+    kas_bank_id: UUID,
+    rincian_data: list,
+    no_cek: Optional[str] = None,
+    penerima: Optional[str] = None,
+    catatan: Optional[str] = None,
+    auto_post_jurnal: bool = True,
+    created_by: UUID = None,
+    is_settlement: bool = False,
+) -> PembayaranKas:
+    """
+    Buat PembayaranKas baru beserta rincian.
+    - Generate no_bukti otomatis
+    - Hitung total_nilai dari sum rincian
+    - Auto-post jurnal jika auto_post_jurnal=True dan status=SELESAI
+
+    Parameter:
+        is_settlement: True kalau ini adalah pelunasan AP (punya allocation
+            ke purchase_invoice). Akan memakai RefModule.AP_SETTLEMENT
+            (canonical) di jurnal. Default False.
+    """
+    try:
+        # Generate nomor bukti
+        no_bukti = get_nomor_dokumen(
+            db, PembayaranKas, prefix="PAY",
+            no_column="no_bukti", tanggal=tanggal.date()
+        )
+
+        # Hitung total dari rincian
+        total_nilai = sum(Decimal(str(r.get("nilai", 0))) for r in rincian_data)
+
+        # Validasi: dari_kas_bank harus ada
+        kas_bank = db.query(KasBankAkun).filter(KasBankAkun.id == kas_bank_id).first()
+        if not kas_bank:
+            raise ValueError(f"Kas/Bank dengan ID {kas_bank_id} tidak ditemukan")
+
+        # Buat header
+        pembayaran = PembayaranKas(
+            no_bukti=no_bukti,
+            tanggal=tanggal,
+            kas_bank_id=kas_bank_id,
+            no_nukti=no_nukti,
+            no_cek=no_cek,
+            penerima=penerima,
+            catatan=catatan,
+            total_nilai=total_nilai,
+            auto_post_jurnal=auto_post_jurnal,
+            status=StatusTransaksi.SELESAI if auto_post_jurnal else StatusTransaksi.DRAFT,
+            created_by=created_by,
+        )
+        db.add(pembayaran)
+        db.flush()  # Flush untuk dapat ID
+
+        # Buat rincian
+        for r in rincian_data:
+            detail = PembayaranRincian(
+                pembayaran_id=pembayaran.id,
+                akun_perkiraan_id=r["akun_perkiraan_id"],
+                nilai=Decimal(str(r["nilai"])),
+            )
+            db.add(detail)
+
+        # Auto-post jurnal
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(pembayaran)
+        if auto_post_jurnal:
+            post_pembayaran(db, pembayaran, created_by, is_settlement=is_settlement)
+
+        db.commit()
+        db.refresh(pembayaran)
+        logger.info(f"PembayaranKas created: {no_bukti} | total={total_nilai}")
+        return pembayaran
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating PembayaranKas: {e}")
+        raise
+
+
+@atomic_accounting_write
+def update_pembayaran(
+    db: Session,
+    db_obj: PembayaranKas,
+    tanggal: Optional[datetime] = None,
+    kas_bank_id: Optional[UUID] = None,
+    no_nukti: Optional[str] = None,
+    no_cek: Optional[str] = None,
+    penerima: Optional[str] = None,
+    catatan: Optional[str] = None,
+    auto_post_jurnal: Optional[bool] = None,
+) -> PembayaranKas:
+    """Update data pembayaran (hanya field yang diberikan)."""
+    require_unposted(db_obj)
+    if tanggal is not None:
+        db_obj.tanggal = tanggal
+    if kas_bank_id is not None:
+        db_obj.kas_bank_id = kas_bank_id
+    if no_nukti is not None:
+        db_obj.no_nukti = no_nukti
+    if no_cek is not None:
+        db_obj.no_cek = no_cek
+    if penerima is not None:
+        db_obj.penerima = penerima
+    if catatan is not None:
+        db_obj.catatan = catatan
+    if auto_post_jurnal is not None:
+        db_obj.auto_post_jurnal = auto_post_jurnal
+
+    db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+@atomic_accounting_write
+def cancel_pembayaran(db: Session, db_obj: PembayaranKas, user_id: Optional[UUID] = None) -> PembayaranKas:
+    """Batalkan pembayaran (status -> BATAL)."""
+    if db_obj.status == StatusTransaksi.BATAL:
+        raise ValueError("Pembayaran sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
+    db_obj.status = StatusTransaksi.BATAL
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"PembayaranKas cancelled: {db_obj.no_bukti}")
+    return db_obj
+
+
+# ==========================================
+# PENERIMAAN KAS
+# ==========================================
+
+def get_penerimaan_list(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    kas_bank_id: Optional[UUID] = None,
+    tanggal_from: Optional[date] = None,
+    tanggal_to: Optional[date] = None,
+) -> Tuple[List[PenerimaanKas], int]:
+    """Ambil daftar penerimaan kas dengan filter & pagination."""
+    query = db.query(PenerimaanKas).options(
+        joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+        joinedload(PenerimaanKas.creator),
+        joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
+        joinedload(PenerimaanKas.jurnal),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(
+            PenerimaanKas.no_bukti.ilike(pattern)
+            | PenerimaanKas.pemberi.ilike(pattern)
+            | PenerimaanKas.no_nukti.ilike(pattern)
+        )
+
+    if status:
+        query = query.filter(PenerimaanKas.status == status)
+    if kas_bank_id:
+        query = query.filter(PenerimaanKas.kas_bank_id == kas_bank_id)
+    if tanggal_from:
+        query = query.filter(PenerimaanKas.tanggal >= tanggal_from)
+    if tanggal_to:
+        query = query.filter(PenerimaanKas.tanggal <= tanggal_to)
+
+    total = query.count()
+    data = query.order_by(PenerimaanKas.created_at.desc()).offset(skip).limit(limit).all()
+    return data, total
+
+
+def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[PenerimaanKas]:
+    """Ambil 1 penerimaan berdasarkan ID dengan rincian."""
+    return (
+        db.query(PenerimaanKas)
+        .options(
+            joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+            joinedload(PenerimaanKas.creator),
+            joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
+            joinedload(PenerimaanKas.jurnal),
+        )
+        .filter(PenerimaanKas.id == penerimaan_id)
+        .first()
+    )
+
+
+@atomic_accounting_write
+def create_penerimaan(
+    db: Session,
+    no_nukti: str,
+    tanggal: datetime,
+    kas_bank_id: UUID,
+    rincian_data: list,
+    no_cek: Optional[str] = None,
+    pemberi: Optional[str] = None,
+    catatan: Optional[str] = None,
+    auto_post_jurnal: bool = True,
+    created_by: UUID = None,
+    is_settlement: bool = False,
+) -> PenerimaanKas:
+    """Buat PenerimaanKas baru beserta rincian + auto-post jurnal.
+
+    Parameter:
+        is_settlement: True kalau ini adalah pelunasan AR (punya allocation
+            ke sales_invoice). Akan memakai RefModule.AR_SETTLEMENT
+            (canonical) di jurnal. Default False.
+    """
+    try:
+        no_bukti = get_nomor_dokumen(
+            db, PenerimaanKas, prefix="REC",
+            no_column="no_bukti", tanggal=tanggal.date()
+        )
+
+        total_nilai = sum(Decimal(str(r.get("nilai", 0))) for r in rincian_data)
+
+        kas_bank = db.query(KasBankAkun).filter(KasBankAkun.id == kas_bank_id).first()
+        if not kas_bank:
+            raise ValueError(f"Kas/Bank dengan ID {kas_bank_id} tidak ditemukan")
+
+        penerimaan = PenerimaanKas(
+            no_bukti=no_bukti,
+            tanggal=tanggal,
+            kas_bank_id=kas_bank_id,
+            no_nukti=no_nukti,
+            no_cek=no_cek,
+            pemberi=pemberi,
+            catatan=catatan,
+            total_nilai=total_nilai,
+            auto_post_jurnal=auto_post_jurnal,
+            status=StatusTransaksi.SELESAI if auto_post_jurnal else StatusTransaksi.DRAFT,
+            created_by=created_by,
+        )
+        db.add(penerimaan)
+        db.flush()
+
+        for r in rincian_data:
+            detail = PenerimaanRincian(
+                penerimaan_id=penerimaan.id,
+                akun_perkiraan_id=r["akun_perkiraan_id"],
+                nilai=Decimal(str(r["nilai"])),
+            )
+            db.add(detail)
+
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(penerimaan)
+        if auto_post_jurnal:
+            post_penerimaan(db, penerimaan, created_by, is_settlement=is_settlement)
+
+        db.commit()
+        db.refresh(penerimaan)
+        logger.info(f"PenerimaanKas created: {no_bukti} | total={total_nilai}")
+        return penerimaan
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating PenerimaanKas: {e}")
+        raise
+
+
+@atomic_accounting_write
+def update_penerimaan(
+    db: Session,
+    db_obj: PenerimaanKas,
+    tanggal: Optional[datetime] = None,
+    kas_bank_id: Optional[UUID] = None,
+    no_nukti: Optional[str] = None,
+    no_cek: Optional[str] = None,
+    pemberi: Optional[str] = None,
+    catatan: Optional[str] = None,
+    auto_post_jurnal: Optional[bool] = None,
+) -> PenerimaanKas:
+    """Update data penerimaan."""
+    require_unposted(db_obj)
+    if tanggal is not None:
+        db_obj.tanggal = tanggal
+    if kas_bank_id is not None:
+        db_obj.kas_bank_id = kas_bank_id
+    if no_nukti is not None:
+        db_obj.no_nukti = no_nukti
+    if no_cek is not None:
+        db_obj.no_cek = no_cek
+    if pemberi is not None:
+        db_obj.pemberi = pemberi
+    if catatan is not None:
+        db_obj.catatan = catatan
+    if auto_post_jurnal is not None:
+        db_obj.auto_post_jurnal = auto_post_jurnal
+
+    db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+@atomic_accounting_write
+def cancel_penerimaan(db: Session, db_obj: PenerimaanKas, user_id: Optional[UUID] = None) -> PenerimaanKas:
+    """Batalkan penerimaan."""
+    if db_obj.status == StatusTransaksi.BATAL:
+        raise ValueError("Penerimaan sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
+    db_obj.status = StatusTransaksi.BATAL
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"PenerimaanKas cancelled: {db_obj.no_bukti}")
+    return db_obj
+
+
+# ==========================================
+# TRANSFER BANK
+# ==========================================
+
+def get_transfer_list(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    tanggal_from: Optional[date] = None,
+    tanggal_to: Optional[date] = None,
+) -> Tuple[List[TransferBank], int]:
+    """Ambil daftar transfer bank dengan filter & pagination."""
+    query = db.query(TransferBank).options(
+        joinedload(TransferBank.dari_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+        joinedload(TransferBank.ke_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+        joinedload(TransferBank.creator),
+        joinedload(TransferBank.jurnal),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(TransferBank.no_transfer.ilike(pattern))
+
+    if status:
+        query = query.filter(TransferBank.status == status)
+    if tanggal_from:
+        query = query.filter(TransferBank.tanggal >= tanggal_from)
+    if tanggal_to:
+        query = query.filter(TransferBank.tanggal <= tanggal_to)
+
+    total = query.count()
+    data = query.order_by(TransferBank.created_at.desc()).offset(skip).limit(limit).all()
+    return data, total
+
+
+def get_transfer_by_id(db: Session, transfer_id: UUID) -> Optional[TransferBank]:
+    """Ambil 1 transfer berdasarkan ID."""
+    return (
+        db.query(TransferBank)
+        .options(
+            joinedload(TransferBank.dari_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+            joinedload(TransferBank.ke_kas_bank).joinedload(KasBankAkun.akun_perkiraan),
+            joinedload(TransferBank.creator),
+            joinedload(TransferBank.jurnal),
+        )
+        .filter(TransferBank.id == transfer_id)
+        .first()
+    )
+
+
+@atomic_accounting_write
+def create_transfer(
+    db: Session,
+    tanggal: datetime,
+    dari_kas_bank_id: UUID,
+    ke_kas_bank_id: UUID,
+    nilai_transfer: Decimal,
+    biaya_transfer: Decimal = Decimal("0"),
+    informasi: Optional[str] = None,
+    auto_post_jurnal: bool = True,
+    created_by: UUID = None,
+) -> TransferBank:
+    """Buat TransferBank baru + auto-post jurnal."""
+    try:
+        # Validasi: dari dan ke harus berbeda
+        if dari_kas_bank_id == ke_kas_bank_id:
+            raise ValueError("Kas/Bank asal dan tujuan tidak boleh sama")
+
+        no_transfer = get_nomor_dokumen(
+            db, TransferBank, prefix="TRF",
+            no_column="no_transfer", tanggal=tanggal.date()
+        )
+
+        # Validasi kas bank
+        dari_kb = db.query(KasBankAkun).filter(KasBankAkun.id == dari_kas_bank_id).first()
+        ke_kb = db.query(KasBankAkun).filter(KasBankAkun.id == ke_kas_bank_id).first()
+        if not dari_kb:
+            raise ValueError(f"Kas/Bank asal ID {dari_kas_bank_id} tidak ditemukan")
+        if not ke_kb:
+            raise ValueError(f"Kas/Bank tujuan ID {ke_kas_bank_id} tidak ditemukan")
+
+        transfer = TransferBank(
+            no_transfer=no_transfer,
+            tanggal=tanggal,
+            dari_kas_bank_id=dari_kas_bank_id,
+            ke_kas_bank_id=ke_kas_bank_id,
+            nilai_transfer=nilai_transfer,
+            biaya_transfer=biaya_transfer,
+            informasi=informasi,
+            auto_post_jurnal=auto_post_jurnal,
+            status=StatusTransaksi.SELESAI if auto_post_jurnal else StatusTransaksi.DRAFT,
+            created_by=created_by,
+        )
+        db.add(transfer)
+        db.flush()
+
+        # Auto-post jurnal
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(transfer)
+        if auto_post_jurnal:
+            post_transfer(db, transfer, created_by)
+
+        db.commit()
+        db.refresh(transfer)
+        logger.info(f"TransferBank created: {no_transfer} | nilai={nilai_transfer}")
+        return transfer
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating TransferBank: {e}")
+        raise
+
+
+@atomic_accounting_write
+def update_transfer(
+    db: Session,
+    db_obj: TransferBank,
+    tanggal: Optional[datetime] = None,
+    dari_kas_bank_id: Optional[UUID] = None,
+    ke_kas_bank_id: Optional[UUID] = None,
+    nilai_transfer: Optional[Decimal] = None,
+    biaya_transfer: Optional[Decimal] = None,
+    informasi: Optional[str] = None,
+    auto_post_jurnal: Optional[bool] = None,
+) -> TransferBank:
+    """Update data transfer."""
+    require_unposted(db_obj)
+    if tanggal is not None:
+        db_obj.tanggal = tanggal
+    if dari_kas_bank_id is not None:
+        if dari_kas_bank_id == db_obj.ke_kas_bank_id:
+            raise ValueError("Kas/Bank asal dan tujuan tidak boleh sama")
+        db_obj.dari_kas_bank_id = dari_kas_bank_id
+    if ke_kas_bank_id is not None:
+        if ke_kas_bank_id == db_obj.dari_kas_bank_id:
+            raise ValueError("Kas/Bank asal dan tujuan tidak boleh sama")
+        db_obj.ke_kas_bank_id = ke_kas_bank_id
+    if nilai_transfer is not None:
+        db_obj.nilai_transfer = nilai_transfer
+    if biaya_transfer is not None:
+        db_obj.biaya_transfer = biaya_transfer
+    if informasi is not None:
+        db_obj.informasi = informasi
+    if auto_post_jurnal is not None:
+        db_obj.auto_post_jurnal = auto_post_jurnal
+
+    db.add(db_obj)
+    from app.services.document_totals import refresh_totals
+    refresh_totals(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+@atomic_accounting_write
+def cancel_transfer(db: Session, db_obj: TransferBank, user_id: Optional[UUID] = None) -> TransferBank:
+    """Batalkan transfer."""
+    if db_obj.status == StatusTransaksi.BATAL:
+        raise ValueError("Transfer sudah dibatalkan")
+    if getattr(db_obj, "jurnal_umum_id", None):
+        reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
+    db_obj.status = StatusTransaksi.BATAL
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"TransferBank cancelled: {db_obj.no_transfer}")
+    return db_obj
+
+def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = False):
+    """Post the existing document; caller owns commit/rollback and workflow checks.
+
+    Parameter:
+        is_settlement: True kalau pembayaran ini adalah pelunasan AP (punya
+            allocation ke purchase_invoice). Akan memakai RefModule.AP_SETTLEMENT
+            (canonical) supaya jurnal bisa dibedakan dari generic payment
+            (expense / advance / dll). Default False (RefModule.PEMBAYARAN
+            legacy) untuk backward compat.
+
+    RefModule logic sesuai Master Roadmap §8 & §21:
+        - Generic payment (expense, advance, dll) → RefModule.PEMBAYARAN (legacy)
+        - AP settlement (pelunasan hutang ke supplier) → RefModule.AP_SETTLEMENT
+    """
+    from app.services.document_totals import validate_postable
+    validate_postable(db, pembayaran)
+    from app.services.settlement_service import validate_payment
+    validate_payment(db, pembayaran)
+    tanggal = pembayaran.tanggal
+    kas_bank = db.get(KasBankAkun, pembayaran.kas_bank_id)
+    rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in pembayaran.rincian]
+    no_bukti = pembayaran.no_bukti
+    total_nilai = pembayaran.total_nilai
+    entries = [
+        # Kredit: Kas/Bank
+        JurnalEntryItem(
+            akun_perkiraan_id=kas_bank.akun_perkiraan_id,
+            kredit=total_nilai,
+            keterangan=f"Pembayaran {no_bukti}",
+        ),
+    ]
+    # Debit: Akun-akun dari rincian
+    for r in rincian_data:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=r["akun_perkiraan_id"],
+                debit=Decimal(str(r["nilai"])),
+            )
+        )
+
+    # RefModule: AP_SETTLEMENT kalau punya allocation, PEMBAYARAN kalau generic.
+    ref_module = RefModule.AP_SETTLEMENT if is_settlement else RefModule.PEMBAYARAN
+    keterangan = (
+        f"Pelunasan Hutang (AP Settlement) {no_bukti}"
+        if is_settlement
+        else f"Pembayaran Kas {no_bukti}"
+    )
+
+    jurnal = auto_posting_jurnal(
+        db=db,
+        ref_module=ref_module,
+        ref_no=no_bukti,
+        entries=entries,
+        keterangan=keterangan,
+        ref_id=pembayaran.id,
+        tanggal=tanggal,
+        created_by=created_by,
+    )
+    pembayaran.jurnal_umum_id = jurnal.id
+    pembayaran.status = StatusTransaksi.SELESAI
+    return pembayaran
+
+
+def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = False):
+    """Post the existing document; caller owns commit/rollback and workflow checks.
+
+    Parameter:
+        is_settlement: True kalau penerimaan ini adalah pelunasan AR (punya
+            allocation ke sales_invoice). Akan memakai RefModule.AR_SETTLEMENT
+            (canonical) supaya jurnal bisa dibedakan dari generic receipt
+            (other income / refund / dll). Default False (RefModule.PENERIMAAN
+            legacy) untuk backward compat.
+
+    RefModule logic sesuai Master Roadmap §8 & §15:
+        - Generic receipt (other income, refund customer, dll) → RefModule.PENERIMAAN (legacy)
+        - AR settlement (pelunasan piutang dari pelanggan) → RefModule.AR_SETTLEMENT
+    """
+    from app.services.document_totals import validate_postable
+    validate_postable(db, penerimaan)
+    from app.services.settlement_service import validate_payment
+    validate_payment(db, penerimaan)
+    tanggal = penerimaan.tanggal
+    kas_bank = db.get(KasBankAkun, penerimaan.kas_bank_id)
+    rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in penerimaan.rincian]
+    no_bukti = penerimaan.no_bukti
+    total_nilai = penerimaan.total_nilai
+    entries = [
+        # Debit: Kas/Bank
+        JurnalEntryItem(
+            akun_perkiraan_id=kas_bank.akun_perkiraan_id,
+            debit=total_nilai,
+            keterangan=f"Penerimaan {no_bukti}",
+        ),
+    ]
+    # Kredit: Akun-akun dari rincian
+    for r in rincian_data:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=r["akun_perkiraan_id"],
+                kredit=Decimal(str(r["nilai"])),
+            )
+        )
+
+    # RefModule: AR_SETTLEMENT kalau punya allocation, PENERIMAAN kalau generic.
+    ref_module = RefModule.AR_SETTLEMENT if is_settlement else RefModule.PENERIMAAN
+    keterangan = (
+        f"Pelunasan Piutang (AR Settlement) {no_bukti}"
+        if is_settlement
+        else f"Penerimaan Kas {no_bukti}"
+    )
+
+    jurnal = auto_posting_jurnal(
+        db=db,
+        ref_module=ref_module,
+        ref_no=no_bukti,
+        entries=entries,
+        keterangan=keterangan,
+        ref_id=penerimaan.id,
+        tanggal=tanggal,
+        created_by=created_by,
+    )
+    penerimaan.jurnal_umum_id = jurnal.id
+    penerimaan.status = StatusTransaksi.SELESAI
+    return penerimaan
+
+
+def post_transfer(db: Session, transfer, created_by):
+    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    from app.services.document_totals import validate_postable
+    validate_postable(db, transfer)
+    tanggal = transfer.tanggal
+    dari_kb = db.get(KasBankAkun, transfer.dari_kas_bank_id)
+    ke_kb = db.get(KasBankAkun, transfer.ke_kas_bank_id)
+    no_transfer = transfer.no_transfer
+    nilai_transfer = transfer.nilai_transfer
+    biaya_transfer = transfer.biaya_transfer
+    entries = [
+        # Debit: Kas/Bank Tujuan
+        JurnalEntryItem(
+            akun_perkiraan_id=ke_kb.akun_perkiraan_id,
+            debit=nilai_transfer,
+            keterangan=f"Transfer ke {ke_kb.nama}",
+        ),
+        # Kredit: Kas/Bank Asal
+        JurnalEntryItem(
+            akun_perkiraan_id=dari_kb.akun_perkiraan_id,
+            kredit=nilai_transfer,
+            keterangan=f"Transfer dari {dari_kb.nama}",
+        ),
+    ]
+
+    # Jika ada biaya transfer
+    if biaya_transfer and biaya_transfer > 0:
+        # D: Beban Transfer Bank (dari setting_akun) — K: Kas/Bank Asal (berkurang)
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_BEBAN_TRANSFER_BANK, context=f"Transfer {no_transfer}"
+                ),
+                debit=biaya_transfer,
+                keterangan=f"Biaya transfer {no_transfer}",
+            )
+        )
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=dari_kb.akun_perkiraan_id,
+                kredit=biaya_transfer,
+                keterangan=f"Biaya transfer {no_transfer}",
+            )
+        )
+
+    jurnal = auto_posting_jurnal(
+        db=db,
+        ref_module=RefModule.BANK_TRANSFER,
+        ref_no=no_transfer,
+        entries=entries,
+        keterangan=f"Transfer Bank {no_transfer}",
+        ref_id=transfer.id,
+        tanggal=tanggal,
+        created_by=created_by,
+    )
+    transfer.jurnal_umum_id = jurnal.id
+    transfer.status = StatusTransaksi.SELESAI
+    return transfer

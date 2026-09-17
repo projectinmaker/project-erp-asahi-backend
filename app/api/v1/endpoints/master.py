@@ -1,0 +1,1054 @@
+from typing import List, Optional
+from uuid import UUID
+from decimal import Decimal
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_db, get_current_user
+from app.models.master.pengguna import Pengguna
+from app.models.master.pelanggan import Pelanggan
+from app.models.master.supplier import Supplier
+from app.models.master.barang import Barang
+from app.models.master.gudang import Gudang
+from app.models.master.syarat_bayar import SyaratBayar
+from app.models.master.kategori_aset import KategoriAset
+from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
+from app.models.master.setting_akun import SettingAkun
+from app.models.master.kategori_barang import KategoriBarang
+from app.models.master.satuan import Satuan
+from app.models.detail.barang_satuan import BarangSatuan
+from app.schemas.base import PaginatedResponse
+from app.schemas.master import (
+    PelangganCreate, PelangganUpdate, PelangganResponse,
+    PelangganFromCoaCreate, PelangganCoaResponse,
+    SupplierCreate, SupplierUpdate, SupplierResponse,
+    SupplierFromCoaCreate, SupplierCoaResponse,
+    BarangCreate, BarangUpdate, BarangResponse,
+    BarangSatuanCreate, BarangSatuanUpdate, BarangSatuanResponse,
+    KategoriBarangCreate, KategoriBarangUpdate, KategoriBarangResponse,
+    SatuanCreate, SatuanUpdate, SatuanResponse,
+    GudangCreate, GudangUpdate, GudangResponse,
+    SyaratBayarCreate, SyaratBayarUpdate, SyaratBayarResponse,
+    KategoriAsetCreate, KategoriAsetUpdate, KategoriAsetResponse,
+    KasBankAkunCreate, KasBankAkunUpdate, KasBankAkunResponse,
+    SettingAkunUpdate, SettingAkunResponse,
+    COASimpleResponse,
+)
+
+# Simple schemas for dropdown
+from app.schemas.base import BaseSchema
+
+
+class BarangSimpleResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+    harga_pokok: Decimal = Decimal("0")
+    stok: int = 0
+
+
+class PelangganSimpleResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+
+
+class SupplierSimpleResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+
+
+from app.services import master_service
+from app.services import setting_akun_service
+from app.services.coa_linkage_service import (
+    auto_create_piutang_coa, auto_create_hutang_coa,
+    find_piutang_root_coa, find_hutang_root_coa, get_coa_detail_ids_under,
+)
+
+router = APIRouter()
+
+
+# ==========================================
+# PELANGGAN ENDPOINTS
+# ==========================================
+@router.get("/pelanggan", response_model=PaginatedResponse[PelangganResponse])
+def get_pelanggan_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    search: Optional[str] = Query(None, description="Cari berdasarkan nama atau kode"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    data, total = master_service.get_master_list(db, Pelanggan, skip, limit, ["nama", "kode"], search)
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+@router.post("/pelanggan", response_model=PelangganResponse, status_code=status.HTTP_201_CREATED)
+def create_pelanggan(
+    data_in: PelangganCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    pelanggan = master_service.create_master(db, Pelanggan, data_in)
+    # Kalau akun_piutang_id sudah diisi manual (link ke COA existing), skip auto-create
+    if not pelanggan.akun_piutang_id:
+        piutang_coa_id = auto_create_piutang_coa(db, pelanggan)
+        if piutang_coa_id:
+            pelanggan.akun_piutang_id = piutang_coa_id
+            db.add(pelanggan)
+            db.commit()
+            db.refresh(pelanggan)
+    return pelanggan
+
+@router.get("/pelanggan/{pelanggan_id}", response_model=PelangganResponse)
+def get_pelanggan_detail(
+    pelanggan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Pelanggan, pelanggan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+    return item
+
+@router.put("/pelanggan/{pelanggan_id}", response_model=PelangganResponse)
+def update_pelanggan(
+    pelanggan_id: UUID,
+    data_in: PelangganUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Pelanggan, pelanggan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+    old_nama = item.nama
+    item = master_service.update_master(db, item, data_in)
+    # Sync nama COA piutang jika nama pelanggan berubah
+    if data_in.nama and data_in.nama != old_nama and item.akun_piutang_id:
+        from app.models.akun_perkiraan import AkunPerkiraan
+        coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == item.akun_piutang_id).first()
+        if coa:
+            coa.nama = f"Piutang - {item.nama}"
+            db.add(coa)
+            db.commit()
+            db.refresh(item)
+    return item
+
+@router.delete("/pelanggan/{pelanggan_id}", status_code=status.HTTP_200_OK)
+def delete_pelanggan(
+    pelanggan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Pelanggan, pelanggan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+    if item.status == "NONAKTIF":
+        raise HTTPException(status_code=400, detail="Pelanggan sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Pelanggan berhasil dinonaktifkan"}
+
+@router.get("/pelanggan-coa", response_model=list[PelangganCoaResponse])
+def get_pelanggan_coa(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: List semua COA DETAIL di bawah 'Piutang Usaha', LEFT JOIN ke
+    Pelanggan (kalau sudah linked via akun_piutang_id). Dipakai frontend untuk
+    menampilkan & melengkapi data pelanggan dari COA piutang yang sudah
+    di-import manual sebelumnya.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    group = find_piutang_root_coa(db)
+    if not group:
+        return []
+
+    detail_ids = get_coa_detail_ids_under(db, group.id)
+    if not detail_ids:
+        return []
+
+    rows = (
+        db.query(AkunPerkiraan, Pelanggan)
+        .outerjoin(Pelanggan, Pelanggan.akun_piutang_id == AkunPerkiraan.id)
+        .filter(AkunPerkiraan.id.in_(detail_ids))
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+
+    return [
+        {
+            "coa_id": coa.id,
+            "kode": coa.kode,
+            "nama": coa.nama,
+            "pelanggan_id": pelanggan.id if pelanggan else None,
+            "kode_pelanggan": pelanggan.kode if pelanggan else None,
+            "nama_pelanggan": pelanggan.nama if pelanggan else None,
+            "alamat": pelanggan.alamat if pelanggan else None,
+            "telepon": pelanggan.telepon if pelanggan else None,
+            "email": pelanggan.email if pelanggan else None,
+            "kontak_person": pelanggan.kontak_person if pelanggan else None,
+            "npwp": pelanggan.npwp if pelanggan else None,
+            "syarat_bayar_default": pelanggan.syarat_bayar_default if pelanggan else None,
+            "status": pelanggan.status if pelanggan else coa.status,
+            "is_linked": pelanggan is not None,
+        }
+        for coa, pelanggan in rows
+    ]
+
+@router.post("/pelanggan-from-coa", response_model=PelangganResponse, status_code=status.HTTP_201_CREATED)
+def create_pelanggan_from_coa(
+    data_in: PelangganFromCoaCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: Link COA Piutang existing (sudah di-import manual) ke pelanggan
+    baru. TIDAK membuat COA baru — pakai coa_id yang dikirim frontend langsung.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+
+    coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.coa_id).first()
+    if not coa:
+        raise HTTPException(status_code=404, detail="COA tidak ditemukan")
+    if coa.tingkat != TingkatAkun.DETAIL:
+        raise HTTPException(status_code=400, detail="COA yang dipilih harus level DETAIL")
+
+    group = find_piutang_root_coa(db)
+    if not group or coa.id not in get_coa_detail_ids_under(db, group.id):
+        raise HTTPException(status_code=400, detail="COA yang dipilih bukan bagian dari 'Piutang Usaha'")
+
+    existing_link = db.query(Pelanggan).filter(Pelanggan.akun_piutang_id == coa.id).first()
+    if existing_link:
+        raise HTTPException(
+            status_code=400,
+            detail=f"COA ini sudah terhubung ke pelanggan '{existing_link.nama}' ({existing_link.kode})"
+        )
+
+    pelanggan = Pelanggan(
+        kode=data_in.kode,
+        nama=data_in.nama,
+        alamat=data_in.alamat,
+        telepon=data_in.telepon,
+        email=data_in.email,
+        kontak_person=data_in.kontak_person,
+        npwp=data_in.npwp,
+        syarat_bayar_default=data_in.syarat_bayar_default,
+        akun_piutang_id=coa.id,
+    )
+    db.add(pelanggan)
+    db.commit()
+    db.refresh(pelanggan)
+    return pelanggan
+
+
+# ==========================================
+# SUPPLIER ENDPOINTS
+# ==========================================
+@router.get("/supplier", response_model=PaginatedResponse[SupplierResponse])
+def get_supplier_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    data, total = master_service.get_master_list(db, Supplier, skip, limit, ["nama", "kode"], search)
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+@router.post("/supplier", response_model=SupplierResponse, status_code=status.HTTP_201_CREATED)
+def create_supplier(
+    data_in: SupplierCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    supplier = master_service.create_master(db, Supplier, data_in)
+    # Kalau akun_hutang_id sudah diisi manual (link ke COA existing), skip auto-create
+    if not supplier.akun_hutang_id:
+        hutang_coa_id = auto_create_hutang_coa(db, supplier)
+        if hutang_coa_id:
+            supplier.akun_hutang_id = hutang_coa_id
+            db.add(supplier)
+            db.commit()
+            db.refresh(supplier)
+    return supplier
+
+@router.get("/supplier/{supplier_id}", response_model=SupplierResponse)
+def get_supplier_detail(supplier_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Supplier, supplier_id)
+    if not item: raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
+    return item
+
+@router.put("/supplier/{supplier_id}", response_model=SupplierResponse)
+def update_supplier(supplier_id: UUID, data_in: SupplierUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Supplier, supplier_id)
+    if not item: raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
+    old_nama = item.nama
+    item = master_service.update_master(db, item, data_in)
+    # Sync nama COA hutang jika nama supplier berubah
+    if data_in.nama and data_in.nama != old_nama and item.akun_hutang_id:
+        from app.models.akun_perkiraan import AkunPerkiraan
+        coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == item.akun_hutang_id).first()
+        if coa:
+            coa.nama = f"Hutang - {item.nama}"
+            db.add(coa)
+            db.commit()
+            db.refresh(item)
+    return item
+
+@router.delete("/supplier/{supplier_id}", status_code=status.HTTP_200_OK)
+def delete_supplier(supplier_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Supplier, supplier_id)
+    if not item: raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Supplier sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Supplier berhasil dinonaktifkan"}
+
+@router.get("/supplier-coa", response_model=list[SupplierCoaResponse])
+def get_supplier_coa(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: List semua COA DETAIL di bawah 'Hutang Usaha', LEFT JOIN ke
+    Supplier (kalau sudah linked via akun_hutang_id). Mirror dari /pelanggan-coa.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    group = find_hutang_root_coa(db)
+    if not group:
+        return []
+
+    detail_ids = get_coa_detail_ids_under(db, group.id)
+    if not detail_ids:
+        return []
+
+    rows = (
+        db.query(AkunPerkiraan, Supplier)
+        .outerjoin(Supplier, Supplier.akun_hutang_id == AkunPerkiraan.id)
+        .filter(AkunPerkiraan.id.in_(detail_ids))
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+
+    return [
+        {
+            "coa_id": coa.id,
+            "kode": coa.kode,
+            "nama": coa.nama,
+            "supplier_id": supplier.id if supplier else None,
+            "kode_supplier": supplier.kode if supplier else None,
+            "nama_supplier": supplier.nama if supplier else None,
+            "alamat": supplier.alamat if supplier else None,
+            "telepon": supplier.telepon if supplier else None,
+            "email": supplier.email if supplier else None,
+            "kontak_person": supplier.kontak_person if supplier else None,
+            "npwp": supplier.npwp if supplier else None,
+            "syarat_bayar_default": supplier.syarat_bayar_default if supplier else None,
+            "status": supplier.status if supplier else coa.status,
+            "is_linked": supplier is not None,
+        }
+        for coa, supplier in rows
+    ]
+
+@router.post("/supplier-from-coa", response_model=SupplierResponse, status_code=status.HTTP_201_CREATED)
+def create_supplier_from_coa(
+    data_in: SupplierFromCoaCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Skenario B2: Link COA Hutang existing (sudah di-import manual) ke supplier
+    baru. TIDAK membuat COA baru — pakai coa_id yang dikirim frontend langsung.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+
+    coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.coa_id).first()
+    if not coa:
+        raise HTTPException(status_code=404, detail="COA tidak ditemukan")
+    if coa.tingkat != TingkatAkun.DETAIL:
+        raise HTTPException(status_code=400, detail="COA yang dipilih harus level DETAIL")
+
+    group = find_hutang_root_coa(db)
+    if not group or coa.id not in get_coa_detail_ids_under(db, group.id):
+        raise HTTPException(status_code=400, detail="COA yang dipilih bukan bagian dari 'Hutang Usaha'")
+
+    existing_link = db.query(Supplier).filter(Supplier.akun_hutang_id == coa.id).first()
+    if existing_link:
+        raise HTTPException(
+            status_code=400,
+            detail=f"COA ini sudah terhubung ke supplier '{existing_link.nama}' ({existing_link.kode})"
+        )
+
+    supplier = Supplier(
+        kode=data_in.kode,
+        nama=data_in.nama,
+        alamat=data_in.alamat,
+        telepon=data_in.telepon,
+        email=data_in.email,
+        kontak_person=data_in.kontak_person,
+        npwp=data_in.npwp,
+        syarat_bayar_default=data_in.syarat_bayar_default,
+        akun_hutang_id=coa.id,
+    )
+    db.add(supplier)
+    db.commit()
+    db.refresh(supplier)
+    return supplier
+
+
+# ==========================================
+# BARANG ENDPOINTS
+# ==========================================
+@router.get('/barang-akun-persediaan', response_model=PaginatedResponse[COASimpleResponse])
+def get_barang_inventory_accounts(skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
+    search: Optional[str] = None, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    from app.models.akun_perkiraan import AkunPerkiraan
+    from sqlalchemy import or_
+    query = master_service.inventory_account_candidates(db)
+    if search:
+        query = query.filter(or_(AkunPerkiraan.kode.ilike(f'%{search}%'), AkunPerkiraan.nama.ilike(f'%{search}%')))
+    total = query.count()
+    return {'data': query.order_by(AkunPerkiraan.kode, AkunPerkiraan.id).offset(skip).limit(limit).all(),
+            'total': total, 'skip': skip, 'limit': limit}
+
+
+@router.get("/barang", response_model=PaginatedResponse[BarangResponse])
+def get_barang_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    data, total = master_service.get_master_list(db, Barang, skip, limit, ["nama", "kode"], search)
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+@router.post("/barang", response_model=BarangResponse, status_code=status.HTTP_201_CREATED)
+def create_barang(
+    data_in: BarangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, Barang, data_in)
+
+@router.get("/barang/{barang_id}", response_model=BarangResponse)
+def get_barang_detail(barang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Barang, barang_id)
+    if not item: raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+    return item
+
+@router.put("/barang/{barang_id}", response_model=BarangResponse)
+def update_barang(barang_id: UUID, data_in: BarangUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Barang, barang_id)
+    if not item: raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/barang/{barang_id}", status_code=status.HTTP_200_OK)
+def delete_barang(barang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Barang, barang_id)
+    if not item: raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Barang sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Barang berhasil dinonaktifkan"}
+
+
+# ==========================================
+# BARANG SATUAN ENDPOINTS (Multi-satuan)
+# ==========================================
+@router.get("/barang/{barang_id}/satuan", response_model=list[BarangSatuanResponse])
+def get_barang_satuan_list(
+    barang_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Get daftar satuan untuk suatu barang (termasuk satuan utama dari barang.satuan_id)."""
+    barang = master_service.get_master_by_id(db, Barang, barang_id)
+    if not barang:
+        raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+    return db.query(BarangSatuan).filter(
+        BarangSatuan.barang_id == barang_id
+    ).order_by(BarangSatuan.is_utama.desc()).all()
+
+
+@router.post("/barang/{barang_id}/satuan", response_model=BarangSatuanResponse, status_code=status.HTTP_201_CREATED)
+def add_barang_satuan(
+    barang_id: UUID,
+    data_in: BarangSatuanCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Tambah satuan ke daftar satuan barang."""
+    barang = master_service.get_master_by_id(db, Barang, barang_id)
+    if not barang:
+        raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+    if barang_id != data_in.barang_id:
+        raise HTTPException(status_code=400, detail="barang_id di path dan body tidak cocok")
+    # Cek duplikat satuan
+    existing = db.query(BarangSatuan).filter(
+        BarangSatuan.barang_id == barang_id,
+        BarangSatuan.satuan_id == data_in.satuan_id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Satuan ini sudah terdaftar untuk barang tersebut")
+    return master_service.create_master(db, BarangSatuan, data_in)
+
+
+@router.put("/barang-satuan/{barang_satuan_id}", response_model=BarangSatuanResponse)
+def update_barang_satuan(
+    barang_satuan_id: UUID,
+    data_in: BarangSatuanUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Update satuan pada daftar satuan barang (mis. ubah isi_satuan / faktor konversi)."""
+    item = db.query(BarangSatuan).filter(BarangSatuan.id == barang_satuan_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Barang Satuan tidak ditemukan")
+    # Cegah duplikat kalau satuan_id diganti ke satuan yang sudah dipakai barang ini
+    if data_in.satuan_id and data_in.satuan_id != item.satuan_id:
+        existing = db.query(BarangSatuan).filter(
+            BarangSatuan.barang_id == item.barang_id,
+            BarangSatuan.satuan_id == data_in.satuan_id,
+            BarangSatuan.id != barang_satuan_id,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Satuan ini sudah terdaftar untuk barang tersebut")
+    return master_service.update_master(db, item, data_in)
+
+
+@router.delete("/barang-satuan/{barang_satuan_id}", status_code=status.HTTP_200_OK)
+def delete_barang_satuan(
+    barang_satuan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Hapus satuan dari daftar satuan barang."""
+    item = db.query(BarangSatuan).filter(BarangSatuan.id == barang_satuan_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Barang Satuan tidak ditemukan")
+    if item.is_utama:
+        raise HTTPException(status_code=400, detail="Satuan utama tidak bisa dihapus")
+    db.delete(item)
+    db.commit()
+    return {"message": "Satuan berhasil dihapus dari barang"}
+
+
+# ==========================================
+# GUDANG ENDPOINTS
+# ==========================================
+@router.get("/gudang", response_model=list[GudangResponse])
+def get_gudang_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(Gudang).filter(Gudang.status == "AKTIF").order_by(Gudang.nama).all()
+
+@router.post("/gudang", response_model=GudangResponse, status_code=status.HTTP_201_CREATED)
+def create_gudang(
+    data_in: GudangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, Gudang, data_in)
+
+@router.get("/gudang/{gudang_id}", response_model=GudangResponse)
+def get_gudang_detail(gudang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Gudang, gudang_id)
+    if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+    return item
+
+@router.put("/gudang/{gudang_id}", response_model=GudangResponse)
+def update_gudang(gudang_id: UUID, data_in: GudangUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Gudang, gudang_id)
+    if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/gudang/{gudang_id}", status_code=status.HTTP_200_OK)
+def delete_gudang(gudang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, Gudang, gudang_id)
+    if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Gudang sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Gudang berhasil dinonaktifkan"}
+
+
+# ==========================================
+# SYARAT BAYAR ENDPOINTS
+# ==========================================
+@router.get("/syarat-bayar", response_model=list[SyaratBayarResponse])
+def get_syarat_bayar_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(SyaratBayar).order_by(SyaratBayar.nama).all()
+
+@router.post("/syarat-bayar", response_model=SyaratBayarResponse, status_code=status.HTTP_201_CREATED)
+def create_syarat_bayar(
+    data_in: SyaratBayarCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, SyaratBayar, data_in)
+
+@router.get("/syarat-bayar/{syarat_bayar_id}", response_model=SyaratBayarResponse)
+def get_syarat_bayar_detail(syarat_bayar_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, SyaratBayar, syarat_bayar_id)
+    if not item: raise HTTPException(status_code=404, detail="Syarat Bayar tidak ditemukan")
+    return item
+
+@router.put("/syarat-bayar/{syarat_bayar_id}", response_model=SyaratBayarResponse)
+def update_syarat_bayar(syarat_bayar_id: UUID, data_in: SyaratBayarUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, SyaratBayar, syarat_bayar_id)
+    if not item: raise HTTPException(status_code=404, detail="Syarat Bayar tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/syarat-bayar/{syarat_bayar_id}", status_code=status.HTTP_200_OK)
+def delete_syarat_bayar(syarat_bayar_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, SyaratBayar, syarat_bayar_id)
+    if not item: raise HTTPException(status_code=404, detail="Syarat Bayar tidak ditemukan")
+    db.delete(item)
+    db.commit()
+    return {"message": "Syarat Bayar berhasil dihapus"}
+
+
+# ==========================================
+# KATEGORI ASET ENDPOINTS
+# ==========================================
+@router.get("/kategori-aset", response_model=list[KategoriAsetResponse])
+def get_kategori_aset_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(KategoriAset).filter(KategoriAset.status == "AKTIF").order_by(KategoriAset.nama).all()
+
+@router.post("/kategori-aset", response_model=KategoriAsetResponse, status_code=status.HTTP_201_CREATED)
+def create_kategori_aset(
+    data_in: KategoriAsetCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, KategoriAset, data_in)
+
+@router.get("/kategori-aset/{kategori_aset_id}", response_model=KategoriAsetResponse)
+def get_kategori_aset_detail(kategori_aset_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KategoriAset, kategori_aset_id)
+    if not item: raise HTTPException(status_code=404, detail="Kategori Aset tidak ditemukan")
+    return item
+
+@router.put("/kategori-aset/{kategori_aset_id}", response_model=KategoriAsetResponse)
+def update_kategori_aset(kategori_aset_id: UUID, data_in: KategoriAsetUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KategoriAset, kategori_aset_id)
+    if not item: raise HTTPException(status_code=404, detail="Kategori Aset tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/kategori-aset/{kategori_aset_id}", status_code=status.HTTP_200_OK)
+def delete_kategori_aset(kategori_aset_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KategoriAset, kategori_aset_id)
+    if not item: raise HTTPException(status_code=404, detail="Kategori Aset tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Kategori Aset sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Kategori Aset berhasil dinonaktifkan"}
+
+
+# ==========================================
+# KAS BANK AKUN ENDPOINTS
+# ==========================================
+@router.get("/kas-bank-akun", response_model=list[KasBankAkunResponse])
+def get_kas_bank_akun_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(KasBankAkun).filter(KasBankAkun.status == "AKTIF").order_by(KasBankAkun.nama).all()
+
+@router.post("/kas-bank-akun", response_model=KasBankAkunResponse, status_code=status.HTTP_201_CREATED)
+def create_kas_bank_akun(
+    data_in: KasBankAkunCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, KasBankAkun, data_in)
+
+@router.get("/kas-bank-akun/{kas_bank_akun_id}", response_model=KasBankAkunResponse)
+def get_kas_bank_akun_detail(kas_bank_akun_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
+    if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
+    return item
+
+@router.put("/kas-bank-akun/{kas_bank_akun_id}", response_model=KasBankAkunResponse)
+def update_kas_bank_akun(kas_bank_akun_id: UUID, data_in: KasBankAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
+    if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/kas-bank-akun/{kas_bank_akun_id}", status_code=status.HTTP_200_OK)
+def delete_kas_bank_akun(kas_bank_akun_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
+    if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
+    if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Kas Bank Akun sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Kas Bank Akun berhasil dinonaktifkan"}
+
+
+# ==========================================
+# SETTING AKUN ENDPOINTS
+# Mapping akun default (Pendapatan, Pembelian, PPN, dll) yang dipakai
+# saat auto-posting jurnal di modul Penjualan & Pembelian.
+# Data di-seed lewat app.seed.phase3_setting_akun_seed — endpoint ini
+# hanya untuk MENGUBAH akun_perkiraan_id-nya (bukan create/delete key baru).
+# ==========================================
+@router.get("/setting-akun", response_model=list[SettingAkunResponse])
+def get_setting_akun_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return db.query(SettingAkun).order_by(SettingAkun.label).all()
+
+@router.get("/setting-akun/{key}", response_model=SettingAkunResponse)
+def get_setting_akun_detail(key: str, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+    if not item: raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
+    return item
+
+@router.put("/setting-akun/{key}", response_model=SettingAkunResponse)
+def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    from app.services.inventory_receipt_control import KEY, validate_grni_account
+    item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+    if key == KEY:
+        try:
+            validate_grni_account(db, data_in.akun_perkiraan_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if item is None:
+            item = SettingAkun(key=KEY, label="Penerimaan Dalam Proses (GRNI)",
+                               akun_perkiraan_id=data_in.akun_perkiraan_id)
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            setting_akun_service.clear_cache()
+            return item
+    if not item:
+        raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
+    item = master_service.update_master(db, item, data_in)
+    setting_akun_service.clear_cache()
+    return item
+
+
+
+# ==========================================
+# KATEGORI BARANG ENDPOINTS
+# ==========================================
+@router.get("/kategori-barang", response_model=list[KategoriBarangResponse])
+def get_kategori_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Get semua kategori barang AKTIF"""
+    return db.query(KategoriBarang).filter(KategoriBarang.status == "AKTIF").order_by(KategoriBarang.nama).all()
+
+@router.post("/kategori-barang", response_model=KategoriBarangResponse, status_code=status.HTTP_201_CREATED)
+def create_kategori_barang(
+    data_in: KategoriBarangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, KategoriBarang, data_in)
+
+@router.get("/kategori-barang/{kategori_id}", response_model=KategoriBarangResponse)
+def get_kategori_barang_detail(
+    kategori_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, KategoriBarang, kategori_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Kategori Barang tidak ditemukan")
+    return item
+
+@router.put("/kategori-barang/{kategori_id}", response_model=KategoriBarangResponse)
+def update_kategori_barang(
+    kategori_id: UUID,
+    data_in: KategoriBarangUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, KategoriBarang, kategori_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Kategori Barang tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/kategori-barang/{kategori_id}", status_code=status.HTTP_200_OK)
+def delete_kategori_barang(
+    kategori_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, KategoriBarang, kategori_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Kategori Barang tidak ditemukan")
+    if item.status == "NONAKTIF":
+        raise HTTPException(status_code=400, detail="Kategori Barang sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Kategori Barang berhasil dinonaktifkan"}
+
+
+# ==========================================
+# SATUAN ENDPOINTS
+# ==========================================
+@router.get("/satuan", response_model=list[SatuanResponse])
+def get_satuan_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Get semua satuan AKTIF"""
+    return db.query(Satuan).filter(Satuan.status == "AKTIF").order_by(Satuan.nama).all()
+
+@router.post("/satuan", response_model=SatuanResponse, status_code=status.HTTP_201_CREATED)
+def create_satuan(
+    data_in: SatuanCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    return master_service.create_master(db, Satuan, data_in)
+
+@router.get("/satuan/{satuan_id}", response_model=SatuanResponse)
+def get_satuan_detail(
+    satuan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Satuan, satuan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
+    return item
+
+@router.put("/satuan/{satuan_id}", response_model=SatuanResponse)
+def update_satuan(
+    satuan_id: UUID,
+    data_in: SatuanUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Satuan, satuan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
+    return master_service.update_master(db, item, data_in)
+
+@router.delete("/satuan/{satuan_id}", status_code=status.HTTP_200_OK)
+def delete_satuan(
+    satuan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    item = master_service.get_master_by_id(db, Satuan, satuan_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
+    if item.status == "NONAKTIF":
+        raise HTTPException(status_code=400, detail="Satuan sudah tidak aktif")
+    master_service.soft_delete_master(db, item)
+    return {"message": "Satuan berhasil dinonaktifkan"}
+
+
+# ==========================================
+# ENDPOINT DROPDOWN (Untuk Form Transaksi)
+# ==========================================
+@router.get("/coa-dropdown", response_model=list[COASimpleResponse])
+def get_coa_dropdown(
+    exclude_linked: bool = Query(False, description="Exclude COA subledger auto-created per pelanggan/supplier (Piutang Usaha & Hutang Usaha children)"),
+    include_header_group: bool = Query(False, description="Include akun level HEADER & GROUP juga (bukan cuma DETAIL). Dipakai halaman Setting Akun untuk key seperti PIUTANG_USAHA/HUTANG_USAHA yang nunjuk ke akun induk/root, bukan detail."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown COA ringan (id, kode, nama) — default hanya akun DETAIL yang AKTIF
+    (dipakai form transaksi/jurnal, yang cuma boleh posting ke akun DETAIL).
+
+    Parameter exclude_linked: jika True, exclude COA subledger (is_subledger=True)
+    yang auto-created per pelanggan/supplier.
+    Parameter include_header_group: jika True, ikut include akun level HEADER
+    & GROUP (bukan cuma DETAIL) — dipakai halaman Setting Akun, karena beberapa
+    key (PIUTANG_USAHA, HUTANG_USAHA) memang nunjuk ke akun induk/root, bukan detail.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+
+    query = db.query(AkunPerkiraan).filter(AkunPerkiraan.status == "AKTIF")
+
+    if not include_header_group:
+        query = query.filter(AkunPerkiraan.tingkat == TingkatAkun.DETAIL)
+
+    if exclude_linked:
+        query = query.filter(AkunPerkiraan.is_subledger == False)  # noqa: E712
+
+    return query.order_by(AkunPerkiraan.kode).all()
+
+
+@router.get("/barang-dropdown", response_model=list[BarangSimpleResponse])
+def get_barang_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown Barang ringan (id, kode, nama)"""
+    return db.query(Barang).filter(
+        Barang.status == "AKTIF"
+    ).order_by(Barang.nama).all()
+
+
+@router.get("/pelanggan-dropdown", response_model=list[PelangganSimpleResponse])
+def get_pelanggan_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown Pelanggan ringan (id, kode, nama)"""
+    return db.query(Pelanggan).filter(
+        Pelanggan.status == "AKTIF"
+    ).order_by(Pelanggan.nama).all()
+
+
+@router.get("/supplier-dropdown", response_model=list[SupplierSimpleResponse])
+def get_supplier_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Dropdown Supplier ringan (id, kode, nama)"""
+    return db.query(Supplier).filter(
+        Supplier.status == "AKTIF"
+    ).order_by(Supplier.nama).all()
+
+
+def _get_kas_detail_coa_ids(db: Session) -> list[UUID]:
+    """Cari semua COA DETAIL yang merupakan anak/cucu dari 'Kas dan Setara Kas'.
+
+    Utamakan dari setting_akun (KEY_KAS_DAN_SETARA_KAS) supaya tetap jalan
+    walau user ganti nama COA. Fallback ke pencarian by-nama (ilike) kalau
+    setting belum di-configure/stale. Dipakai bareng oleh /kas-bank-dropdown
+    dan /kas-bank-akun/sync supaya logic-nya nggak duplikat.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+
+    kas_root_id = setting_akun_service.get_akun_id(db, setting_akun_service.KEY_KAS_DAN_SETARA_KAS)
+
+    if kas_root_id and not db.query(AkunPerkiraan).filter(AkunPerkiraan.id == kas_root_id).first():
+        kas_root_id = None  # stale reference, fallback di bawah
+
+    if not kas_root_id:
+        kas_root_id = db.query(AkunPerkiraan.id).filter(
+            AkunPerkiraan.nama.ilike("%KAS%DAN%SETARA%KAS%"),
+            AkunPerkiraan.tingkat.in_([TingkatAkun.HEADER, TingkatAkun.GROUP]),
+        ).scalar()
+
+    if not kas_root_id:
+        return []
+
+    # Recursive CTE: cari semua descendant (anak, cucu, dst)
+    base = db.query(AkunPerkiraan.id).filter(
+        AkunPerkiraan.induk_id == kas_root_id
+    ).cte(name="coa_children", recursive=True)
+
+    recursive = db.query(AkunPerkiraan.id).join(
+        base, AkunPerkiraan.induk_id == base.c.id
+    )
+
+    all_descendants = base.union(recursive)
+
+    return [
+        row[0] for row in db.query(AkunPerkiraan.id).filter(
+            AkunPerkiraan.id.in_(db.query(all_descendants.c.id)),
+            AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
+        ).all()
+    ]
+
+
+@router.get("/kas-bank-dropdown", response_model=list[KasBankAkunResponse])
+def get_kas_bank_dropdown(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """
+    Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'Kas dan Setara Kas'.
+    Mencari semua akun DETAIL yang merupakan anak/cucu dari COA tersebut.
+
+    Catatan: hanya menampilkan COA yang SUDAH punya entry KasBankAkun. COA
+    detail yang di-import manual tapi belum di-sync tidak akan muncul —
+    panggil POST /master/kas-bank-akun/sync untuk auto-create entry-nya.
+    """
+    detail_ids = _get_kas_detail_coa_ids(db)
+    if not detail_ids:
+        return []
+
+    return db.query(KasBankAkun).filter(
+        KasBankAkun.akun_perkiraan_id.in_(detail_ids),
+        KasBankAkun.status == "AKTIF",
+    ).order_by(KasBankAkun.nama).all()
+
+
+@router.post("/kas-bank-akun/sync", status_code=status.HTTP_200_OK)
+def sync_kas_bank_akun(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user)
+):
+    """Sync COA di bawah 'Kas dan Setara Kas' ke tabel kas_bank_akun.
+
+    Auto-create entry KasBankAkun untuk COA DETAIL yang belum punya
+    (misal hasil import manual/Excel yang belum ke-link). Aman dipanggil
+    berkali-kali (idempotent) — COA yang sudah punya KasBankAkun di-skip.
+    Panggil endpoint ini sekali setelah import COA untuk sync semua akun
+    Kas/Bank baru.
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    detail_ids = _get_kas_detail_coa_ids(db)
+    if not detail_ids:
+        return {"created": 0, "skipped": 0, "detail": []}
+
+    already_linked_ids = {
+        row[0] for row in db.query(KasBankAkun.akun_perkiraan_id)
+        .filter(KasBankAkun.akun_perkiraan_id.in_(detail_ids)).all()
+    }
+
+    to_create_query = db.query(AkunPerkiraan).filter(
+        AkunPerkiraan.id.in_(detail_ids),
+        AkunPerkiraan.status == "AKTIF",
+    )
+    if already_linked_ids:
+        to_create_query = to_create_query.filter(~AkunPerkiraan.id.in_(already_linked_ids))
+    to_create = to_create_query.all()
+
+    if not to_create:
+        return {"created": 0, "skipped": len(already_linked_ids), "detail": []}
+
+    # Kode kas_bank_akun berikutnya: lanjutkan penomoran "BK-XXX" yang sudah ada
+    last_kode = (
+        db.query(KasBankAkun.kode)
+        .filter(KasBankAkun.kode.like("BK-%"))
+        .order_by(KasBankAkun.kode.desc())
+        .first()
+    )
+    try:
+        next_seq = int(last_kode[0].split("-")[1]) + 1 if last_kode else 1
+    except (IndexError, ValueError):
+        next_seq = 1
+
+    created_detail = []
+    for coa in to_create:
+        # Deteksi jenis dari nama: mengandung "bank" -> BANK, selain itu KAS (default)
+        jenis = JenisKasBank.BANK if "bank" in coa.nama.lower() else JenisKasBank.KAS
+
+        new_item = KasBankAkun(
+            kode=f"BK-{next_seq:03d}",
+            nama=coa.nama,
+            jenis=jenis,
+            akun_perkiraan_id=coa.id,
+            saldo=coa.saldo or 0,
+            status="AKTIF",
+        )
+        db.add(new_item)
+        created_detail.append({"kode_coa": coa.kode, "nama": coa.nama, "jenis": jenis.value, "kode_kas_bank": new_item.kode})
+        next_seq += 1
+
+    db.commit()
+
+    return {
+        "created": len(created_detail),
+        "skipped": len(already_linked_ids),
+        "detail": created_detail,
+    }
