@@ -206,3 +206,164 @@ def get_accounting_health_summary_widget(db: Session) -> Dict:
             "total_checks": 0,
             "error": str(e),
         }
+
+
+# ==========================================
+# Phase I — Balance Sheet KPI Widgets (Catatan Financial Statements §3 item 8-9)
+# ==========================================
+
+def get_balance_sheet_kpi_widget(
+    db: Session,
+    as_of: Optional[datetime] = None,
+) -> Dict:
+    """Balance Sheet KPI untuk dashboard (Catatan §3 item 8).
+
+    Return AR outstanding, AP outstanding, Cash total, Total Assets.
+
+    Source:
+    - AR outstanding: sum of SalesInvoice outstanding (from aging_service)
+    - AP outstanding: sum of PurchaseInvoice outstanding (from aging_service)
+    - Cash total: sum of KasBankAkun GL balance (from POSTED journals)
+    - Total Assets: from Balance Sheet report (get_neraca)
+    """
+    try:
+        from app.services.laporan_service import get_neraca
+        from app.services.reporting_ledger import local_datetime
+        from app.models.transaksi.jurnal import JurnalUmum, StatusJurnal
+        from app.models.detail.jurnal_detail import JurnalDetail
+        from app.models.master.kas_bank_akun import KasBankAkun
+
+        if as_of is None:
+            as_of = local_datetime(datetime.utcnow())
+
+        # === 1. AR outstanding (from aging) ===
+        try:
+            from app.services.aging_service import aging
+            ar_aging = aging(db, 'piutang', as_of)
+            ar_outstanding = sum(
+                Decimal(str(r.get('sisa_tagihan', 0)))
+                for p in ar_aging.get('items', [])
+                for r in p.get('rincian', [])
+            )
+        except Exception:
+            ar_outstanding = Decimal('0')
+
+        # === 2. AP outstanding (from aging) ===
+        try:
+            ap_aging = aging(db, 'hutang', as_of)
+            ap_outstanding = sum(
+                Decimal(str(r.get('sisa_tagihan', 0)))
+                for p in ap_aging.get('items', [])
+                for r in p.get('rincian', [])
+            )
+        except Exception:
+            ap_outstanding = Decimal('0')
+
+        # === 3. Cash total (from GL) ===
+        try:
+            cash_account_ids = [
+                r[0] for r in db.query(KasBankAkun.akun_perkiraan_id).all() if r[0]
+            ]
+            if cash_account_ids:
+                row = (
+                    db.query(
+                        func.coalesce(func.sum(JurnalDetail.debit), 0),
+                        func.coalesce(func.sum(JurnalDetail.kredit), 0),
+                    )
+                    .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+                    .filter(
+                        JurnalDetail.akun_perkiraan_id.in_(cash_account_ids),
+                        JurnalUmum.status == StatusJurnal.POSTED,
+                        JurnalUmum.tanggal <= as_of,
+                    )
+                    .first()
+                )
+                cash_total = Decimal(str(row[0] or 0)) - Decimal(str(row[1] or 0))
+            else:
+                cash_total = Decimal('0')
+        except Exception:
+            cash_total = Decimal('0')
+
+        # === 4. Total Assets (from Balance Sheet) ===
+        try:
+            neraca = get_neraca(db, as_of)
+            total_assets = Decimal(str(neraca.get('total_aset', 0)))
+        except Exception:
+            total_assets = Decimal('0')
+
+        return {
+            "ar_outstanding": str(ar_outstanding),
+            "ap_outstanding": str(ap_outstanding),
+            "cash_total": str(cash_total),
+            "total_assets": str(total_assets),
+            "as_of": as_of.isoformat() if as_of else None,
+        }
+    except Exception as e:
+        logger.error(f"Error getting balance sheet KPI: {e}")
+        return {
+            "ar_outstanding": "0",
+            "ap_outstanding": "0",
+            "cash_total": "0",
+            "total_assets": "0",
+            "as_of": as_of.isoformat() if as_of else None,
+            "error": str(e),
+        }
+
+
+def get_margin_widget(
+    db: Session,
+    bulan: int,
+    tahun: int,
+) -> Dict:
+    """Gross Margin % dan Net Margin % untuk dashboard (Catatan §3 item 9).
+
+    Source: dari get_laba_rugi (GL-based, bukan invoice).
+    """
+    try:
+        from app.services.laporan_service import get_laba_rugi
+        from app.services.reporting_ledger import month_bounds
+
+        date_from, date_to = month_bounds(tahun, bulan)
+        lr = get_laba_rugi(db, date_from, date_to)
+
+        total_pendapatan = Decimal(str(lr.get('total_pendapatan', 0)))
+        total_hpp = Decimal(str(lr.get('total_hpp', 0)))
+        total_beban = Decimal(str(lr.get('total_beban', 0)))
+        laba_kotor = Decimal(str(lr.get('laba_kotor', 0)))
+        laba_bersih = Decimal(str(lr.get('laba_bersih', 0)))
+
+        # Gross Margin = (Revenue - COGS) / Revenue * 100
+        gross_margin_pct = (
+            (laba_kotor / total_pendapatan * 100).quantize(Decimal('0.01'))
+            if total_pendapatan > 0 else Decimal('0')
+        )
+
+        # Net Margin = Net Profit / Revenue * 100
+        net_margin_pct = (
+            (laba_bersih / total_pendapatan * 100).quantize(Decimal('0.01'))
+            if total_pendapatan > 0 else Decimal('0')
+        )
+
+        return {
+            "total_pendapatan": str(total_pendapatan),
+            "total_hpp": str(total_hpp),
+            "total_beban": str(total_beban),
+            "laba_kotor": str(laba_kotor),
+            "laba_bersih": str(laba_bersih),
+            "gross_margin_pct": str(gross_margin_pct),
+            "net_margin_pct": str(net_margin_pct),
+            "periode": {"bulan": bulan, "tahun": tahun},
+        }
+    except Exception as e:
+        logger.error(f"Error getting margin widget: {e}")
+        return {
+            "total_pendapatan": "0",
+            "total_hpp": "0",
+            "total_beban": "0",
+            "laba_kotor": "0",
+            "laba_bersih": "0",
+            "gross_margin_pct": "0",
+            "net_margin_pct": "0",
+            "periode": {"bulan": bulan, "tahun": tahun},
+            "error": str(e),
+        }

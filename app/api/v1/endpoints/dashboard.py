@@ -56,6 +56,10 @@ def get_dashboard_summary(
     low_stock = dashboard_service.get_low_stock_widget(db, limit=10)
     accounting_health = dashboard_service.get_accounting_health_summary_widget(db)
 
+    # Phase I — 2 new widgets
+    balance_sheet_kpi = dashboard_service.get_balance_sheet_kpi_widget(db, dt)
+    margin = dashboard_service.get_margin_widget(db, bulan, tahun)
+
     return DashboardSummaryResponse(
         laba_rugi=laba_rugi,
         cashflow=cashflow,
@@ -66,4 +70,6 @@ def get_dashboard_summary(
         inventory_value=inventory_value,
         low_stock=low_stock,
         accounting_health=accounting_health,
+        balance_sheet_kpi=balance_sheet_kpi,
+        margin=margin,
     )

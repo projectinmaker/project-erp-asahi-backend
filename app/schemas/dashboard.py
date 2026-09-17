@@ -120,3 +120,6 @@ class DashboardSummaryResponse(BaseSchema):
     inventory_value: Optional[InventoryValueWidget] = None
     low_stock: Optional[LowStockWidget] = None
     accounting_health: Optional[AccountingHealthSummaryWidget] = None
+    # Phase I — 2 widget baru
+    balance_sheet_kpi: Optional[dict] = None
+    margin: Optional[dict] = None
