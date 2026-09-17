@@ -16,7 +16,7 @@ class TransferBank(BaseModel, BaseMixin):
     nilai_transfer = Column(Numeric(18, 2), default=0, nullable=False)
     biaya_transfer = Column(Numeric(18, 2), default=0, nullable=False)
     informasi = Column(Text, nullable=True)
-    auto_post_jurnal = Column(Boolean, default=True, nullable=False)
+    auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Phase G: deprecated
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
     status = Column(SQLEnum(StatusTransaksi), default=StatusTransaksi.DRAFT, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)

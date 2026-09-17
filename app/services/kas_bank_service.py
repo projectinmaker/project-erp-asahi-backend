@@ -117,6 +117,10 @@ def create_pembayaran(
             (canonical) di jurnal. Default False.
     """
     try:
+        # Phase G: validate kas_bank ACTIVE
+        from app.services.cash_bank_validation import validate_active_kas_bank
+        kas_bank = validate_active_kas_bank(db, kas_bank_id, "Pembayaran Kas")
+
         # Generate nomor bukti
         no_bukti = get_nomor_dokumen(
             db, PembayaranKas, prefix="PAY",
@@ -125,11 +129,6 @@ def create_pembayaran(
 
         # Hitung total dari rincian
         total_nilai = sum(Decimal(str(r.get("nilai", 0))) for r in rincian_data)
-
-        # Validasi: dari_kas_bank harus ada
-        kas_bank = db.query(KasBankAkun).filter(KasBankAkun.id == kas_bank_id).first()
-        if not kas_bank:
-            raise ValueError(f"Kas/Bank dengan ID {kas_bank_id} tidak ditemukan")
 
         # Buat header
         pembayaran = PembayaranKas(
@@ -308,16 +307,16 @@ def create_penerimaan(
             (canonical) di jurnal. Default False.
     """
     try:
+        # Phase G: validate kas_bank ACTIVE
+        from app.services.cash_bank_validation import validate_active_kas_bank
+        kas_bank = validate_active_kas_bank(db, kas_bank_id, "Penerimaan Kas")
+
         no_bukti = get_nomor_dokumen(
             db, PenerimaanKas, prefix="REC",
             no_column="no_bukti", tanggal=tanggal.date()
         )
 
         total_nilai = sum(Decimal(str(r.get("nilai", 0))) for r in rincian_data)
-
-        kas_bank = db.query(KasBankAkun).filter(KasBankAkun.id == kas_bank_id).first()
-        if not kas_bank:
-            raise ValueError(f"Kas/Bank dengan ID {kas_bank_id} tidak ditemukan")
 
         penerimaan = PenerimaanKas(
             no_bukti=no_bukti,
@@ -476,24 +475,34 @@ def create_transfer(
     auto_post_jurnal: bool = True,
     created_by: UUID = None,
 ) -> TransferBank:
-    """Buat TransferBank baru + auto-post jurnal."""
+    """Buat TransferBank baru + auto-post jurnal.
+
+    Phase G fix (Catatan Cash/Bank §3 item 3,4,10):
+    - Integrate validate_active_kas_bank for both dari & ke
+    - Integrate validate_transfer_banks_different
+    - Integrate validate_transfer_amount
+    """
+    from app.services.cash_bank_validation import (
+        validate_active_kas_bank,
+        validate_transfer_banks_different,
+        validate_transfer_amount,
+    )
+
     try:
-        # Validasi: dari dan ke harus berbeda
-        if dari_kas_bank_id == ke_kas_bank_id:
-            raise ValueError("Kas/Bank asal dan tujuan tidak boleh sama")
+        # Phase G: validate banks different
+        validate_transfer_banks_different(dari_kas_bank_id, ke_kas_bank_id, "Transfer Bank")
+
+        # Phase G: validate both banks ACTIVE
+        dari_kb = validate_active_kas_bank(db, dari_kas_bank_id, "Transfer Bank (asal)")
+        ke_kb = validate_active_kas_bank(db, ke_kas_bank_id, "Transfer Bank (tujuan)")
+
+        # Phase G: validate amount > 0 and fee >= 0
+        validate_transfer_amount(nilai_transfer, biaya_transfer, "Transfer Bank")
 
         no_transfer = get_nomor_dokumen(
             db, TransferBank, prefix="TRF",
             no_column="no_transfer", tanggal=tanggal.date()
         )
-
-        # Validasi kas bank
-        dari_kb = db.query(KasBankAkun).filter(KasBankAkun.id == dari_kas_bank_id).first()
-        ke_kb = db.query(KasBankAkun).filter(KasBankAkun.id == ke_kas_bank_id).first()
-        if not dari_kb:
-            raise ValueError(f"Kas/Bank asal ID {dari_kas_bank_id} tidak ditemukan")
-        if not ke_kb:
-            raise ValueError(f"Kas/Bank tujuan ID {ke_kas_bank_id} tidak ditemukan")
 
         transfer = TransferBank(
             no_transfer=no_transfer,
