@@ -40,7 +40,7 @@ class AsetTetapBase(BaseSchema):
     nilai_perolehan: Decimal = Decimal("0")
     tanggal_mulai: datetime
     catatan: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
 
 
 class AsetTetapCreate(AsetTetapBase):

@@ -66,7 +66,7 @@ class PembayaranKasBase(BaseSchema):
     no_cek: Optional[str] = None
     penerima: Optional[str] = None
     catatan: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
 
 
 class PembayaranKasCreate(PembayaranKasBase):
@@ -124,7 +124,7 @@ class PenerimaanKasBase(BaseSchema):
     no_cek: Optional[str] = None
     pemberi: Optional[str] = None
     catatan: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
 
 
 class PenerimaanKasCreate(PenerimaanKasBase):
@@ -168,7 +168,7 @@ class TransferBankBase(BaseSchema):
     nilai_transfer: Decimal = Decimal("0")
     biaya_transfer: Decimal = Decimal("0")
     informasi: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
 
 
 class TransferBankCreate(TransferBankBase):

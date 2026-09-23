@@ -189,7 +189,7 @@ def create_penyesuaian(
     qty: int,
     biaya_satuan: Decimal = Decimal("0"),
     alasan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
     gudang_id: Optional[UUID] = None,
     tanggal_kedaluwarsa: Optional[date] = None,

@@ -88,7 +88,7 @@ def create_aset(
     kuantitas: int = 1,
     nilai_perolehan: Decimal = Decimal("0"),
     catatan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
 ) -> AsetTetap:
     """Buat AsetTetap baru."""

@@ -162,7 +162,7 @@ def create_sales_order(
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
     keterangan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
 ) -> SalesOrder:
     """Buat SalesOrder baru beserta detail + biaya tambahan.
@@ -402,7 +402,7 @@ def create_sales_invoice(
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
     keterangan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
     tanggal_jatuh_tempo=None,
 ) -> SalesInvoice:
@@ -666,7 +666,7 @@ def create_sales_retur(
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
     keterangan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
     gudang_id: Optional[UUID] = None,
     pengiriman_id: Optional[UUID] = None,

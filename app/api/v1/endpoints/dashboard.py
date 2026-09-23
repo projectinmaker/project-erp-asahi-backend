@@ -48,7 +48,10 @@ def get_dashboard_summary(
     cashflow = laporan_service.get_dashboard_cashflow(db, bulan, tahun)
     beban_biaya = laporan_service.get_dashboard_beban_biaya(db, bulan, tahun)
     tren_penjualan = laporan_service.get_dashboard_tren_penjualan(db, bulan, tahun)
-    faktur_jt = laporan_service.get_dashboard_faktur_jatuh_tempo(db, dt)
+    # P0-03 (Re-Audit §7): Faktur Jatuh Tempo widget harus hanya menampilkan
+    # invoice yang overdue (jatuh_tempo < as_of). Sebelumnya endpoint memanggil
+    # tanpa overdue_only=True, sehingga invoice belum jatuh tempo ikut masuk.
+    faktur_jt = laporan_service.get_dashboard_faktur_jatuh_tempo(db, dt, overdue_only=True)
     aktivitas = laporan_service.get_dashboard_aktivitas_terbaru(db, dt)
 
     # Phase 10 — 3 new widgets

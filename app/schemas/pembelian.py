@@ -282,7 +282,7 @@ class PurchaseReturBase(BaseSchema):
     alamat: Optional[str] = None
     ppn: Decimal = Decimal("11")
     keterangan: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
 
 
 class PurchaseReturCreate(PurchaseReturBase):

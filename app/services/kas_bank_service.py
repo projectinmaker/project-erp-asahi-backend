@@ -101,7 +101,7 @@ def create_pembayaran(
     no_cek: Optional[str] = None,
     penerima: Optional[str] = None,
     catatan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: UUID = None,
     is_settlement: bool = False,
 ) -> PembayaranKas:
@@ -295,7 +295,7 @@ def create_penerimaan(
     no_cek: Optional[str] = None,
     pemberi: Optional[str] = None,
     catatan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: UUID = None,
     is_settlement: bool = False,
 ) -> PenerimaanKas:
@@ -472,7 +472,7 @@ def create_transfer(
     nilai_transfer: Decimal,
     biaya_transfer: Decimal = Decimal("0"),
     informasi: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: UUID = None,
 ) -> TransferBank:
     """Buat TransferBank baru + auto-post jurnal.

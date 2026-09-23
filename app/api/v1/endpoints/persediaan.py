@@ -3,8 +3,8 @@ Persediaan Endpoints.
 PenyesuaianStok, PemindahanBarang, PermintaanBarang.
 """
 
-from datetime import date
-from typing import Optional
+from datetime import date, datetime
+from typing import Optional, Dict, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,8 +19,55 @@ from app.schemas.persediaan import (
     PermintaanBarangCreate, PermintaanBarangUpdate, PermintaanBarangResponse,
 )
 from app.services import persediaan_service as svc
+from app.services import dashboard_service
 
 router = APIRouter()
+
+
+# ==========================================
+# INVENTORY VALUATION SUMMARY (P0-02 Re-Audit)
+# ==========================================
+# Catatan Audit Re-Audit §6:
+#   "Inventory master summary harus consume backend aggregate:
+#    inventory valuation summary, low stock summary
+#    bukan menghitung current page."
+#
+# Endpoint ini menyediakan kedua aggregate dalam satu panggilan
+# supaya halaman Inventory master tidak perlu menghitung dari
+# paginated `data` (yang menghasilkan KPI salah).
+@router.get("/valuation-summary")
+def get_inventory_valuation_summary(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Aggregate inventory valuation + low stock summary (backend full dataset).
+
+    Dipakai oleh frontend Inventory master page untuk KPI cards:
+        - Total Nilai Persediaan (SUM StockBalance.nilai)
+        - Stok Menipis (count of low stock items)
+
+    Return shape:
+        {
+            "inventory_value": {
+                "total_nilai": "12345678.00",
+                "total_qty": 500,
+                "barang_count": 25,
+                "as_of": "2026-09-18T..."
+            },
+            "low_stock": {
+                "count": 5,
+                "items": [ {barang_id, kode, nama, stok, stok_minimum, selisih}, ... ]
+            }
+        }
+    """
+    as_of = datetime.now()
+    inventory_value = dashboard_service.get_inventory_value_widget(db, as_of=as_of)
+    low_stock = dashboard_service.get_low_stock_widget(db, limit=10)
+    return {
+        "inventory_value": inventory_value,
+        "low_stock": low_stock,
+    }
+
 
 
 # ==========================================

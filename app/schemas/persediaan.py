@@ -49,7 +49,7 @@ class PenyesuaianStokBase(BaseSchema):
     qty: int = 0
     biaya_satuan: Decimal = Decimal("0")
     alasan: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
     # NEW Phase A — FEFO adjustment expiry
     tanggal_kedaluwarsa: Optional[date] = None
 

@@ -207,7 +207,7 @@ class SalesInvoiceBase(BaseSchema):
     diskon_global: Optional[Decimal] = Decimal("0")
     ppn: Decimal = Decimal("11")
     keterangan: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
 
 
 class SalesInvoiceCreate(SalesInvoiceBase):
@@ -293,7 +293,7 @@ class SalesReturBase(BaseSchema):
     diskon_global: Optional[Decimal] = Decimal("0")
     ppn: Decimal = Decimal("11")
     keterangan: Optional[str] = None
-    auto_post_jurnal: bool = True
+    auto_post_jurnal: bool = False
 
 
 class SalesReturCreate(SalesReturBase):

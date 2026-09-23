@@ -181,7 +181,7 @@ def create_purchase_order(
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
     keterangan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
 ) -> PurchaseOrder:
     """Buat PurchaseOrder baru beserta detail + biaya tambahan.
@@ -387,7 +387,7 @@ def create_purchase_invoice(
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
     keterangan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
     tanggal_jatuh_tempo=None,
     syarat_bayar_id=None,
@@ -611,7 +611,7 @@ def create_purchase_retur(
     alamat: Optional[str] = None,
     ppn: Decimal = Decimal("11"),
     keterangan: Optional[str] = None,
-    auto_post_jurnal: bool = True,
+    auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
     purchase_invoice_id=None,
     gudang_id: Optional[UUID] = None,
@@ -1148,12 +1148,50 @@ def post_purchase_invoice(db: Session, inv, created_by):
 
     clearing = receipt_control.clearing_entries(db, inv, dasar_pajak)
     if clearing is None:
+        # Legacy path: tidak ada GRNI & tidak ada receipts sama sekali
         clearing = {get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}"): dasar_pajak}
         description = f"Pembelian PINV {no_form} - {supplier.nama}"
     else:
         description = f"Clearing GRNI PINV {no_form}"
+
     entries = [JurnalEntryItem(akun_perkiraan_id=account_id, debit=value,
                               keterangan=description) for account_id, value in clearing.items()]
+
+    # P0-01: Handle unmatched portion (partial three-way match).
+    # Kalau total clearing < dasar_pajak, berarti ada invoice lines yang tidak
+    # dapat match ke receipt manapun (misalnya: barang yang belum diterima, atau
+    # supplier invoice datang sebelum receipt). Sisa tersebut di-posting sebagai
+    # direct purchase debit ke akun PEMBELIAN.
+    total_clearing = sum(clearing.values(), Decimal(0))
+    unmatched_portion = Decimal(dasar_pajak) - total_clearing
+    if unmatched_portion > 0:
+        # Cek apakah akun PEMBELIAN sudah ada di clearing (kasus: ada direct + clearing mix)
+        existing_pembelian = next(
+            ((akun_id, val) for akun_id, val in clearing.items()
+             if akun_id == get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}")),
+            None,
+        )
+        if existing_pembelian:
+            # Sudah ada — tambahkan unmatched portion ke akun yang sama
+            # (rebuild entry list dengan nilai yang di-update)
+            akun_pembelian, _ = existing_pembelian
+            entries = [
+                JurnalEntryItem(
+                    akun_perkiraan_id=akun_pembelian,
+                    debit=(value + unmatched_portion) if akun_id == akun_pembelian else value,
+                    keterangan=description if akun_id != akun_pembelian
+                               else f"Pembelian PINV {no_form} - {supplier.nama} (sebagian)",
+                )
+                for akun_id, value in clearing.items()
+            ]
+        else:
+            # Tambah entry baru untuk akun PEMBELIAN
+            entries.append(JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}"),
+                debit=unmatched_portion,
+                keterangan=f"Pembelian PINV {no_form} - {supplier.nama} (tanpa receipt)",
+            ))
+
     entries.append(JurnalEntryItem(akun_perkiraan_id=supplier.akun_hutang_id,
                                   kredit=grand_total, keterangan=f"Utang PINV {no_form}"))
     if total_ppn > 0:
