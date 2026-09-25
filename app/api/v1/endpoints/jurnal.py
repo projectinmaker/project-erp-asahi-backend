@@ -174,33 +174,12 @@ def create_jurnal_manual(
 
     User menginput sendiri baris-baris debit dan kredit.
     Sistem akan:
-    1. Validasi balance (total debit == total kredit)
+    1. Bulatkan tiap nominal ke dua desimal (HALF_UP), lalu validasi balance
     2. Generate nomor jurnal otomatis
     3. Set tipe_transaksi = 'MANUAL' dan ref_module = MANUAL
     """
-    if not data_in.details or len(data_in.details) < 2:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Minimal 2 baris jurnal (debit dan kredit)",
-        )
-
-    # Validasi balance
-    total_debit = sum(d.debit for d in data_in.details)
-    total_kredit = sum(d.kredit for d in data_in.details)
-    if total_debit != total_kredit:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Jurnal tidak balance: total debit={total_debit}, total kredit={total_kredit}",
-        )
-
-    # Validasi tidak ada baris yang debit dan kredit keduanya 0
-    for i, d in enumerate(data_in.details):
-        if d.debit == 0 and d.kredit == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Baris {i+1}: debit dan kredit tidak boleh keduanya 0",
-            )
-
+    # auto_posting_jurnal validates each line after HALF_UP normalization,
+    # using the same validator as manual edit and workflow posting.
     # Convert ke JurnalEntryItem
     entries = [
         JurnalEntryItem(
