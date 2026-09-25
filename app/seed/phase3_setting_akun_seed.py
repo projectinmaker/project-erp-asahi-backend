@@ -189,6 +189,11 @@ def seed_phase3_coa_and_settings():
             # -- KEWAJIBAN --
             # PPN Keluaran (under HUTANG PAJAK 230)
             ("230", "100", "001", "PPN Keluaran", HeaderCOA.KEWAJIBAN, SaldoNormal.KREDIT, "230"),
+            # Penerimaan Dalam Proses / GRNI (under Hutang Biaya/Akrual 214).
+            # Akun perantara penerimaan barang yang belum diinvois. SETTING-nya
+            # tetap TIDAK di-auto-link (harus dikonfigurasi eksplisit via
+            # halaman Setting Akun); seeder hanya memastikan akunnya tersedia.
+            ("214", "007", "", "Penerimaan Dalam Proses (GRNI)", HeaderCOA.KEWAJIBAN, SaldoNormal.KREDIT, "214"),
 
             # -- PENDAPATAN --
             ("400", "100", "001", "Pendapatan Penjualan", HeaderCOA.PENDAPATAN, SaldoNormal.KREDIT, "400"),
@@ -223,6 +228,7 @@ def seed_phase3_coa_and_settings():
         parent_name_fallback = {
             "150": "PAJAK DIBAYAR DIMUKA",
             "131": "PERSEDIAAN",
+            "214": "HUTANG BIAYA",
             "230": "HUTANG PAJAK",
             "400": "PENDAPATAN",
             "500": "HARGA POKOK",
@@ -311,10 +317,13 @@ def seed_phase3_coa_and_settings():
             # NOTE: kode 100.000.000, BUKAN 111.000.000 (itu Piutang Usaha) — sudah
             # dicek langsung terhadap COA_ASAHI_push_asahi_books.xlsx.
             ("KAS_DAN_SETARA_KAS", "Kas dan Setara Kas", "100", "000", "000"),
-            # NOTE: belum ada akun "Pendapatan Angkut" khusus di COA — dipakaikan
-            # sementara ke "Pendapatan (Biaya) Lainnya" (402.000.002). Redirect ke
-            # akun lain via halaman Setting Akun kalau mau akun khusus.
-            ("PENDAPATAN_ANGKUT", "Pendapatan Angkut", "402", "000", "002"),
+            # NOTE: ASAHI COA Revisi v2 tidak punya 402.000.002 "Pendapatan
+            # (Biaya) Lainnya" — padanannya di v2 adalah 421004 "Pendapatan
+            # Lain-lain" (grup 420000 "Pendapatan di Luar Usaha"). Kode legacy
+            # 402.000.002 dicoba sebagai kandidat cadangan (lihat
+            # setting_code_fallbacks) untuk DB COA lama. Redirect ke akun lain
+            # via halaman Setting Akun kalau mau akun khusus.
+            ("PENDAPATAN_ANGKUT", "Pendapatan Angkut", "421", "004", ""),
             # PENERIMAAN_DALAM_PROSES / Penerimaan Dalam Proses (GRNI):
             # Aktifkan secara eksplisit melalui PUT setting-akun dengan akun
             # kewajiban DETAIL khusus. Jangan gunakan default Hutang Usaha.
@@ -329,6 +338,14 @@ def seed_phase3_coa_and_settings():
             # Laba Ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
             ("LABA_DITAHAN", "Laba (Rugi) Ditahan", "321", "000", ""),
         ]
+
+        # Kandidat kode cadangan per-key (dicoba BILA kode utama tidak ketemu,
+        # sebelum fallback nama). Dipakai bila format COA berbeda antar versi.
+        setting_code_fallbacks = {
+            # PENDAPATAN_ANGKUT: v2 = 421004 "Pendapatan Lain-lain";
+            # COA legacy = 402.000.002 "Pendapatan (Biaya) Lainnya".
+            "PENDAPATAN_ANGKUT": [("402", "000", "002")],
+        }
 
         inserted_setting = 0
         updated_setting = 0
@@ -357,6 +374,17 @@ def seed_phase3_coa_and_settings():
             kode_flat = _kode(prefix3, mid3, seq3, "flat")
             kode_dotted = _kode(prefix3, mid3, seq3, "dotted")
             coa = _find_coa(db, kode_flat, kode_dotted)
+
+            # Kandidat kode cadangan (mis. format COA beda versi)
+            if not coa:
+                for fb_prefix, fb_mid, fb_seq in setting_code_fallbacks.get(key, []):
+                    coa = _find_coa(
+                        db,
+                        _kode(fb_prefix, fb_mid, fb_seq, "flat"),
+                        _kode(fb_prefix, fb_mid, fb_seq, "dotted"),
+                    )
+                    if coa:
+                        break
 
             if not coa:
                 # Fallback: cari by nama
