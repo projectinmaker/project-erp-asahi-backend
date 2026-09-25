@@ -66,7 +66,7 @@ def _update_manual(db, db_obj, data_in, actor):
         raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengedit draft')
     validate_periode_not_closed(db, data_in.tanggal)
     entries = [JurnalEntryItem(d.akun_perkiraan_id, d.debit, d.kredit, d.keterangan) for d in data_in.details]
-    debit, kredit = validate_entries(db, entries)
+    debit, kredit = validate_entries(db, entries, is_manual=True)
     db_obj.details.clear()
     db.flush()
     for e in entries:

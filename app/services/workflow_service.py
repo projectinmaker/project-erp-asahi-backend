@@ -197,7 +197,7 @@ def post_existing(db, obj, actor_id):
         from app.services.posting_service import validate_entries, JurnalEntryItem
         from app.models.transaksi.jurnal import StatusJurnal
         entries = [JurnalEntryItem(r.akun_perkiraan_id, r.debit, r.kredit) for r in obj.details]
-        debit, kredit = validate_entries(db, entries)
+        debit, kredit = validate_entries(db, entries, is_manual=True)
         if debit != obj.total_debit or kredit != obj.total_kredit:
             raise ValueError('Total jurnal draft tidak sesuai detail')
         obj.status = StatusJurnal.POSTED
