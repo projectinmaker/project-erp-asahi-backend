@@ -248,6 +248,16 @@ def create_sales_order(
         # Buat biaya tambahan
         _create_biaya_tambahan(db, so, biaya_data, "sales_order_id")
 
+        # Fix diskon global (temuan minor): total SO sebelumnya mengabaikan
+        # diskon_global — field hanya tersimpan tanpa memengaruhi total.
+        # refresh_totals menghitung ulang sub_total/total_diskon/total_ppn/
+        # grand_total dengan diskon baris + diskon global (konsisten invoice).
+        # flush dulu supaya relationship .details terisi dari pending inserts
+        # (pola yang sama dengan create_sales_invoice).
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(so)
+
         # Order tidak mengakui pendapatan/piutang atau pembelian/utang.
         db.commit()
         db.refresh(so)
@@ -306,6 +316,12 @@ def update_sales_order(
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+
+    # Fix diskon global: hitung ulang total bila diskon_global/ppn diubah —
+    # sebelumnya total lama (stale) tetap tersimpan meski persen berubah.
+    if diskon_global is not None or ppn is not None:
+        from app.services.document_totals import refresh_totals
+        refresh_totals(db_obj)
 
     db.add(db_obj)
     db.commit()
@@ -901,6 +917,15 @@ def create_pengiriman(
 ) -> PengirimanBarang:
     """Buat PengirimanBarang baru beserta detail.
     Tidak ada jurnal posting (pengiriman tidak mengubah keuangan langsung).
+
+    Fix persist sales_order_detail_id (temuan minor): field dari schema
+    PengirimanBarangDetailCreate sebelumnya diabaikan sehingga kolom DB
+    `sales_order_detail_id` selalu NULL dan validasi over-delivery per baris
+    (finish_pengiriman) tidak pernah aktif. Sekarang:
+    - disimpan ke baris detail (nullable, backward compatible)
+    - divalidasi: SO detail harus milik sales_order_id dokumen ini & barang sama
+    - over-delivery dicek agregat per SO line (menggabungkan duplikasi baris
+      dalam satu DO) sehingga tolakan terjadi lebih awal saat create
     """
     try:
         # Validasi pelanggan
@@ -913,6 +938,40 @@ def create_pengiriman(
             db, PengirimanBarang, prefix="KB",
             no_column="no_surat_jalan", tanggal=tanggal.date()
         )
+
+        # === Fix persist sales_order_detail_id: validasi referensi + over-delivery ===
+        from collections import defaultdict
+        from app.services.sales_validation import validate_over_delivery
+        from app.models.detail.sales_order_detail import SalesOrderDetail
+
+        so_qty_map: dict = defaultdict(int)
+        for d in details_data:
+            sod_id = d.get("sales_order_detail_id")
+            if not sod_id:
+                continue
+            sod = db.get(SalesOrderDetail, sod_id)
+            if sod is None or str(sod.sales_order_id) != str(sales_order_id):
+                raise ValueError(
+                    f"Baris detail menunjuk SalesOrderDetail yang tidak termasuk dalam "
+                    f"Sales Order dokumen ini. Pengiriman {no_surat_jalan} dibatalkan."
+                )
+            if str(sod.barang_id) != str(d.get("barang_id")):
+                raise ValueError(
+                    f"Barang pada baris detail tidak sama dengan barang di line SO "
+                    f"({sod.barang.kode if sod.barang else sod.barang_id}). "
+                    f"Pengiriman {no_surat_jalan} dibatalkan."
+                )
+            so_qty_map[sod_id] += int(d["qty"])
+
+        for sod_id, qty_aggregate in so_qty_map.items():
+            try:
+                validate_over_delivery(
+                    db, sod_id, qty_aggregate,
+                    context=f"Pengiriman {no_surat_jalan}",
+                )
+            except Exception as e:
+                # HTTPException dari validate_over_delivery → ValueError (400)
+                raise ValueError(str(getattr(e, "detail", str(e))))
 
         # Buat header
         pengiriman = PengirimanBarang(
@@ -937,6 +996,7 @@ def create_pengiriman(
                 barang_id=d["barang_id"],
                 qty=int(d["qty"]),
                 satuan_id=d["satuan_id"],
+                sales_order_detail_id=d.get("sales_order_detail_id"),
             )
             db.add(detail)
 

@@ -3,7 +3,7 @@ Persediaan Endpoints.
 PenyesuaianStok, PemindahanBarang, PermintaanBarang.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional, Dict, Any
 from uuid import UUID
 
@@ -60,7 +60,12 @@ def get_inventory_valuation_summary(
             }
         }
     """
-    as_of = datetime.now()
+    # Fix zona waktu (temuan "shift tanggal jam ≥17:00 WIB"): datetime.now()
+    # tanpa tzinfo menghasilkan naive datetime di zona server lokal. Di server
+    # dengan TZ Asia/Jakarta & sesi DB UTC, nilai jam ≥17:00 WIB ditafsirkan
+    # sebagai UTC sehingga "as of" bergeser ke hari berikutnya. Selalu pakai
+    # timezone-aware now agar konversi WIB di lapisan layanan akurat.
+    as_of = datetime.now(timezone.utc)
     inventory_value = dashboard_service.get_inventory_value_widget(db, as_of=as_of)
     low_stock = dashboard_service.get_low_stock_widget(db, limit=10)
     return {

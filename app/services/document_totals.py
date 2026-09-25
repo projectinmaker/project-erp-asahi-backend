@@ -18,13 +18,20 @@ def money(value):
 
 def refresh_totals(obj):
     name = obj.__tablename__
-    if name in ('sales_invoice', 'purchase_invoice', 'sales_retur', 'purchase_retur'):
+    # Dokumen posting (strict: qty & detail wajib) + dokumen order
+    # (toleran: draft order lama boleh punya qty 0; tanpa detail → skip recompute).
+    strict_docs = ('sales_invoice', 'purchase_invoice', 'sales_retur', 'purchase_retur')
+    order_docs = ('sales_order', 'purchase_order')
+    if name in strict_docs or name in order_docs:
+        strict = name in strict_docs
         if not obj.details:
-            raise ValueError('Minimal satu detail transaksi diperlukan')
+            if strict:
+                raise ValueError('Minimal satu detail transaksi diperlukan')
+            return  # Order tanpa detail: tidak ada total yang bisa direcompute
         subtotal = ZERO
         discount = ZERO
         for row in obj.details:
-            if row.qty <= 0:
+            if strict and row.qty <= 0:
                 raise ValueError('Kuantitas harus lebih dari nol')
             gross = money(amount(row.harga) * row.qty)
             pct = amount(getattr(row, 'diskon', 0))
@@ -38,9 +45,11 @@ def refresh_totals(obj):
         tax_pct = amount(obj.ppn)
         if global_pct > 100 or tax_pct > 100:
             raise ValueError('Diskon global dan PPN harus antara 0 dan 100 persen')
+        # Diskon global diterapkan setelah diskon baris (sama seperti invoice):
+        # base = (gross - diskon baris) * (1 - diskon global %)
         discount += money((subtotal - discount) * global_pct / 100)
         base = subtotal - discount
-        fees = sum((money(amount(r.jumlah)) for r in getattr(obj, 'biaya_tambahan', [])), ZERO)
+        fees = sum((money(amount(r.jumlah)) for r in getattr(obj, 'biaya_tambahan', []) or []), ZERO)
         obj.sub_total = subtotal
         if hasattr(obj, 'total_diskon'):
             obj.total_diskon = discount

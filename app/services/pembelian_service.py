@@ -252,6 +252,16 @@ def create_purchase_order(
         # Buat biaya tambahan
         _create_biaya_tambahan(db, po, biaya_data, "purchase_order_id")
 
+        # Fix diskon global (temuan minor): total PO sebelumnya mengabaikan
+        # diskon_global — field hanya tersimpan tanpa memengaruhi total.
+        # refresh_totals menghitung ulang sub_total/total_diskon/total_ppn/
+        # grand_total dengan diskon baris + diskon global (konsisten invoice).
+        # flush dulu supaya relationship .details terisi dari pending inserts
+        # (pola yang sama dengan create_sales_invoice).
+        from app.services.document_totals import refresh_totals
+        db.flush()
+        refresh_totals(po)
+
         # Order tidak mengakui pendapatan/piutang atau pembelian/utang.
         db.commit()
         db.refresh(po)
@@ -298,6 +308,12 @@ def update_purchase_order(
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+
+    # Fix diskon global: hitung ulang total bila diskon_global/ppn diubah —
+    # sebelumnya total lama (stale) tetap tersimpan meski persen berubah.
+    if diskon_global is not None or ppn is not None:
+        from app.services.document_totals import refresh_totals
+        refresh_totals(db_obj)
 
     db.add(db_obj)
     db.commit()
