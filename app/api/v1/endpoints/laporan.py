@@ -445,19 +445,19 @@ def get_accounting_health_endpoint(
     10. Changes in Equity Closing = Balance Sheet Equity
     11. Cash Flow Movement (Opening + Change - Ending = 0)
 
-    Response:
+    Response (camelCase — kontrak frontend reports/accounting-health.tsx):
     {
-        "as_of": "2026-09-15T...",
-        "overall_status": "HEALTHY" | "ISSUES_FOUND",
+        "asOf": "2026-09-15T...",
+        "overallStatus": "HEALTHY" | "ISSUES_FOUND",
         "reconciliations": [
             {"name": "Trial Balance", "status": "MATCH", "selisih": "0.00", "detail": "..."},
             ...
         ],
         "summary": {
-            "total_checks": 11,
-            "match_count": 10,
-            "mismatch_count": 1,
-            "not_configured_count": 0
+            "totalChecks": 11,
+            "matchCount": 10,
+            "mismatchCount": 1,
+            "notConfiguredCount": 0
         }
     }
     """

@@ -64,6 +64,10 @@ def create_aset(
             catatan=data_in.catatan,
             auto_post_jurnal=data_in.auto_post_jurnal,
             created_by=current_user.id,
+            # === Phase 7 — acquisition source trace (Roadmap §24) ===
+            acquisition_source_type=data_in.acquisition_source_type,
+            acquisition_source_id=data_in.acquisition_source_id,
+            acquisition_date=data_in.acquisition_date,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -167,31 +171,31 @@ def get_rekonsiliasi_aset(
     2. Sum(akumulasi_penyusutan) dari AsetTetap
        vs Sum(kredit - debit) di GL untuk akun akumulasi penyusutan (ACCUM_DEPR)
 
-    Response:
+    Response (camelCase — kontrak frontend reports/asset-reconciliation.tsx):
     {
         "basis": "CURRENT_ASSET_REGISTER_VS_ALL_POSTED_JOURNALS",
-        "as_of": "2026-09-15T...",
+        "asOf": "2026-09-15T...",
         "summary": {
-            "total_nilai_perolehan_register": "12345678.00",
-            "total_akumulasi_penyusutan_register": "3456789.00",
-            "total_nilai_buku_register": "8888889.00",
-            "total_asset_count": 15
+            "totalNilaiPerolehanRegister": "12345678.00",
+            "totalAkumulasiPenyusutanRegister": "3456789.00",
+            "totalNilaiBukuRegister": "8888889.00",
+            "totalAssetCount": 15
         },
-        "per_akun": [
+        "perAkun": [
             {
-                "akun_aset_id": "uuid",
-                "akun_aset_kode": "121001",
-                "akun_aset_nama": "Bangunan",
-                "nilai_perolehan_register": "5000000.00",
-                "saldo_gl_cost": "5000000.00",
-                "selisih_cost": "0.00",
-                "akun_akumulasi_id": "uuid",
-                "akun_akumulasi_kode": "122001",
-                "akun_akumulasi_nama": "Akumulasi Penyusutan Bangunan",
-                "akumulasi_penyusutan_register": "1000000.00",
-                "saldo_gl_accum": "1000000.00",
-                "selisih_accum": "0.00",
-                "asset_count": 3
+                "akunAsetId": "uuid",
+                "akunAsetKode": "121001",
+                "akunAsetNama": "Bangunan",
+                "nilaiPerolehanRegister": "5000000.00",
+                "saldoGlCost": "5000000.00",
+                "selisihCost": "0.00",
+                "akunAkumulasiId": "uuid",
+                "akunAkumulasiKode": "122001",
+                "akunAkumulasiNama": "Akumulasi Penyusutan Bangunan",
+                "akumulasiPenyusutanRegister": "1000000.00",
+                "saldoGlAccum": "1000000.00",
+                "selisihAccum": "0.00",
+                "assetCount": 3
             },
             ...
         ],
@@ -221,13 +225,13 @@ def get_ringkasan_rekonsiliasi_aset(
 
     Dipakai di dashboard / health check.
 
-    Response:
+    Response (camelCase):
     {
         "basis": "CURRENT_ASSET_REGISTER_VS_ALL_POSTED_JOURNALS",
-        "as_of": "2026-09-15T...",
+        "asOf": "2026-09-15T...",
         "summary": { ... },
-        "reconciliation_status": "MATCH" | "MISMATCH",
-        "akun_count": 5
+        "reconciliationStatus": "MATCH" | "MISMATCH",
+        "akunCount": 5
     }
     """
     from app.services.asset_register_reconciliation_service import (

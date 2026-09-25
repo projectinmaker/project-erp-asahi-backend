@@ -24,6 +24,18 @@ from app.schemas.penjualan import (
 )
 from app.services import penjualan_service as svc
 
+
+def _service_kwargs(fn, data: dict) -> dict:
+    """Saring field payload agar hanya parameter yang diterima service yang diteruskan.
+
+    Mencegah HTTP 500 (TypeError) ketika schema menerima field yang tidak
+    didukung signature service (mis. details/customer_po_*/currency pada PUT).
+    Field tak didukung diabaikan secara diam-diam (update header-only).
+    """
+    import inspect
+    params = inspect.signature(fn).parameters
+    return {k: v for k, v in data.items() if k in params}
+
 router = APIRouter()
 
 
@@ -107,12 +119,16 @@ def update_sales_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update data Sales Order (header only)."""
+    """Update data Sales Order (header only).
+
+    Field schema yang tidak didukung service (details/customer_po_*/currency)
+    diabaikan agar tidak memicu HTTP 500 — update bersifat header-only.
+    """
     item = svc.get_sales_order_by_id(db, so_id)
     if not item:
         raise HTTPException(status_code=404, detail="Sales Order tidak ditemukan")
 
-    update_data = data_in.model_dump(exclude_unset=True)
+    update_data = _service_kwargs(svc.update_sales_order, data_in.model_dump(exclude_unset=True))
     try:
         return svc.update_sales_order(db, db_obj=item, **update_data)
     except ValueError as e:
@@ -414,18 +430,17 @@ def update_pengiriman(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update data Pengiriman Barang (header + optional detail replacement).
+    """Update data Pengiriman Barang (header only).
 
-    Phase C fix: kirim `details` untuk replace seluruh detail pengiriman.
+    Catatan: service belum mendukung penggantian detail — field `details`
+    pada schema diabaikan (bukan diteruskan sebagai details_data yang tidak
+    dikenal service dan memicu HTTP 500).
     """
     item = svc.get_pengiriman_by_id(db, pengiriman_id)
     if not item:
         raise HTTPException(status_code=404, detail="Pengiriman Barang tidak ditemukan")
 
-    update_data = data_in.model_dump(exclude_unset=True)
-    # Phase C: translate schema field `details` → service param `details_data`
-    if 'details' in update_data:
-        update_data['details_data'] = update_data.pop('details')
+    update_data = _service_kwargs(svc.update_pengiriman, data_in.model_dump(exclude_unset=True))
     try:
         return svc.update_pengiriman(db, db_obj=item, **update_data)
     except ValueError as e:

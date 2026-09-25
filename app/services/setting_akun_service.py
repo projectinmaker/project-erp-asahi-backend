@@ -62,6 +62,39 @@ KEY_LABA_RUGI_TAHUN_BERJALAN = "LABA_RUGI_TAHUN_BERJALAN"
 # Akun laba ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
 KEY_LABA_DITAHAN = "LABA_DITAHAN"
 
+# Label untuk semua key setting yang dikenal sistem. Dipakai endpoint
+# PUT /master/setting-akun/{key} untuk MEMBUAT baris setting baru bila belum ada
+# (mis. PENDAPATAN_ANGKUT yang di-skip phase3 seed karena akun default legacy
+# 402000002 tidak ada di COA v2 — kini bisa dikonfigurasi langsung dari UI
+# Setting Akun tanpa harus menjalankan ulang seeder).
+KNOWN_SETTING_LABELS = {
+    KEY_PENDAPATAN_PENJUALAN: "Pendapatan Penjualan",
+    KEY_PPN_KELUARAN: "PPN Keluaran",
+    KEY_PPN_MASUKAN: "PPN Masukan",
+    KEY_RETUR_PENJUALAN: "Retur Penjualan",
+    KEY_RETUR_PEMBELIAN: "Retur Pembelian",
+    KEY_HPP_PENJUALAN: "Harga Pokok Penjualan",
+    KEY_PEMBELIAN: "Pembelian",
+    KEY_PERSEDIAAN_BAHAN_BAKU: "Persediaan Bahan Baku",
+    KEY_PERSEDIAAN_WIP: "Persediaan Barang Dalam Proses (WIP)",
+    KEY_PERSEDIAAN_BARANG_JADI: "Persediaan Barang Jadi",
+    KEY_BEBAN_ANGKUT_PEMBELIAN: "Beban Angkut Pembelian",
+    KEY_BEBAN_TRANSFER_BANK: "Beban Biaya Transfer Bank",
+    KEY_BEBAN_ADMIN: "Beban Biaya Admin",
+    KEY_PIUTANG_USAHA: "Piutang Usaha",
+    KEY_HUTANG_USAHA: "Hutang Usaha",
+    KEY_SELISIH_PERSEDIAAN: "Selisih Persediaan",
+    KEY_PERSEDIAAN_BAHAN_PEMBANTU: "Persediaan Bahan Pembantu",
+    KEY_LABA_RUGI_BERJALAN: "Laba Rugi Berjalan",
+    KEY_KAS_DAN_SETARA_KAS: "Kas dan Setara Kas",
+    KEY_PENDAPATAN_ANGKUT: "Pendapatan Angkut",
+    KEY_PENERIMAAN_DALAM_PROSES: "Penerimaan Dalam Proses (GRNI)",
+    KEY_BANK_CLEARING: "Akun Clearing / Ayat Silang",
+    KEY_HPP_PRODUK_JADI: "HPP Produk Jadi",
+    KEY_LABA_RUGI_TAHUN_BERJALAN: "Laba (Rugi) Tahun Berjalan",
+    KEY_LABA_DITAHAN: "Laba (Rugi) Ditahan",
+}
+
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)
 # Kalau user set key PIUTANG_USAHA ke akun yang bukan AR_CONTROL, service bisa
 # warning (tidak fatal, supaya flexible).

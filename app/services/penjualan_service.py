@@ -40,7 +40,6 @@ from app.services.setting_akun_service import (
     KEY_PPN_KELUARAN,
     KEY_RETUR_PENJUALAN,
     KEY_PENDAPATAN_ANGKUT,
-    KEY_HPP_PENJUALAN,
     KEY_PERSEDIAAN_BARANG_JADI,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen
@@ -164,6 +163,9 @@ def create_sales_order(
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
+    customer_po_number: Optional[str] = None,
+    customer_po_date: Optional[date] = None,
+    currency: str = "IDR",
 ) -> SalesOrder:
     """Buat SalesOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis
@@ -224,6 +226,9 @@ def create_sales_order(
             status=StatusPenjualan.DRAFT,
             keterangan=keterangan,
             created_by=created_by,
+            customer_po_number=customer_po_number,
+            customer_po_date=customer_po_date,
+            currency=currency,
         )
         db.add(so)
         db.flush()
@@ -730,6 +735,8 @@ def create_sales_retur(
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
                 sub_total=Decimal(str(d["sub_total"])),
+                # === Phase 4 — source-line trace (Roadmap §16) ===
+                sales_invoice_detail_id=d.get("sales_invoice_detail_id"),
             )
             db.add(detail)
 
@@ -1057,9 +1064,11 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
             )
             harga_pokok = detail.barang.harga_pokok or Decimal("0")
             total_hpp += movement['total_nilai']
-            from app.services.persediaan_service import _get_akun_persediaan_id
+            from app.services.persediaan_service import _get_akun_persediaan_id, _get_akun_hpp_id
             inventory_id = _get_akun_persediaan_id(db, detail.barang)
-            expense_id = get_akun_id_or_raise(db, KEY_HPP_PENJUALAN, context=db_obj.no_surat_jalan)
+            # Tahap 2: akun HPP per-barang (mapping barang → item_type produk jadi →
+            # setting global), konsisten dengan pola resolusi akun Persediaan.
+            expense_id = _get_akun_hpp_id(db, detail.barang)
             movement['mutasi'].inventory_account_id = inventory_id
             movement['mutasi'].expense_account_id = expense_id
             if movement['total_nilai']:
@@ -1130,20 +1139,56 @@ def post_sales_invoice(db: Session, inv, created_by):
     if not pelanggan.akun_piutang_id:
         raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
     dasar_pajak = sub_total - total_diskon
+
+    # === Tahap 2: pendapatan per-barang (relasi modul ↔ COA) ===
+    # Pendapatan dikelompokkan per akun: barang yang punya mapping
+    # `akun_penjualan_id` (field "Akun Penjualan (Revenue)" di form barang)
+    # diposting ke akun tsb; sisanya ke setting PENDAPATAN_PENJUALAN.
+    # Diskon global (invoice-level) dikurangkan dari akun default supaya
+    # total kredit pendapatan == dasar_pajak (jurnal tetap balance).
+    default_rev_id = get_akun_id_or_raise(db, KEY_PENDAPATAN_PENJUALAN, context=f"INV {no_invoice}")
+    revenue_by_akun: dict = {}
+    line_discount_total = Decimal("0")
+    for d in inv.details:
+        gross = safe_decimal(d.harga) * safe_int(d.qty)
+        d_net = safe_decimal(d.sub_total)
+        line_discount_total += (gross - d_net)
+        akun_rev = None
+        if d.barang is not None:
+            akun_rev = getattr(d.barang, "akun_penjualan_id", None)
+        akun_rev = akun_rev or default_rev_id
+        revenue_by_akun[akun_rev] = revenue_by_akun.get(akun_rev, Decimal("0")) + d_net
+    global_diskon = (safe_decimal(total_diskon) - line_discount_total)
+    if global_diskon:
+        revenue_by_akun[default_rev_id] = revenue_by_akun.get(default_rev_id, Decimal("0")) - global_diskon
+
     entries = [
         JurnalEntryItem(
             akun_perkiraan_id=pelanggan.akun_piutang_id,
             debit=grand_total,
             keterangan=f"INV {no_invoice} - {pelanggan.nama}",
         ),
-        JurnalEntryItem(
-            akun_perkiraan_id=get_akun_id_or_raise(
-                db, KEY_PENDAPATAN_PENJUALAN, context=f"INV {no_invoice}"
-            ),
-            kredit=dasar_pajak,
-            keterangan=f"Pendapatan INV {no_invoice}",
-        ),
     ]
+    for akun_rev, nilai in revenue_by_akun.items():
+        if nilai == 0:
+            continue
+        if nilai > 0:
+            entries.append(
+                JurnalEntryItem(
+                    akun_perkiraan_id=akun_rev,
+                    kredit=nilai,
+                    keterangan=f"Pendapatan INV {no_invoice}",
+                )
+            )
+        else:
+            # Diskon melebihi pendapatan akun tsb → sisa menjadi debit
+            entries.append(
+                JurnalEntryItem(
+                    akun_perkiraan_id=akun_rev,
+                    debit=abs(nilai),
+                    keterangan=f"Diskon INV {no_invoice}",
+                )
+            )
     if total_ppn > 0:
         entries.append(
             JurnalEntryItem(

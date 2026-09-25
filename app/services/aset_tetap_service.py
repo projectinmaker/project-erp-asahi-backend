@@ -19,6 +19,35 @@ from app.models.transaksi.aset_tetap.aset_tetap import (
 )
 from app.models.master.kategori_aset import KategoriAset
 from app.models.akun_perkiraan import AkunPerkiraan
+from app.services.asset_validation import validate_acquisition_source
+
+
+# ==========================================
+# ACQUISITION SOURCE (Roadmap §24: "Acquisition source trace")
+# ==========================================
+
+def _resolve_acquisition_source_no(
+    db: Session,
+    acquisition_source_type: Optional[str],
+    acquisition_source_id: Optional[UUID],
+) -> Optional[str]:
+    """Ambil nomor dokumen sumber untuk display (acquisition_source_no).
+
+    - MANUAL_JOURNAL → JurnalUmum.no_jurnal
+    - PURCHASE_INVOICE → PurchaseInvoice.no_form
+    - DIRECT / SALDO_AWAL / tanpa sumber → None
+    """
+    if not acquisition_source_id or not acquisition_source_type:
+        return None
+    if acquisition_source_type == 'MANUAL_JOURNAL':
+        from app.models.transaksi.jurnal import JurnalUmum
+        source = db.get(JurnalUmum, acquisition_source_id)
+        return source.no_jurnal if source else None
+    if acquisition_source_type == 'PURCHASE_INVOICE':
+        from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
+        source = db.get(PurchaseInvoice, acquisition_source_id)
+        return source.no_form if source else None
+    return None
 
 
 # ==========================================
@@ -90,6 +119,9 @@ def create_aset(
     catatan: Optional[str] = None,
     auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
+    acquisition_source_type: Optional[str] = None,
+    acquisition_source_id: Optional[UUID] = None,
+    acquisition_date: Optional[date] = None,
 ) -> AsetTetap:
     """Buat AsetTetap baru."""
     try:
@@ -105,6 +137,9 @@ def create_aset(
             akun = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == akun_id).first()
             if not akun:
                 raise ValueError(f"Akun {label} dengan ID {akun_id} tidak ditemukan")
+
+        # === Phase 7 — validasi acquisition source (Roadmap §24) ===
+        validate_acquisition_source(db, acquisition_source_type, acquisition_source_id, context="Create Aset Tetap")
 
         if db.query(AsetTetap).filter_by(kode=kode).first():
             raise ValueError('Kode aset sudah digunakan')
@@ -124,6 +159,10 @@ def create_aset(
             auto_post_jurnal=auto_post_jurnal,
             status=StatusAsetTetap.AKTIF,
             created_by=created_by,
+            acquisition_source_type=acquisition_source_type,
+            acquisition_source_id=acquisition_source_id,
+            acquisition_source_no=_resolve_acquisition_source_no(db, acquisition_source_type, acquisition_source_id),
+            acquisition_date=acquisition_date,
         )
         db.add(aset)
         db.commit()
@@ -152,6 +191,9 @@ def update_aset(
     tanggal_mulai: Optional[datetime] = None,
     catatan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    acquisition_source_type: Optional[str] = None,
+    acquisition_source_id: Optional[UUID] = None,
+    acquisition_date: Optional[date] = None,
 ) -> AsetTetap:
     """Update data aset tetap."""
     if db_obj.status == StatusAsetTetap.DIHAPUSKAN:
@@ -191,6 +233,18 @@ def update_aset(
         db_obj.catatan = catatan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+
+    # === Phase 7 — acquisition source trace (Roadmap §24) ===
+    # None = tidak diubah (konsisten dengan field lain di service ini)
+    if acquisition_source_type is not None or acquisition_source_id is not None:
+        new_type = acquisition_source_type if acquisition_source_type is not None else db_obj.acquisition_source_type
+        new_id = acquisition_source_id if acquisition_source_id is not None else db_obj.acquisition_source_id
+        validate_acquisition_source(db, new_type, new_id, context="Update Aset Tetap")
+        db_obj.acquisition_source_type = new_type
+        db_obj.acquisition_source_id = new_id
+        db_obj.acquisition_source_no = _resolve_acquisition_source_no(db, new_type, new_id)
+    if acquisition_date is not None:
+        db_obj.acquisition_date = acquisition_date
 
     db.add(db_obj)
     if len({db_obj.akun_aset_id, db_obj.akun_akumulasi_id, db_obj.akun_beban_id}) != 3:

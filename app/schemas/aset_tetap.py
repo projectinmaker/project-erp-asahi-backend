@@ -3,7 +3,7 @@ Schemas untuk modul Aset Tetap.
 AsetTetap — single entity (no detail table).
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -41,6 +41,10 @@ class AsetTetapBase(BaseSchema):
     tanggal_mulai: datetime
     catatan: Optional[str] = None
     auto_post_jurnal: bool = False
+    # === Phase 7 — acquisition source trace (Roadmap §24) ===
+    acquisition_source_type: Optional[str] = None  # MANUAL_JOURNAL / PURCHASE_INVOICE / SALDO_AWAL / DIRECT
+    acquisition_source_id: Optional[UUID] = None
+    acquisition_date: Optional[date] = None
 
 
 class AsetTetapCreate(AsetTetapBase):
@@ -59,6 +63,10 @@ class AsetTetapUpdate(BaseSchema):
     tanggal_mulai: Optional[datetime] = None
     catatan: Optional[str] = None
     auto_post_jurnal: Optional[bool] = None
+    # === Phase 7 — acquisition source trace (Roadmap §24) ===
+    acquisition_source_type: Optional[str] = None
+    acquisition_source_id: Optional[UUID] = None
+    acquisition_date: Optional[date] = None
 
 
 class AsetTetapResponse(AsetTetapBase):
@@ -76,6 +84,8 @@ class AsetTetapResponse(AsetTetapBase):
     penyusutan_per_bulan: Decimal = Decimal("0")
     capitalized: bool = False
     lokasi: Optional[str] = None
+    # === Phase 7 — acquisition source trace (Roadmap §24) ===
+    acquisition_source_no: Optional[str] = None  # no_jurnal / no_form sumber — auto-set backend
     # Relasi
     kategori_aset: Optional[KategoriAsetSimpleResponse] = None
     akun_aset: Optional[AkunPerkiraanSimpleResponse] = None

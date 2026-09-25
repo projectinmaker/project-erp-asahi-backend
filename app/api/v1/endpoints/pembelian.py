@@ -22,6 +22,18 @@ from app.schemas.pembelian import (
 )
 from app.services import pembelian_service as svc
 
+
+def _service_kwargs(fn, data: dict) -> dict:
+    """Saring field payload agar hanya parameter yang diterima service yang diteruskan.
+
+    Mencegah HTTP 500 (TypeError) ketika schema menerima field yang tidak
+    didukung signature service (mis. details/syarat_bayar_id/currency pada PUT).
+    Field tak didukung diabaikan secara diam-diam (update header-only).
+    """
+    import inspect
+    params = inspect.signature(fn).parameters
+    return {k: v for k, v in data.items() if k in params}
+
 router = APIRouter()
 
 
@@ -100,12 +112,16 @@ def update_purchase_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update data Purchase Order (header only)."""
+    """Update data Purchase Order (header only).
+
+    Field schema yang tidak didukung service (details/syarat_bayar_id/currency)
+    diabaikan agar tidak memicu HTTP 500 — update bersifat header-only.
+    """
     item = svc.get_purchase_order_by_id(db, po_id)
     if not item:
         raise HTTPException(status_code=404, detail="Purchase Order tidak ditemukan")
 
-    update_data = data_in.model_dump(exclude_unset=True)
+    update_data = _service_kwargs(svc.update_purchase_order, data_in.model_dump(exclude_unset=True))
     try:
         return svc.update_purchase_order(db, db_obj=item, **update_data)
     except ValueError as e:
@@ -203,12 +219,16 @@ def update_purchase_invoice(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update data Purchase Invoice (header only)."""
+    """Update data Purchase Invoice (header only).
+
+    Field schema yang tidak didukung service (purchase_order_id/invoice_type)
+    diabaikan agar tidak memicu HTTP 500 — update bersifat header-only.
+    """
     item = svc.get_purchase_invoice_by_id(db, inv_id)
     if not item:
         raise HTTPException(status_code=404, detail="Purchase Invoice tidak ditemukan")
 
-    update_data = data_in.model_dump(exclude_unset=True)
+    update_data = _service_kwargs(svc.update_purchase_invoice, data_in.model_dump(exclude_unset=True))
     try:
         return svc.update_purchase_invoice(db, db_obj=item, **update_data)
     except ValueError as e:

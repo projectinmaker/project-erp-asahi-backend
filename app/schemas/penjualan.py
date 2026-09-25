@@ -50,6 +50,11 @@ class SalesOrderSimpleResponse(BaseSchema):
     no_pesanan: str
 
 
+class SalesInvoiceSimpleResponse(BaseSchema):
+    id: UUID
+    no_invoice: str
+
+
 class JurnalSimpleResponse(BaseSchema):
     id: UUID
     no_jurnal: str
@@ -268,6 +273,8 @@ class SalesReturDetailBase(BaseSchema):
     harga: Decimal = Decimal("0")
     qty: int = 0
     sub_total: Decimal = Decimal("0")
+    # === Phase 4 — Source-line trace (Roadmap §16): link ke detail invoice sumber ===
+    sales_invoice_detail_id: Optional[UUID] = None
 
 
 class SalesReturDetailCreate(SalesReturDetailBase):
@@ -325,7 +332,9 @@ class SalesReturResponse(SalesReturBase):
     created_by: UUID
     created_at: datetime
     updated_at: datetime
-    sales_invoice: Optional[SalesOrderSimpleResponse] = None
+    # Relasi sales_retur.sales_invoice → SalesInvoice (bukan SalesOrder) —
+    # salah ketik SalesOrderSimpleResponse membuat POST/GET retur 500 (noPesanan missing)
+    sales_invoice: Optional[SalesInvoiceSimpleResponse] = None
     pelanggan: Optional[PelangganSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     jurnal: Optional[JurnalSimpleResponse] = None

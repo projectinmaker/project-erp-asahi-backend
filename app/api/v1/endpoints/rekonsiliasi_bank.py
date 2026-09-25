@@ -48,19 +48,6 @@ def get_rekonsiliasi_list(
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
 
-@router.get("/rekonsiliasi-bank/{rekonsiliasi_id}", response_model=RekonsiliasiBankResponse)
-def get_rekonsiliasi_detail(
-    rekonsiliasi_id: UUID,
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Ambil detail 1 rekonsiliasi bank dengan semua detail lines."""
-    item = svc.get_rekonsiliasi_by_id(db, rekonsiliasi_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Rekonsiliasi Bank tidak ditemukan")
-    return item
-
-
 # ==========================================
 # PREVIEW SALDO BUKU
 # ==========================================
@@ -72,7 +59,11 @@ def preview_saldo_buku(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Preview saldo buku tanpa membuat rekonsiliasi. Digunakan frontend sebelum create."""
+    """Preview saldo buku tanpa membuat rekonsiliasi. Digunakan frontend sebelum create.
+
+    NOTE: route ini HARUS didaftarkan sebelum /rekonsiliasi-bank/{rekonsiliasi_id}
+    agar tidak tertangkap sebagai path parameter UUID.
+    """
     try:
         from app.models.master.kas_bank_akun import KasBankAkun
         kb = db.query(KasBankAkun).filter(KasBankAkun.id == kas_bank_akun_id).first()
@@ -88,6 +79,19 @@ def preview_saldo_buku(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/rekonsiliasi-bank/{rekonsiliasi_id}", response_model=RekonsiliasiBankResponse)
+def get_rekonsiliasi_detail(
+    rekonsiliasi_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil detail 1 rekonsiliasi bank dengan semua detail lines."""
+    item = svc.get_rekonsiliasi_by_id(db, rekonsiliasi_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Rekonsiliasi Bank tidak ditemukan")
+    return item
 
 
 # ==========================================

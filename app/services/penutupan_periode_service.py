@@ -477,11 +477,11 @@ def get_pre_close_readiness(
     Sesuai Master Roadmap §25:
         "Pre-close readiness"
 
-    Returns dict dengan:
+    Returns dict dengan (camelCase — kontrak wire frontend penutupan-periode.tsx):
     - ready: bool — True kalau semua check pass
     - periode: (tahun, bulan)
-    - checks: dict berisi hasil setiap check
-    - blocking_issues: list of issues yang block closing
+    - checks: dict berisi hasil setiap check (camelCase)
+    - blockingIssues: list of issues yang block closing
     """
     from app.services.laporan_service import validate_reports
     from app.services.reporting_ledger import month_bounds
@@ -532,38 +532,38 @@ def get_pre_close_readiness(
         current_periode.status == StatusPeriode.DITUTUP.value
     )
 
-    # Build checks dict
+    # Build checks dict (camelCase keys — wire contract)
     checks = {
-        'trial_balance_balanced': report_validation['checks']['neraca_saldo_mutasi'] == 0,
-        'trial_balance_ending_balanced': report_validation['checks']['neraca_saldo_akhir'] == 0,
-        'balance_sheet_balanced': report_validation['checks']['persamaan_neraca'] == 0,
-        'equity_reconciled': report_validation['checks']['perubahan_modal'] == 0,
-        'cash_flow_reconciled': report_validation['checks']['arus_kas'] == 0,
-        'no_draft_journals': draft_journals == 0,
-        'no_invalid_journals': len(report_validation['jurnal_tidak_valid']) == 0,
-        'previous_period_closed': prev_closed,
-        'period_not_already_closed': not already_closed,
+        'trialBalanceBalanced': report_validation['checks']['neraca_saldo_mutasi'] == 0,
+        'trialBalanceEndingBalanced': report_validation['checks']['neraca_saldo_akhir'] == 0,
+        'balanceSheetBalanced': report_validation['checks']['persamaan_neraca'] == 0,
+        'equityReconciled': report_validation['checks']['perubahan_modal'] == 0,
+        'cashFlowReconciled': report_validation['checks']['arus_kas'] == 0,
+        'noDraftJournals': draft_journals == 0,
+        'noInvalidJournals': len(report_validation['jurnal_tidak_valid']) == 0,
+        'previousPeriodClosed': prev_closed,
+        'periodNotAlreadyClosed': not already_closed,
     }
 
     # Blocking issues
     blocking_issues = []
-    if not checks['trial_balance_balanced']:
+    if not checks['trialBalanceBalanced']:
         blocking_issues.append(f"Trial Balance tidak balance: selisih mutasi = {report_validation['checks']['neraca_saldo_mutasi']}")
-    if not checks['trial_balance_ending_balanced']:
+    if not checks['trialBalanceEndingBalanced']:
         blocking_issues.append(f"Trial Balance tidak balance: selisih saldo akhir = {report_validation['checks']['neraca_saldo_akhir']}")
-    if not checks['balance_sheet_balanced']:
+    if not checks['balanceSheetBalanced']:
         blocking_issues.append(f"Neraca tidak balance: persamaan = {report_validation['checks']['persamaan_neraca']}")
-    if not checks['equity_reconciled']:
+    if not checks['equityReconciled']:
         blocking_issues.append(f"Perubahan modal tidak reconcile: selisih = {report_validation['checks']['perubahan_modal']}")
-    if not checks['cash_flow_reconciled']:
+    if not checks['cashFlowReconciled']:
         blocking_issues.append(f"Arus kas tidak reconcile: selisih = {report_validation['checks']['arus_kas']}")
-    if not checks['no_draft_journals']:
+    if not checks['noDraftJournals']:
         blocking_issues.append(f"Ada {draft_journals} jurnal DRAFT yang belum diposting di periode ini")
-    if not checks['no_invalid_journals']:
+    if not checks['noInvalidJournals']:
         blocking_issues.append(f"Ada {len(report_validation['jurnal_tidak_valid'])} jurnal tidak valid (unbalanced / akun non-DETAIL / dll)")
-    if not checks['previous_period_closed']:
+    if not checks['previousPeriodClosed']:
         blocking_issues.append(f"Periode sebelumnya ({prev_tahun}-{prev_bulan:02d}) belum ditutup — tutup dulu secara berurutan")
-    if not checks['period_not_already_closed']:
+    if not checks['periodNotAlreadyClosed']:
         blocking_issues.append(f"Periode {tahun}-{bulan:02d} sudah ditutup — tidak perlu tutup lagi")
 
     ready = len(blocking_issues) == 0
@@ -572,12 +572,12 @@ def get_pre_close_readiness(
         'ready': ready,
         'periode': {'tahun': tahun, 'bulan': bulan},
         'checks': checks,
-        'blocking_issues': blocking_issues,
+        'blockingIssues': blocking_issues,
         'detail': {
-            'report_validation': report_validation,
-            'draft_journals_count': draft_journals,
-            'invalid_journals_count': len(report_validation['jurnal_tidak_valid']),
-            'previous_period': {'tahun': prev_tahun, 'bulan': prev_bulan, 'closed': prev_closed},
+            'reportValidation': report_validation,
+            'draftJournalsCount': draft_journals,
+            'invalidJournalsCount': len(report_validation['jurnal_tidak_valid']),
+            'previousPeriod': {'tahun': prev_tahun, 'bulan': prev_bulan, 'closed': prev_closed},
         },
     }
 

@@ -183,6 +183,8 @@ def create_purchase_order(
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
+    syarat_bayar_id: Optional[UUID] = None,
+    currency: str = "IDR",
 ) -> PurchaseOrder:
     """Buat PurchaseOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis (PO-YYYY-MM-NNN)
@@ -229,6 +231,8 @@ def create_purchase_order(
             status=StatusPenjualan.DRAFT,
             keterangan=keterangan,
             created_by=created_by,
+            syarat_bayar_id=syarat_bayar_id,
+            currency=currency,
         )
         db.add(po)
         db.flush()

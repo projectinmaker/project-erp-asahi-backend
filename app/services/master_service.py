@@ -180,14 +180,23 @@ def protect_inventory(db, item, data):
 
 
 def inventory_account_candidates(db):
-    """Structural candidates; accounting chooses the actual inventory account."""
+    """Kandidat akun Persediaan untuk mapping akun barang.
+
+    Hanya akun AKTIVA DETAIL (saldo DEBIT, AKTIF, non-subledger) yang terklasifikasi
+    sebagai akun persediaan (account_subclass INVENTORY_*) dan tidak ter-link ke
+    kas-bank/piutang/hutang. Dipakai dropdown "Akun Persediaan" pada form barang
+    (GET /master/barang-akun-persediaan) dan validasi mapping barang — mencegah
+    akun kas/bank/piutang terpilih sebagai akun persediaan.
+    """
     from app.models.akun_perkiraan import AkunPerkiraan
     from app.models.master.kas_bank_akun import KasBankAkun
     from app.models.master.pelanggan import Pelanggan
     from app.models.master.supplier import Supplier
     account = AkunPerkiraan
+    inventory_subclasses = ('INVENTORY_RAW', 'INVENTORY_AUX', 'INVENTORY_WIP', 'INVENTORY_FINISHED')
     query = db.query(account).filter(account.header == 'AKTIVA', account.tingkat == 'DETAIL',
-        account.saldo_normal == 'DEBIT', account.status == 'AKTIF', account.is_subledger == False)
+        account.saldo_normal == 'DEBIT', account.status == 'AKTIF', account.is_subledger == False,
+        account.account_subclass.in_(inventory_subclasses))
     for model, field in ((KasBankAkun, 'akun_perkiraan_id'), (Pelanggan, 'akun_piutang_id'), (Supplier, 'akun_hutang_id')):
         query = query.filter(~db.query(model.id).filter(getattr(model, field) == account.id).exists())
     return query
@@ -198,4 +207,4 @@ def validate_barang_account(db, account_id):
         return
     from app.models.akun_perkiraan import AkunPerkiraan
     if inventory_account_candidates(db).filter(AkunPerkiraan.id == account_id).first() is None:
-        raise HTTPException(400, 'Akun Persediaan harus akun AKTIVA DETAIL, saldo normal DEBIT, AKTIF, bukan subledger atau akun kas/piutang/hutang yang terhubung')
+        raise HTTPException(400, 'Akun Persediaan harus akun persediaan (klasifikasi INVENTORY_*, AKTIVA DETAIL, saldo normal DEBIT, AKTIF, non-subledger, tidak ter-link kas/piutang/hutang)')

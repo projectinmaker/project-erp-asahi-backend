@@ -90,6 +90,42 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
 
 
 # ==========================================
+# HELPER (Tahap 2): Resolve COA HPP per barang (mapping → item_type → setting)
+# ==========================================
+
+def _get_akun_hpp_id(db: Session, barang: Barang) -> UUID:
+    """Tentukan COA beban HPP untuk pemakaian/penjualan barang.
+
+    Algoritma (konsisten dengan pola _get_akun_persediaan_id):
+    1. Jika `barang.akun_hpp_id` diisi -> pakai mapping per-barang tersebut
+       (field "Akun HPP (COGS)" pada form barang).
+    2. Jika barang adalah produk jadi (item_type BARANG_JADI / BARANG_DAGANG)
+       dan setting HPP_PRODUK_JADI (531001) terkonfigurasi -> pakai setting itu.
+    3. Fallback -> setting HPP_PENJALAN (perilaku lama, backward compatible).
+
+    Raises:
+        ValueError: jika fallback HPP_PENJALAN belum dikonfigurasi.
+    """
+    # 1. Mapping per-barang
+    if getattr(barang, "akun_hpp_id", None):
+        return barang.akun_hpp_id
+
+    # 2. Produk jadi / dagang -> HPP_PRODUK_JADI (bila terkonfigurasi)
+    item_type = getattr(barang, "item_type", None)
+    item_type_val = getattr(item_type, "value", item_type)
+    if item_type_val and str(item_type_val).upper() in ("BARANG_JADI", "BARANG_DAGANG"):
+        akun_pj = sa_cfg.get_akun_id(db, sa_cfg.KEY_HPP_PRODUK_JADI)
+        if akun_pj:
+            return akun_pj
+
+    # 3. Fallback setting global
+    return sa_cfg.get_akun_id_or_raise(
+        db, sa_cfg.KEY_HPP_PENJALAN,
+        f"Barang {barang.kode} (HPP)",
+    )
+
+
+# ==========================================
 # HELPER (Tahap 2): Akun perantara Penerimaan Dalam Proses (GRNI)
 # ==========================================
 

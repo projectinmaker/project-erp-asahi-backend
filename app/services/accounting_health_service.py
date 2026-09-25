@@ -52,10 +52,10 @@ def get_accounting_health(
         db: SQLAlchemy Session
         as_of: Tanggal as-of untuk reconciliation (default: now)
 
-    Return:
+    Return (camelCase — dibaca langsung oleh frontend tanpa response_model):
         {
-            "as_of": "2026-09-15T...",
-            "overall_status": "HEALTHY" | "ISSUES_FOUND",
+            "asOf": "2026-09-15T...",
+            "overallStatus": "HEALTHY" | "ISSUES_FOUND",
             "reconciliations": [
                 {
                     "name": "Trial Balance",
@@ -66,10 +66,10 @@ def get_accounting_health(
                 ...
             ],
             "summary": {
-                "total_checks": 11,
-                "match_count": 10,
-                "mismatch_count": 1,
-                "not_configured_count": 0
+                "totalChecks": 11,
+                "matchCount": 10,
+                "mismatchCount": 1,
+                "notConfiguredCount": 0
             }
         }
     """
@@ -85,27 +85,45 @@ def get_accounting_health(
     reconciliations: List[Dict] = []
 
     # === 1. Trial Balance Debit = Credit ===
-    tb = laporan_service.get_neraca_saldo(db, date_from, date_to)
-    tb_selisih = Decimal(str(tb.get("selisih", 0)))
-    tb_saldo_selisih = Decimal(str(tb.get("total_saldo_debit", 0))) - Decimal(str(tb.get("total_saldo_kredit", 0)))
-    tb_match = tb_selisih == 0 and tb_saldo_selisih == 0
-    reconciliations.append({
-        "name": "Trial Balance",
-        "status": "MATCH" if tb_match else "MISMATCH",
-        "selisih": str(tb_selisih),
-        "detail": f"Mutasi selisih: {tb_selisih}, Saldo selisih: {tb_saldo_selisih}",
-    })
+    try:
+        tb = laporan_service.get_neraca_saldo(db, date_from, date_to)
+        tb_selisih = Decimal(str(tb.get("selisih", 0)))
+        tb_saldo_selisih = Decimal(str(tb.get("total_saldo_debit", 0))) - Decimal(str(tb.get("total_saldo_kredit", 0)))
+        tb_match = tb_selisih == 0 and tb_saldo_selisih == 0
+        reconciliations.append({
+            "name": "Trial Balance",
+            "status": "MATCH" if tb_match else "MISMATCH",
+            "selisih": str(tb_selisih),
+            "detail": f"Mutasi selisih: {tb_selisih}, Saldo selisih: {tb_saldo_selisih}",
+        })
+    except Exception as e:
+        db.rollback()
+        reconciliations.append({
+            "name": "Trial Balance",
+            "status": "MISMATCH",
+            "selisih": "N/A",
+            "detail": f"Error: {e}",
+        })
 
     # === 2. Balance Sheet (Assets = Liabilities + Equity) ===
-    bs = laporan_service.get_neraca(db, as_of)
-    bs_selisih = Decimal(str(bs.get("selisih", 0)))
-    bs_match = bs_selisih == 0
-    reconciliations.append({
-        "name": "Balance Sheet",
-        "status": "MATCH" if bs_match else "MISMATCH",
-        "selisih": str(bs_selisih),
-        "detail": f"Aset - Kewajiban - Ekuitas = {bs_selisih}",
-    })
+    try:
+        bs = laporan_service.get_neraca(db, as_of)
+        bs_selisih = Decimal(str(bs.get("selisih", 0)))
+        bs_match = bs_selisih == 0
+        reconciliations.append({
+            "name": "Balance Sheet",
+            "status": "MATCH" if bs_match else "MISMATCH",
+            "selisih": str(bs_selisih),
+            "detail": f"Aset - Kewajiban - Ekuitas = {bs_selisih}",
+        })
+    except Exception as e:
+        db.rollback()
+        reconciliations.append({
+            "name": "Balance Sheet",
+            "status": "MISMATCH",
+            "selisih": "N/A",
+            "detail": f"Error: {e}",
+        })
 
     # === 3. AR Aging = AR GL ===
     ar_status = _get_ar_ap_reconciliation(db, "AR", as_of)
@@ -140,15 +158,24 @@ def get_accounting_health(
     reconciliations.append(eq_status)
 
     # === 11. Cash Flow Reconciliation (opening + change - ending = 0) ===
-    cf = laporan_service.get_arus_kas(db, date_from, date_to)
-    cf_recon_selisih = Decimal(str(cf.get("selisih_rekonsiliasi", 0)))
-    cf_recon_match = cf_recon_selisih == 0
-    reconciliations.append({
-        "name": "Cash Flow Movement",
-        "status": "MATCH" if cf_recon_match else "MISMATCH",
-        "selisih": str(cf_recon_selisih),
-        "detail": f"Opening + Net Change - Ending = {cf_recon_selisih}",
-    })
+    try:
+        cf = laporan_service.get_arus_kas(db, date_from, date_to)
+        cf_recon_selisih = Decimal(str(cf.get("selisih_rekonsiliasi", 0)))
+        cf_recon_match = cf_recon_selisih == 0
+        reconciliations.append({
+            "name": "Cash Flow Movement",
+            "status": "MATCH" if cf_recon_match else "MISMATCH",
+            "selisih": str(cf_recon_selisih),
+            "detail": f"Opening + Net Change - Ending = {cf_recon_selisih}",
+        })
+    except Exception as e:
+        db.rollback()
+        reconciliations.append({
+            "name": "Cash Flow Movement",
+            "status": "MISMATCH",
+            "selisih": "N/A",
+            "detail": f"Error: {e}",
+        })
 
     # === Summary ===
     total_checks = len(reconciliations)
@@ -159,14 +186,14 @@ def get_accounting_health(
     overall_status = "HEALTHY" if mismatch_count == 0 else "ISSUES_FOUND"
 
     return {
-        "as_of": as_of.isoformat(),
-        "overall_status": overall_status,
+        "asOf": as_of.isoformat(),
+        "overallStatus": overall_status,
         "reconciliations": reconciliations,
         "summary": {
-            "total_checks": total_checks,
-            "match_count": match_count,
-            "mismatch_count": mismatch_count,
-            "not_configured_count": not_configured_count,
+            "totalChecks": total_checks,
+            "matchCount": match_count,
+            "mismatchCount": mismatch_count,
+            "notConfiguredCount": not_configured_count,
         },
     }
 
@@ -214,6 +241,9 @@ def _get_ar_ap_reconciliation(db: Session, jenis: str, as_of: datetime) -> Dict:
             "detail": f"Aging outstanding: {total_outstanding}, GL balance: {gl_balance_positive}",
         }
     except Exception as e:
+        # Rollback agar transaksi yang gagal tidak meracuni session
+        # untuk reconciliation check berikutnya (InFailedSqlTransaction).
+        db.rollback()
         return {
             "name": f"{jenis} Aging vs GL",
             "status": "MISMATCH",
@@ -237,10 +267,11 @@ def _get_inventory_reconciliation(db: Session, as_of: datetime) -> Dict:
             "detail": f"Stock value: {ringkasan.get('total_nilai_stok', 0)}, GL: {ringkasan.get('total_saldo_gl', 0)}",
         }
     except Exception as e:
+        db.rollback()
         return {
             "name": "Inventory vs GL",
             "status": "MISMATCH",
-            "selisih": "N/A",
+            "selisih": "0.00",
             "detail": f"Error: {str(e)}",
         }
 
@@ -248,20 +279,34 @@ def _get_inventory_reconciliation(db: Session, as_of: datetime) -> Dict:
 def _get_asset_register_reconciliation(db: Session, as_of: datetime) -> Dict:
     """Check Asset Register = FA GL."""
     try:
-        from app.services.asset_register_reconciliation_service import get_ringkasan_rekonsiliasi_aset
+        from app.services.asset_register_reconciliation_service import (
+            get_rekonsiliasi_aset, get_ringkasan_rekonsiliasi_aset)
         recon = get_ringkasan_rekonsiliasi_aset(db, as_of)
-        status = recon.get("reconciliation_status", "MISMATCH")
+        status = recon.get("reconciliationStatus", "MISMATCH")
+        # Selisih numerik (jumlah selisihCost + selisihAccum per akun) agar frontend
+        # bisa memformat Rp — bukan string non-numerik yang menjadi "Rp NaN".
+        try:
+            full = get_rekonsiliasi_aset(db, as_of)
+            total_selisih = sum(
+                (Decimal(str(r.get("selisihCost") or 0)) + Decimal(str(r.get("selisihAccum") or 0))
+                 for r in (full.get("perAkun") or [])),
+                Decimal("0"),
+            )
+        except Exception:
+            db.rollback()
+            total_selisih = Decimal("0")
         return {
             "name": "Fixed Asset vs GL",
             "status": status,
-            "selisih": "See detail",
-            "detail": f"Akun count: {recon.get('akun_count', 0)}, Total cost: {recon.get('summary', {}).get('total_nilai_perolehan_register', 0)}",
+            "selisih": str(total_selisih),
+            "detail": f"Akun count: {recon.get('akunCount', 0)}, Total cost: {recon.get('summary', {}).get('totalNilaiPerolehanRegister', 0)}",
         }
     except Exception as e:
+        db.rollback()
         return {
             "name": "Fixed Asset vs GL",
             "status": "MISMATCH",
-            "selisih": "N/A",
+            "selisih": "0.00",
             "detail": f"Error: {str(e)}",
         }
 
@@ -299,6 +344,7 @@ def _get_cash_bank_reconciliation(db: Session, as_of: datetime) -> Dict:
             "detail": f"Master saldo: {total_master_saldo}, GL: {gl_balance}",
         }
     except Exception as e:
+        db.rollback()
         return {
             "name": "Cash/Bank vs GL",
             "status": "MISMATCH",
@@ -313,15 +359,16 @@ def _get_grni_status(db: Session, as_of: datetime) -> Dict:
         recon = get_grni_reconciliation(db, as_of)
         match = recon.get("match", False)
         status = "MATCH" if match else "MISMATCH"
-        if recon.get("grni_account_id") is None:
+        if recon.get("grniAccountId") is None:
             status = "NOT_CONFIGURED"
         return {
             "name": "GRNI vs GL",
             "status": status,
             "selisih": recon.get("selisih", "0.00"),
-            "detail": f"Open GRNI: {recon.get('open_grni_value', 0)}, GL: {recon.get('grni_gl_balance', 0)}",
+            "detail": f"Open GRNI: {recon.get('openGrniValue', 0)}, GL: {recon.get('grniGlBalance', 0)}",
         }
     except Exception as e:
+        db.rollback()
         return {
             "name": "GRNI vs GL",
             "status": "MISMATCH",
@@ -339,9 +386,10 @@ def _get_cashflow_vs_bs_status(db: Session, date_from: datetime, date_to: dateti
             "name": "Cash Flow Ending vs BS Cash",
             "status": "MATCH" if match else "MISMATCH",
             "selisih": recon.get("selisih", "0.00"),
-            "detail": f"CF Ending: {recon.get('cash_flow_ending', 0)}, BS Cash: {recon.get('balance_sheet_cash', 0)}",
+            "detail": f"CF Ending: {recon.get('cashFlowEnding', 0)}, BS Cash: {recon.get('balanceSheetCash', 0)}",
         }
     except Exception as e:
+        db.rollback()
         return {
             "name": "Cash Flow Ending vs BS Cash",
             "status": "MISMATCH",
@@ -359,9 +407,10 @@ def _get_equity_vs_bs_status(db: Session, date_from: datetime, date_to: datetime
             "name": "Equity Closing vs BS Equity",
             "status": "MATCH" if match else "MISMATCH",
             "selisih": recon.get("selisih", "0.00"),
-            "detail": f"Equity Closing: {recon.get('equity_closing', 0)}, BS Equity: {recon.get('balance_sheet_equity', 0)}",
+            "detail": f"Equity Closing: {recon.get('equityClosing', 0)}, BS Equity: {recon.get('balanceSheetEquity', 0)}",
         }
     except Exception as e:
+        db.rollback()
         return {
             "name": "Equity Closing vs BS Equity",
             "status": "MISMATCH",

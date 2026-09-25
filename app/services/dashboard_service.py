@@ -189,14 +189,17 @@ def get_accounting_health_summary_widget(db: Session) -> Dict:
     try:
         from app.services.accounting_health_service import get_accounting_health
         health = get_accounting_health(db, as_of=None)
+        # get_accounting_health mengembalikan key camelCase (dibaca langsung
+        # oleh /laporan/accounting-health tanpa response_model).
         return {
-            "overall_status": health["overall_status"],
-            "match_count": health["summary"]["match_count"],
-            "mismatch_count": health["summary"]["mismatch_count"],
-            "not_configured_count": health["summary"]["not_configured_count"],
-            "total_checks": health["summary"]["total_checks"],
+            "overall_status": health["overallStatus"],
+            "match_count": health["summary"]["matchCount"],
+            "mismatch_count": health["summary"]["mismatchCount"],
+            "not_configured_count": health["summary"]["notConfiguredCount"],
+            "total_checks": health["summary"]["totalChecks"],
         }
     except Exception as e:
+        db.rollback()
         logger.error(f"Error getting accounting health summary: {e}")
         return {
             "overall_status": "ERROR",

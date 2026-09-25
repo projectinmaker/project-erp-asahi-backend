@@ -55,17 +55,17 @@ def get_grni_reconciliation(
     Sesuai Roadmap §26:
         "Open GRNI = GRNI GL" (Difference = 0)
 
-    Return:
+    Return (camelCase — dibaca langsung oleh frontend tanpa response_model):
         {
-            "as_of": "...",
-            "grni_account_id": "uuid",
-            "grni_account_kode": "...",
-            "grni_account_nama": "...",
-            "open_grni_value": "12345.00",       # dari PenerimaanBarang
-            "grni_gl_balance": "12345.00",       # dari GL
+            "asOf": "...",
+            "grniAccountId": "uuid",
+            "grniAccountKode": "...",
+            "grniAccountNama": "...",
+            "openGrniValue": "12345.00",       # dari PenerimaanBarang
+            "grniGlBalance": "12345.00",       # dari GL
             "selisih": "0.00",
             "match": true | false,
-            "open_receipts_count": 5,
+            "openReceiptsCount": 5,
             "catatan": "..."
         }
     """
@@ -77,15 +77,15 @@ def get_grni_reconciliation(
     grni_account_id = sa_cfg.get_akun_id(db, sa_cfg.KEY_PENERIMAAN_DALAM_PROSES)
     if not grni_account_id:
         return {
-            "as_of": as_of.isoformat() if as_of else None,
-            "grni_account_id": None,
-            "grni_account_kode": "-",
-            "grni_account_nama": "PENERIMAAN_DALAM_PROSES not configured",
-            "open_grni_value": "0.00",
-            "grni_gl_balance": "0.00",
+            "asOf": as_of.isoformat() if as_of else None,
+            "grniAccountId": None,
+            "grniAccountKode": "-",
+            "grniAccountNama": "PENERIMAAN_DALAM_PROSES not configured",
+            "openGrniValue": "0.00",
+            "grniGlBalance": "0.00",
             "selisih": "0.00",
             "match": True,
-            "open_receipts_count": 0,
+            "openReceiptsCount": 0,
             "catatan": (
                 "Akun PENERIMAAN_DALAM_PROSES belum di-configure di Setting Akun. "
                 "Reconciliation GRNI tidak bisa dijalankan. Configure via PUT /master/setting-akun/PENERIMAAN_DALAM_PROSES."
@@ -155,15 +155,15 @@ def get_grni_reconciliation(
     match = abs(selisih) < Decimal("0.01")  # tolerance 1 cent
 
     return {
-        "as_of": as_of.isoformat() if as_of else None,
-        "grni_account_id": str(grni_account_id),
-        "grni_account_kode": grni_account.kode if grni_account else "-",
-        "grni_account_nama": grni_account.nama if grni_account else "-",
-        "open_grni_value": str(open_grni_value),
-        "grni_gl_balance": str(grni_gl_balance),
+        "asOf": as_of.isoformat() if as_of else None,
+        "grniAccountId": str(grni_account_id),
+        "grniAccountKode": grni_account.kode if grni_account else "-",
+        "grniAccountNama": grni_account.nama if grni_account else "-",
+        "openGrniValue": str(open_grni_value),
+        "grniGlBalance": str(grni_gl_balance),
         "selisih": str(selisih),
         "match": match,
-        "open_receipts_count": open_count,
+        "openReceiptsCount": open_count,
         "catatan": (
             "Open GRNI = penerimaan barang SELESAI yang belum di-invoice "
             "(atau invoice belum POSTED). GRNI GL = saldo akun PENERIMAAN_DALAM_PROSES. "
@@ -192,11 +192,11 @@ def get_cash_flow_vs_balance_sheet_reconciliation(
     - Balance Sheet Cash = total akun Kas/Bank di neraca per tanggal_akhir
     - Selisih harus 0
 
-    Return:
+    Return (camelCase — dibaca langsung oleh frontend tanpa response_model):
         {
-            "periode": {"date_from": "...", "date_to": "..."},
-            "cash_flow_ending": "12345.00",
-            "balance_sheet_cash": "12345.00",
+            "periode": {"dateFrom": "...", "dateTo": "..."},
+            "cashFlowEnding": "12345.00",
+            "balanceSheetCash": "12345.00",
             "selisih": "0.00",
             "match": true | false,
             "catatan": "..."
@@ -237,11 +237,11 @@ def get_cash_flow_vs_balance_sheet_reconciliation(
 
     return {
         "periode": {
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
+            "dateFrom": date_from.isoformat(),
+            "dateTo": date_to.isoformat(),
         },
-        "cash_flow_ending": str(cash_flow_ending),
-        "balance_sheet_cash": str(balance_sheet_cash),
+        "cashFlowEnding": str(cash_flow_ending),
+        "balanceSheetCash": str(balance_sheet_cash),
         "selisih": str(selisih),
         "match": match,
         "catatan": (
@@ -272,11 +272,11 @@ def get_equity_vs_balance_sheet_reconciliation(
     - Balance Sheet Equity = total ekuitas di neraca per tanggal_akhir
     - Selisih harus 0
 
-    Return:
+    Return (camelCase — dibaca langsung oleh frontend tanpa response_model):
         {
             "periode": {...},
-            "equity_closing": "12345.00",
-            "balance_sheet_equity": "12345.00",
+            "equityClosing": "12345.00",
+            "balanceSheetEquity": "12345.00",
             "selisih": "0.00",
             "match": true | false,
             "catatan": "..."
@@ -295,11 +295,11 @@ def get_equity_vs_balance_sheet_reconciliation(
 
     return {
         "periode": {
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
+            "dateFrom": date_from.isoformat(),
+            "dateTo": date_to.isoformat(),
         },
-        "equity_closing": str(equity_closing),
-        "balance_sheet_equity": str(balance_sheet_equity),
+        "equityClosing": str(equity_closing),
+        "balanceSheetEquity": str(balance_sheet_equity),
         "selisih": str(selisih),
         "match": match,
         "catatan": (

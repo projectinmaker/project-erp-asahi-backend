@@ -81,32 +81,32 @@ def get_rekonsiliasi_aset(
 ) -> Dict:
     """Rekonsiliasi Asset Register vs GL.
 
-    Return:
+    Return (camelCase — dibaca langsung oleh frontend tanpa response_model):
         Dict dengan struktur:
         {
             "basis": "CURRENT_ASSET_REGISTER_VS_ALL_POSTED_JOURNALS",
-            "as_of": "2026-09-15T...",
+            "asOf": "2026-09-15T...",
             "summary": {
-                "total_nilai_perolehan_register": Decimal,
-                "total_akumulasi_penyusutan_register": Decimal,
-                "total_nilai_buku_register": Decimal,
-                "total_asset_count": int,
+                "totalNilaiPerolehanRegister": Decimal,
+                "totalAkumulasiPenyusutanRegister": Decimal,
+                "totalNilaiBukuRegister": Decimal,
+                "totalAssetCount": int,
             },
-            "per_akun": [
+            "perAkun": [
                 {
-                    "akun_aset_id": UUID,
-                    "akun_aset_kode": str,
-                    "akun_aset_nama": str,
-                    "nilai_perolehan_register": Decimal,
-                    "saldo_gl_cost": Decimal,
-                    "selisih_cost": Decimal,
-                    "akun_akumulasi_id": UUID,
-                    "akun_akumulasi_kode": str,
-                    "akun_akumulasi_nama": str,
-                    "akumulasi_penyusutan_register": Decimal,
-                    "saldo_gl_accum": Decimal,
-                    "selisih_accum": Decimal,
-                    "asset_count": int,
+                    "akunAsetId": UUID,
+                    "akunAsetKode": str,
+                    "akunAsetNama": str,
+                    "nilaiPerolehanRegister": Decimal,
+                    "saldoGlCost": Decimal,
+                    "selisihCost": Decimal,
+                    "akunAkumulasiId": UUID,
+                    "akunAkumulasiKode": str,
+                    "akunAkumulasiNama": str,
+                    "akumulasiPenyusutanRegister": Decimal,
+                    "saldoGlAccum": Decimal,
+                    "selisihAccum": Decimal,
+                    "assetCount": int,
                 },
                 ...
             ],
@@ -164,19 +164,19 @@ def get_rekonsiliasi_aset(
         selisih_accum = register_accum - gl_accum  # both should be positive
 
         per_akun.append({
-            'akun_aset_id': str(akun_aset_id) if akun_aset_id else None,
-            'akun_aset_kode': akun_aset.kode if akun_aset else '-',
-            'akun_aset_nama': akun_aset.nama if akun_aset else '-',
-            'nilai_perolehan_register': str(register_cost),
-            'saldo_gl_cost': str(gl_cost_raw),
-            'selisih_cost': str(selisih_cost),
-            'akun_akumulasi_id': str(akun_akumulasi_id) if akun_akumulasi_id else None,
-            'akun_akumulasi_kode': akun_akumulasi.kode if akun_akumulasi else '-',
-            'akun_akumulasi_nama': akun_akumulasi.nama if akun_akumulasi else '-',
-            'akumulasi_penyusutan_register': str(register_accum),
-            'saldo_gl_accum': str(gl_accum),
-            'selisih_accum': str(selisih_accum),
-            'asset_count': group['asset_count'],
+            'akunAsetId': str(akun_aset_id) if akun_aset_id else None,
+            'akunAsetKode': akun_aset.kode if akun_aset else '-',
+            'akunAsetNama': akun_aset.nama if akun_aset else '-',
+            'nilaiPerolehanRegister': str(register_cost),
+            'saldoGlCost': str(gl_cost_raw),
+            'selisihCost': str(selisih_cost),
+            'akunAkumulasiId': str(akun_akumulasi_id) if akun_akumulasi_id else None,
+            'akunAkumulasiKode': akun_akumulasi.kode if akun_akumulasi else '-',
+            'akunAkumulasiNama': akun_akumulasi.nama if akun_akumulasi else '-',
+            'akumulasiPenyusutanRegister': str(register_accum),
+            'saldoGlAccum': str(gl_accum),
+            'selisihAccum': str(selisih_accum),
+            'assetCount': group['asset_count'],
         })
 
         total_nilai_perolehan += register_cost
@@ -185,14 +185,14 @@ def get_rekonsiliasi_aset(
 
     return {
         'basis': 'CURRENT_ASSET_REGISTER_VS_ALL_POSTED_JOURNALS',
-        'as_of': as_of.isoformat() if as_of else None,
+        'asOf': as_of.isoformat() if as_of else None,
         'summary': {
-            'total_nilai_perolehan_register': str(total_nilai_perolehan),
-            'total_akumulasi_penyusutan_register': str(total_akumulasi_penyusutan),
-            'total_nilai_buku_register': str(total_nilai_perolehan - total_akumulasi_penyusutan),
-            'total_asset_count': total_asset_count,
+            'totalNilaiPerolehanRegister': str(total_nilai_perolehan),
+            'totalAkumulasiPenyusutanRegister': str(total_akumulasi_penyusutan),
+            'totalNilaiBukuRegister': str(total_nilai_perolehan - total_akumulasi_penyusutan),
+            'totalAssetCount': total_asset_count,
         },
-        'per_akun': per_akun,
+        'perAkun': per_akun,
         'catatan': (
             'Selisih dapat berasal dari: '
             '(1) saldo awal aset yang belum di-link ke jurnal saldo awal, '
@@ -216,14 +216,14 @@ def get_ringkasan_rekonsiliasi_aset(
     full = get_rekonsiliasi_aset(db, as_of)
     return {
         'basis': full['basis'],
-        'as_of': full['as_of'],
+        'asOf': full['asOf'],
         'summary': full['summary'],
-        'reconciliation_status': (
+        'reconciliationStatus': (
             'MATCH' if all(
-                Decimal(p['selisih_cost']) == 0 and Decimal(p['selisih_accum']) == 0
-                for p in full['per_akun']
-            ) and full['per_akun']
+                Decimal(p['selisihCost']) == 0 and Decimal(p['selisihAccum']) == 0
+                for p in full['perAkun']
+            ) and full['perAkun']
             else 'MISMATCH'
         ),
-        'akun_count': len(full['per_akun']),
+        'akunCount': len(full['perAkun']),
     }

@@ -1,5 +1,5 @@
 """Financial reports derive from the same posted general ledger and scope."""
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 from app.models import KasBankAkun, SalesInvoice

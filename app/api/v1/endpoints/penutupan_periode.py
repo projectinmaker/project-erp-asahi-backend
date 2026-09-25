@@ -122,31 +122,31 @@ def get_pre_close_readiness(
     7. Periode sebelumnya sudah ditutup (sequential closing)
     8. Periode ini belum ditutup
 
-    Response:
+    Response (camelCase — kontrak wire frontend penutupan-periode.tsx):
     {
         "ready": true | false,
         "periode": {"tahun": 2026, "bulan": 8},
         "checks": {
-            "trial_balance_balanced": true,
-            "trial_balance_ending_balanced": true,
-            "balance_sheet_balanced": true,
-            "equity_reconciled": true,
-            "cash_flow_reconciled": true,
-            "no_draft_journals": true,
-            "no_invalid_journals": true,
-            "previous_period_closed": true,
-            "period_not_already_closed": true
+            "trialBalanceBalanced": true,
+            "trialBalanceEndingBalanced": true,
+            "balanceSheetBalanced": true,
+            "equityReconciled": true,
+            "cashFlowReconciled": true,
+            "noDraftJournals": true,
+            "noInvalidJournals": true,
+            "previousPeriodClosed": true,
+            "periodNotAlreadyClosed": true
         },
-        "blocking_issues": [],
+        "blockingIssues": [],
         "detail": {
-            "report_validation": { ... },
-            "draft_journals_count": 0,
-            "invalid_journals_count": 0,
-            "previous_period": {"tahun": 2026, "bulan": 7, "closed": true}
+            "reportValidation": { ... },
+            "draftJournalsCount": 0,
+            "invalidJournalsCount": 0,
+            "previousPeriod": {"tahun": 2026, "bulan": 7, "closed": true}
         }
     }
 
-    Kalau ready=false, frontend tampilkan blocking_issues dan user harus
+    Kalau ready=false, frontend tampilkan blockingIssues dan user harus
     fix issue tersebut sebelum bisa tutup periode.
     """
     return svc.get_pre_close_readiness(db, tahun, bulan)
@@ -166,24 +166,27 @@ def get_gl_reconciliation(
     - Total saldo debit vs total saldo kredit (ending balance)
     - Persamaan Neraca (Aset = Kewajiban + Ekuitas)
 
-    Response:
+    Response (camelCase — kontrak wire frontend penutupan-periode.tsx):
     {
         "periode": {"tahun": 2026, "bulan": 8},
-        "trial_balance": {
-            "total_debit": "12345678.00",
-            "total_kredit": "12345678.00",
-            "selisih_mutasi": "0.00",
-            "total_saldo_debit": "9876543.00",
-            "total_saldo_kredit": "9876543.00",
-            "selisih_saldo": "0.00"
+        "trialBalance": {
+            "totalDebit": "12345678.00",
+            "totalKredit": "12345678.00",
+            "selisihMutasi": "0.00",
+            "totalSaldoDebit": "9876543.00",
+            "totalSaldoKredit": "9876543.00",
+            "selisihSaldo": "0.00",
+            "mutasiMatch": true,
+            "saldoMatch": true
         },
-        "balance_sheet": {
-            "total_aset": "5000000.00",
-            "total_kewajiban": "2000000.00",
-            "total_ekuitas": "3000000.00",
-            "selisih": "0.00"
+        "balanceSheet": {
+            "totalAset": "5000000.00",
+            "totalKewajiban": "2000000.00",
+            "totalEkuitas": "3000000.00",
+            "selisih": "0.00",
+            "match": true
         },
-        "reconciliation_status": "MATCH" | "MISMATCH"
+        "reconciliationStatus": "MATCH" | "MISMATCH"
     }
     """
     from app.services.laporan_service import get_neraca_saldo, get_neraca
@@ -204,22 +207,22 @@ def get_gl_reconciliation(
 
     return {
         'periode': {'tahun': tahun, 'bulan': bulan},
-        'trial_balance': {
-            'total_debit': str(tb['total_debit']),
-            'total_kredit': str(tb['total_kredit']),
-            'selisih_mutasi': str(tb['selisih']),
-            'total_saldo_debit': str(tb['total_saldo_debit']),
-            'total_saldo_kredit': str(tb['total_saldo_kredit']),
-            'selisih_saldo': str(tb['total_saldo_debit'] - tb['total_saldo_kredit']),
-            'mutasi_match': tb_mutasi_match,
-            'saldo_match': tb_saldo_match,
+        'trialBalance': {
+            'totalDebit': str(tb['total_debit']),
+            'totalKredit': str(tb['total_kredit']),
+            'selisihMutasi': str(tb['selisih']),
+            'totalSaldoDebit': str(tb['total_saldo_debit']),
+            'totalSaldoKredit': str(tb['total_saldo_kredit']),
+            'selisihSaldo': str(tb['total_saldo_debit'] - tb['total_saldo_kredit']),
+            'mutasiMatch': tb_mutasi_match,
+            'saldoMatch': tb_saldo_match,
         },
-        'balance_sheet': {
-            'total_aset': str(bs.get('total_aset', 0)),
-            'total_kewajiban': str(bs.get('total_kewajiban', 0)),
-            'total_ekuitas': str(bs.get('total_ekuitas', 0)),
+        'balanceSheet': {
+            'totalAset': str(bs.get('total_aset', 0)),
+            'totalKewajiban': str(bs.get('total_kewajiban', 0)),
+            'totalEkuitas': str(bs.get('total_ekuitas', 0)),
             'selisih': str(bs['selisih']),
             'match': bs_match,
         },
-        'reconciliation_status': reconciliation_status,
+        'reconciliationStatus': reconciliation_status,
     }

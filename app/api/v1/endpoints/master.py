@@ -655,12 +655,64 @@ def delete_kategori_aset(kategori_aset_id: UUID, db: Session = Depends(get_curre
 # ==========================================
 # KAS BANK AKUN ENDPOINTS
 # ==========================================
+def _gl_saldo_by_akun(db: Session, akun_ids: list) -> dict:
+    """Saldo GL (jurnal POSTED: debit - kredit) per akun_perkiraan_id.
+
+    Doktrin model KasBankAkun (Master Roadmap §23): kolom master `saldo`
+    hanyalah backward-compat — kebenaran akuntansi berasal dari GL. Endpoint
+    daftar/dropdown kas-bank memakai helper ini agar UI tidak menampilkan
+    saldo 0 yang menyesatkan saat master saldo belum tersinkron.
+    """
+    if not akun_ids:
+        return {}
+    from sqlalchemy import func
+    from app.models.detail.jurnal_detail import JurnalDetail
+    from app.models.transaksi.jurnal import JurnalUmum
+    rows = (
+        db.query(
+            JurnalDetail.akun_perkiraan_id,
+            func.coalesce(func.sum(JurnalDetail.debit), 0) - func.coalesce(func.sum(JurnalDetail.kredit), 0),
+        )
+        .join(JurnalUmum, JurnalDetail.jurnal_umum_id == JurnalUmum.id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id.in_(akun_ids),
+            JurnalUmum.status == "POSTED",
+        )
+        .group_by(JurnalDetail.akun_perkiraan_id)
+        .all()
+    )
+    return {r[0]: r[1] for r in rows}
+
+
+def _kas_bank_rows_with_gl_saldo(db: Session, rows) -> list:
+    """Serialisasi KasBankAkun dengan saldo dari GL (bukan master saldo)."""
+    gl = _gl_saldo_by_akun(db, [r.akun_perkiraan_id for r in rows])
+    out = []
+    for r in rows:
+        out.append({
+            "id": r.id,
+            "kode": r.kode,
+            "nama": r.nama,
+            "jenis": r.jenis,
+            "akun_perkiraan_id": r.akun_perkiraan_id,
+            "currency": r.currency or "IDR",
+            "saldo": gl.get(r.akun_perkiraan_id, Decimal("0")),
+            "status": r.status,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at,
+            "akun_perkiraan": r.akun_perkiraan,
+        })
+    return out
+
+
 @router.get("/kas-bank-akun", response_model=list[KasBankAkunResponse])
 def get_kas_bank_akun_list(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    return db.query(KasBankAkun).filter(KasBankAkun.status == "AKTIF").order_by(KasBankAkun.nama).all()
+    rows = db.query(KasBankAkun).filter(KasBankAkun.status == "AKTIF").order_by(KasBankAkun.nama).all()
+    # Saldo ditampilkan dari GL (jurnal POSTED) — master saldo legacy bisa 0/stale.
+    return _kas_bank_rows_with_gl_saldo(db, rows)
 
 @router.post("/kas-bank-akun", response_model=KasBankAkunResponse, status_code=status.HTTP_201_CREATED)
 def create_kas_bank_akun(
@@ -674,7 +726,8 @@ def create_kas_bank_akun(
 def get_kas_bank_akun_detail(kas_bank_akun_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
     if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
-    return item
+    # Saldo dari GL agar edit-form/detail tidak menampilkan saldo stale master.
+    return _kas_bank_rows_with_gl_saldo(db, [item])[0]
 
 @router.put("/kas-bank-akun/{kas_bank_akun_id}", response_model=KasBankAkunResponse)
 def update_kas_bank_akun(kas_bank_akun_id: UUID, data_in: KasBankAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
@@ -714,6 +767,7 @@ def get_setting_akun_detail(key: str, db: Session = Depends(get_current_db), cur
 @router.put("/setting-akun/{key}", response_model=SettingAkunResponse)
 def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     from app.services.inventory_receipt_control import KEY, validate_grni_account
+    from app.services import setting_akun_service
     item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
     if key == KEY:
         try:
@@ -729,6 +783,18 @@ def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depe
             setting_akun_service.clear_cache()
             return item
     if not item:
+        # Key belum ada di DB (mis. di-skip seeder karena akun default legacy
+        # tidak ditemukan di COA v2). Bila key dikenal sistem, buat barisan
+        # setting baru — agar bisa dikonfigurasi dari halaman Setting Akun.
+        label = setting_akun_service.KNOWN_SETTING_LABELS.get(key)
+        if label:
+            item = SettingAkun(key=key, label=label,
+                               akun_perkiraan_id=data_in.akun_perkiraan_id)
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            setting_akun_service.clear_cache()
+            return item
         raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
     item = master_service.update_master(db, item, data_in)
     setting_akun_service.clear_cache()
@@ -975,10 +1041,13 @@ def get_kas_bank_dropdown(
     if not detail_ids:
         return []
 
-    return db.query(KasBankAkun).filter(
+    rows = db.query(KasBankAkun).filter(
         KasBankAkun.akun_perkiraan_id.in_(detail_ids),
         KasBankAkun.status == "AKTIF",
     ).order_by(KasBankAkun.nama).all()
+    # Saldo dari GL — SummaryCard "Total Saldo Kas/Bank" di modul Kas & Bank
+    # membaca field ini; master saldo legacy bisa 0/stale.
+    return _kas_bank_rows_with_gl_saldo(db, rows)
 
 
 @router.post("/kas-bank-akun/sync", status_code=status.HTTP_200_OK)
