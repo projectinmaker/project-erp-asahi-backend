@@ -7,7 +7,7 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
@@ -18,8 +18,10 @@ from app.schemas.kas_bank import (
     PenerimaanKasCreate, PenerimaanKasUpdate, PenerimaanKasResponse,
     TransferBankCreate, TransferBankUpdate, TransferBankResponse,
 )
+from app.schemas.workflow import HardDeleteRequest
 from app.services import kas_bank_service as svc
 from app.services import workflow_service
+from app.services.hard_delete_service import hard_delete_document
 
 router = APIRouter()
 
@@ -112,18 +114,23 @@ def update_pembayaran(
         raise HTTPException(400, str(exc))
 
 
-@router.post("/pembayaran/{pembayaran_id}/cancel", response_model=PembayaranKasResponse)
+@router.post("/pembayaran/{pembayaran_id}/cancel")
 def cancel_pembayaran(
     pembayaran_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Pembayaran Kas."""
-    item = svc.get_pembayaran_by_id(db, pembayaran_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Pembayaran Kas tidak ditemukan")
+    """Hapus permanen Pembayaran Kas (hard delete).
+
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_pembayaran(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'pembayaran_kas', pembayaran_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -216,18 +223,23 @@ def update_penerimaan(
         raise HTTPException(400, str(exc))
 
 
-@router.post("/penerimaan/{penerimaan_id}/cancel", response_model=PenerimaanKasResponse)
+@router.post("/penerimaan/{penerimaan_id}/cancel")
 def cancel_penerimaan(
     penerimaan_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penerimaan Kas."""
-    item = svc.get_penerimaan_by_id(db, penerimaan_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Penerimaan Kas tidak ditemukan")
+    """Hapus permanen Penerimaan Kas (hard delete).
+
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_penerimaan(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'penerimaan_kas', penerimaan_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -317,18 +329,23 @@ def update_transfer(
         raise HTTPException(400, str(exc))
 
 
-@router.post("/transfer/{transfer_id}/cancel", response_model=TransferBankResponse)
+@router.post("/transfer/{transfer_id}/cancel")
 def cancel_transfer(
     transfer_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Transfer Bank."""
-    item = svc.get_transfer_by_id(db, transfer_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Transfer Bank tidak ditemukan")
+    """Hapus permanen Transfer Bank (hard delete).
+
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_transfer(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'transfer_bank', transfer_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

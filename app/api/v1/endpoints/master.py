@@ -216,7 +216,9 @@ def create_pelanggan_from_coa(
         raise HTTPException(status_code=400, detail="COA yang dipilih harus level DETAIL")
 
     group = find_piutang_root_coa(db)
-    if not group or coa.id not in get_coa_detail_ids_under(db, group.id):
+    # COA v2: root 'Piutang Usaha' bisa berlevel DETAIL (mis. 112000) — root itu
+    # sendiri pun boleh di-link; selain itu harus descendant dari root.
+    if not group or coa.id not in ([group.id] + get_coa_detail_ids_under(db, group.id)):
         raise HTTPException(status_code=400, detail="COA yang dipilih bukan bagian dari 'Piutang Usaha'")
 
     existing_link = db.query(Pelanggan).filter(Pelanggan.akun_piutang_id == coa.id).first()
@@ -371,7 +373,9 @@ def create_supplier_from_coa(
         raise HTTPException(status_code=400, detail="COA yang dipilih harus level DETAIL")
 
     group = find_hutang_root_coa(db)
-    if not group or coa.id not in get_coa_detail_ids_under(db, group.id):
+    # COA v2: root 'Hutang Usaha' bisa berlevel DETAIL (mis. 211000) — root itu
+    # sendiri pun boleh di-link; selain itu harus descendant dari root.
+    if not group or coa.id not in ([group.id] + get_coa_detail_ids_under(db, group.id)):
         raise HTTPException(status_code=400, detail="COA yang dipilih bukan bagian dari 'Hutang Usaha'")
 
     existing_link = db.query(Supplier).filter(Supplier.akun_hutang_id == coa.id).first()

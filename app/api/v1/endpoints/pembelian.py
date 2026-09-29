@@ -7,7 +7,7 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
@@ -22,6 +22,8 @@ from app.schemas.pembelian import (
 )
 from app.services import pembelian_service as svc
 from app.services import workflow_service
+from app.services.hard_delete_service import hard_delete_document
+from app.schemas.workflow import HardDeleteRequest
 
 
 def _service_kwargs(fn, data: dict) -> dict:
@@ -133,18 +135,23 @@ def update_purchase_order(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/purchase-order/{po_id}/cancel", response_model=PurchaseOrderResponse)
+@router.post("/purchase-order/{po_id}/cancel")
 def cancel_purchase_order(
     po_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Purchase Order."""
-    item = svc.get_purchase_order_by_id(db, po_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Purchase Order tidak ditemukan")
+    """Hapus permanen Purchase Order (hard delete).
+
+    Dokumen + rincian dihapus dari database (guard: masih dirujuk dokumen lanjutan → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_purchase_order(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'purchase_order', po_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -244,18 +251,23 @@ def update_purchase_invoice(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/purchase-invoice/{inv_id}/cancel", response_model=PurchaseInvoiceResponse)
+@router.post("/purchase-invoice/{inv_id}/cancel")
 def cancel_purchase_invoice(
     inv_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Purchase Invoice."""
-    item = svc.get_purchase_invoice_by_id(db, inv_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Purchase Invoice tidak ditemukan")
+    """Hapus permanen Purchase Invoice (hard delete).
+
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_purchase_invoice(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'purchase_invoice', inv_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -348,18 +360,23 @@ def update_purchase_retur(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/purchase-retur/{retur_id}/cancel", response_model=PurchaseReturResponse)
+@router.post("/purchase-retur/{retur_id}/cancel")
 def cancel_purchase_retur(
     retur_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Purchase Retur."""
-    item = svc.get_purchase_retur_by_id(db, retur_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Purchase Retur tidak ditemukan")
+    """Hapus permanen Purchase Retur (hard delete).
+
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_purchase_retur(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'purchase_retur', retur_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -460,18 +477,23 @@ def update_penerimaan(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/penerimaan/{pb_id}/cancel", response_model=PenerimaanBarangResponse)
+@router.post("/penerimaan/{pb_id}/cancel")
 def cancel_penerimaan(
     pb_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penerimaan Barang."""
-    item = svc.get_penerimaan_by_id(db, pb_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Penerimaan Barang tidak ditemukan")
+    """Hapus permanen Penerimaan Barang (hard delete).
+
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_penerimaan(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'penerimaan_barang', pb_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

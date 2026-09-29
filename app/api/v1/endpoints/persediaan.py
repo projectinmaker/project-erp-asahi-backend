@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Optional, Dict, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
@@ -21,6 +21,8 @@ from app.schemas.persediaan import (
 from app.services import persediaan_service as svc
 from app.services import workflow_service
 from app.services import dashboard_service
+from app.services.hard_delete_service import hard_delete_document
+from app.schemas.workflow import HardDeleteRequest
 
 router = APIRouter()
 
@@ -196,18 +198,23 @@ def approve_penyesuaian(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/penyesuaian-stok/{adj_id}/cancel", response_model=PenyesuaianStokResponse)
+@router.post("/penyesuaian-stok/{adj_id}/cancel")
 def cancel_penyesuaian(
     adj_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penyesuaian Stok."""
-    item = svc.get_penyesuaian_by_id(db, adj_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Penyesuaian Stok tidak ditemukan")
+    """Hapus permanen Penyesuaian Stok (hard delete).
+
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_penyesuaian(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'penyesuaian_stok', adj_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -316,18 +323,23 @@ def approve_pemindahan(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/pemindahan/{pb_id}/cancel", response_model=PemindahanBarangResponse)
+@router.post("/pemindahan/{pb_id}/cancel")
 def cancel_pemindahan(
     pb_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Pemindahan Barang."""
-    item = svc.get_pemindahan_by_id(db, pb_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Pemindahan Barang tidak ditemukan")
+    """Hapus permanen Pemindahan Barang (hard delete).
+
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_pemindahan(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'pemindahan_barang', pb_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -467,17 +479,22 @@ def approve_permintaan(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/permintaan/{req_id}/cancel", response_model=PermintaanBarangResponse)
+@router.post("/permintaan/{req_id}/cancel")
 def cancel_permintaan(
     req_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Permintaan Barang."""
-    item = svc.get_permintaan_by_id(db, req_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Permintaan Barang tidak ditemukan")
+    """Hapus permanen Permintaan Barang (hard delete).
+
+    Dokumen + rincian dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     try:
-        return svc.cancel_permintaan(db, db_obj=item, user_id=current_user.id)
+        return hard_delete_document(
+            db, 'permintaan_barang', req_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

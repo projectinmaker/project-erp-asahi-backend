@@ -5,6 +5,7 @@ from app.models.transaksi.asset_event import AssetEvent
 from app.schemas.asset_cycle import AssetEventCreate, AssetEventResponse, AssetCancel
 from app.services import asset_cycle_service as svc
 from app.services import workflow_service
+from app.services.hard_delete_service import hard_delete_document
 
 router = APIRouter()
 
@@ -38,10 +39,18 @@ def get_asset_event(event_id: UUID, db=Depends(get_current_db)):
     return obj
 
 
-@router.post('/{event_id}/cancel', response_model=AssetEventResponse)
+@router.post('/{event_id}/cancel')
 def cancel_asset_event(event_id: UUID, data: AssetCancel, db=Depends(get_current_db), user=Depends(get_current_user)):
+    """Hapus permanen Transaksi Aset (hard delete) — alasan WAJIB.
+
+    Event + snapshot state-nya dihapus; bila event POSTED (bukan yang terakhir
+    → ditolak). Jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
     obj = get_asset_event(event_id, db)
     try:
-        return svc.cancel_event(db, obj, user, data.reason)
+        return hard_delete_document(
+            db, 'asset_event', event_id, user,
+            reason=data.reason,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))

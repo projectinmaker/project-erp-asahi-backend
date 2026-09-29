@@ -142,8 +142,13 @@ def _resolve_root_coa(
 
 
 def find_piutang_root_coa(db: Session) -> Optional[AkunPerkiraan]:
-    """Cari COA GROUP/HEADER root 'Piutang Usaha'. Wrapper publik dari _find_group_coa."""
-    return _find_group_coa(db, _PIUTANG_KEYWORDS, _PIUTANG_HEADER)
+    """Cari COA root 'Piutang Usaha'.
+
+    Utamakan setting_akun (KEY_PIUTANG_USAHA) supaya tetap jalan di COA revisi v2
+    di mana 'Piutang Usaha' (mis. 112000) berada di level DETAIL — bukan GROUP.
+    Fallback ke pencarian GROUP/HEADER by-nama (COA lama).
+    """
+    return _resolve_root_coa(db, KEY_PIUTANG_USAHA, _PIUTANG_KEYWORDS, _PIUTANG_HEADER, "Piutang Usaha")
 
 
 def get_coa_detail_ids_under(db: Session, root_id: UUID) -> list[UUID]:
@@ -166,8 +171,13 @@ def get_coa_detail_ids_under(db: Session, root_id: UUID) -> list[UUID]:
 
 
 def find_hutang_root_coa(db: Session) -> Optional[AkunPerkiraan]:
-    """Cari COA GROUP/HEADER root 'Hutang Usaha'. Wrapper publik dari _find_group_coa."""
-    return _find_group_coa(db, _UTANG_KEYWORDS, _UTANG_HEADER)
+    """Cari COA root 'Hutang Usaha'.
+
+    Utamakan setting_akun (KEY_HUTANG_USAHA) supaya tetap jalan di COA revisi v2
+    di mana 'Hutang Usaha' (mis. 211000) berada di level DETAIL — bukan GROUP.
+    Fallback ke pencarian GROUP/HEADER by-nama (COA lama).
+    """
+    return _resolve_root_coa(db, KEY_HUTANG_USAHA, _UTANG_KEYWORDS, _UTANG_HEADER, "Hutang Usaha")
 
 
 def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan) -> Optional[UUID]:
