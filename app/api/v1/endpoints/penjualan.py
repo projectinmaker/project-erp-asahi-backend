@@ -23,6 +23,7 @@ from app.schemas.penjualan import (
     PengirimanBarangCreate, PengirimanBarangUpdate, PengirimanBarangResponse,
 )
 from app.services import penjualan_service as svc
+from app.services import workflow_service
 
 
 def _service_kwargs(fn, data: dict) -> dict:
@@ -74,7 +75,7 @@ def create_sales_order(
     try:
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
-        return svc.create_sales_order(
+        obj = svc.create_sales_order(
             db=db,
             tanggal=data_in.tanggal,
             pelanggan_id=data_in.pelanggan_id,
@@ -95,6 +96,10 @@ def create_sales_order(
             customer_po_date=data_in.customer_po_date,
             currency=data_in.currency,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'sales_order', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -186,7 +191,7 @@ def create_sales_invoice(
     try:
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
-        return svc.create_sales_invoice(
+        obj = svc.create_sales_invoice(
             db=db,
             tanggal_jatuh_tempo=data_in.tanggal_jatuh_tempo,
             tanggal=data_in.tanggal,
@@ -206,6 +211,10 @@ def create_sales_invoice(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'sales_invoice', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -292,7 +301,7 @@ def create_sales_retur(
     """Buat Sales Retur baru (auto-generate no retur + auto-post jurnal)."""
     try:
         details_data = [d.model_dump() for d in data_in.details]
-        return svc.create_sales_retur(
+        obj = svc.create_sales_retur(
             db=db,
             pengiriman_id=data_in.pengiriman_id,
             gudang_id=data_in.gudang_id,
@@ -308,6 +317,10 @@ def create_sales_retur(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'sales_retur', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -394,7 +407,7 @@ def create_pengiriman(
     """Buat Pengiriman Barang baru (auto-generate no surat jalan)."""
     try:
         details_data = [d.model_dump() for d in data_in.details]
-        return svc.create_pengiriman(
+        obj = svc.create_pengiriman(
             db=db,
             gudang_id=data_in.gudang_id,
             tanggal=data_in.tanggal,
@@ -406,6 +419,10 @@ def create_pengiriman(
             keterangan=data_in.keterangan,
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'pengiriman_barang', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

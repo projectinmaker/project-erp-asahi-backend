@@ -51,3 +51,6 @@ api_router.include_router(organization.router, prefix='/organisasi', tags=['Orga
 
 from app.api.v1.endpoints import access
 api_router.include_router(access.router, prefix='/access', tags=['Role & Akses'])
+
+from app.api.v1.endpoints import histori
+api_router.include_router(histori.router, prefix='/histori', tags=['Histori Dokumen'])

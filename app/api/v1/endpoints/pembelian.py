@@ -21,6 +21,7 @@ from app.schemas.pembelian import (
     PenerimaanBarangCreate, PenerimaanBarangUpdate, PenerimaanBarangResponse,
 )
 from app.services import pembelian_service as svc
+from app.services import workflow_service
 
 
 def _service_kwargs(fn, data: dict) -> dict:
@@ -72,7 +73,7 @@ def create_purchase_order(
     try:
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
-        return svc.create_purchase_order(
+        obj = svc.create_purchase_order(
             db=db,
             tanggal=data_in.tanggal,
             supplier_id=data_in.supplier_id,
@@ -88,6 +89,10 @@ def create_purchase_order(
             syarat_bayar_id=data_in.syarat_bayar_id,
             currency=data_in.currency,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -179,7 +184,7 @@ def create_purchase_invoice(
     try:
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
-        return svc.create_purchase_invoice(
+        obj = svc.create_purchase_invoice(
             db=db,
             tanggal_jatuh_tempo=data_in.tanggal_jatuh_tempo,
             syarat_bayar_id=data_in.syarat_bayar_id,
@@ -195,6 +200,10 @@ def create_purchase_invoice(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'purchase_invoice', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -285,7 +294,7 @@ def create_purchase_retur(
     """Buat Purchase Retur baru (auto-generate no retur + auto-post jurnal)."""
     try:
         details_data = [d.model_dump() for d in data_in.details]
-        return svc.create_purchase_retur(
+        obj = svc.create_purchase_retur(
             db=db,
             gudang_id=data_in.gudang_id,
             purchase_invoice_id=data_in.purchase_invoice_id,
@@ -299,6 +308,10 @@ def create_purchase_retur(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'purchase_retur', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -389,7 +402,7 @@ def create_penerimaan(
     """
     try:
         details_data = [d.model_dump() for d in data_in.details]
-        return svc.create_penerimaan(
+        obj = svc.create_penerimaan(
             db=db,
             gudang_id=data_in.gudang_id,
             tanggal=data_in.tanggal,
@@ -401,6 +414,10 @@ def create_penerimaan(
             created_by=current_user.id,
             purchase_invoice_id=data_in.purchase_invoice_id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'penerimaan_barang', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

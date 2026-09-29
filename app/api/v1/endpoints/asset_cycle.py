@@ -4,6 +4,7 @@ from app.api.deps import get_current_db, get_current_user
 from app.models.transaksi.asset_event import AssetEvent
 from app.schemas.asset_cycle import AssetEventCreate, AssetEventResponse, AssetCancel
 from app.services import asset_cycle_service as svc
+from app.services import workflow_service
 
 router = APIRouter()
 
@@ -11,8 +12,12 @@ router = APIRouter()
 @router.post('', response_model=AssetEventResponse, status_code=201)
 def create_asset_event(data: AssetEventCreate, db=Depends(get_current_db), user=Depends(get_current_user)):
     try:
-        return svc.create_event(db, data.aset_id, data.jenis, data.tanggal,
+        obj = svc.create_event(db, data.aset_id, data.jenis, data.tanggal,
             data.model_dump(mode='json', by_alias=True, exclude={'aset_id', 'jenis', 'tanggal'}), user.id)
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, user, 'asset_event', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(400, str(e))
 

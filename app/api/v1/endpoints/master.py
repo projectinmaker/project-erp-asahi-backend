@@ -433,6 +433,19 @@ def create_barang(
 ):
     return master_service.create_master(db, Barang, data_in)
 
+
+@router.get("/barang/types")
+def get_barang_types(current_user: Pengguna = Depends(get_current_user)):
+    """Daftar jenis item (UI type) + policy-nya untuk form dinamis barang.
+
+    Spec §6 (items/types): tipe, capabilities, required fields, visible tabs,
+    account fields. Route ini HARUS terdaftar sebelum /barang/{barang_id}
+    agar "types" tidak tertelan path parameter UUID.
+    """
+    from app.services.item_type_policy import types_payload
+    return types_payload()
+
+
 @router.get("/barang/{barang_id}", response_model=BarangResponse)
 def get_barang_detail(barang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, Barang, barang_id)

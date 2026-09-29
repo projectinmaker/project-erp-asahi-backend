@@ -7,6 +7,7 @@ from app.models import PenerimaanKas, PembayaranKas
 from app.schemas.base import PaginatedResponse
 from app.schemas.settlement import SettlementCreate, AllocationUpdate, SettlementResponse, InvoiceBalanceResponse, SettlementHistoryResponse
 from app.services import settlement_service as svc
+from app.services import workflow_service
 
 router = APIRouter()
 Jenis = Literal['piutang', 'hutang']
@@ -62,6 +63,10 @@ def create_pelunasan(jenis: Jenis, data_in: SettlementCreate, db=Depends(get_cur
     try:
         obj = svc.create_settlement(db, jenis, data_in.pihak_id, data_in.tanggal, data_in.kas_bank_id,
                                     data_in.no_nukti, [r.model_dump() for r in data_in.alokasi], user.id, data_in.catatan)
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        kind = 'penerimaan_kas' if jenis == 'piutang' else 'pembayaran_kas'
+        workflow_service.direct_complete(db, user, kind, obj.id)
+        db.refresh(obj)
         return svc.payment_summary(obj)
     except ValueError as exc:
         raise HTTPException(400, str(exc))

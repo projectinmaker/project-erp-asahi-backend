@@ -78,6 +78,7 @@ def create_master(
     if table.name == 'barang' and 'stok' in table.c:
         from app.services.accounting_control import accounting_lock
         accounting_lock(db)
+        apply_barang_item_type_policy(db, data)
         validate_barang_account(db, data.get('akun_persediaan_id'))
     if allow_reactivate and key and "status" in table.c:
         # Serialize create dengan kode yang sama, termasuk saat belum ada row.
@@ -108,6 +109,9 @@ def create_master(
         # Pilih record paling baru secara deterministik; record lain tetap utuh.
         existing = next((item for item in matches if item.status == "NONAKTIF"), None)
         if existing is not None:
+            if table.name == 'barang':
+                # Reaktivasi: validasi perubahan jenis item terhadap record lama.
+                apply_barang_item_type_policy(db, data, current=existing)
             if table.name == 'barang':
                 from app.models.transaksi.stock_balance import StockBalance
                 from app.models.transaksi.stok_mutasi import StokMutasi
@@ -142,6 +146,9 @@ def update_master(db: Session, db_obj: Any, schema_in: BaseSchema) -> Any:
     if 'kode' in update_data and update_data['kode'] != db_obj.kode:
         from app.services.master_validation import validate_immutable_code
         validate_immutable_code(db, db_obj, update_data['kode'])
+    if db_obj.__table__.name == 'barang':
+        # Validasi jenis item (Persediaan/Nonpersediaan/Jasa) sebelum mapping akun.
+        apply_barang_item_type_policy(db, update_data, current=db_obj)
     if db_obj.__table__.name == 'barang' and 'akun_persediaan_id' in update_data:
         from app.services.accounting_control import accounting_lock
         accounting_lock(db)
@@ -166,6 +173,96 @@ def soft_delete_master(db: Session, db_obj: Any) -> Any:
     db.commit()
     db.refresh(db_obj)
     return db_obj
+
+
+# ==========================================
+# ITEM TYPE POLICY (Task 27-c — dynamic form barang)
+# Validasi jenis item: Persediaan / Nonpersediaan / Jasa (Grup belum tersedia).
+# ==========================================
+
+def has_transaction_references(db: Session, barang_id) -> bool:
+    """True bila barang sudah dipakai tabel detail transaksi / saldo-mutasi stok.
+
+    Dipakai untuk aturan immutability jenis item (spec §5.9): tipe item tidak
+    boleh diubah bebas setelah dipakai transaksi.
+    """
+    from app.models.detail.sales_order_detail import SalesOrderDetail
+    from app.models.detail.purchase_order_detail import PurchaseOrderDetail
+    from app.models.detail.sales_invoice_detail import SalesInvoiceDetail
+    from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
+    from app.models.detail.pengiriman_barang_detail import PengirimanBarangDetail
+    from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
+    from app.models.detail.sales_retur_detail import SalesReturDetail
+    from app.models.detail.purchase_retur_detail import PurchaseReturDetail
+    from app.models.transaksi.stok_mutasi import StokMutasi
+    from app.models.transaksi.stock_balance import StockBalance
+    from app.models.transaksi.stok_kartu_layer import StokKartuLayer
+
+    for model in (
+        SalesOrderDetail, PurchaseOrderDetail, SalesInvoiceDetail, PurchaseInvoiceDetail,
+        PengirimanBarangDetail, PenerimaanBarangDetail, SalesReturDetail, PurchaseReturDetail,
+        StokMutasi, StockBalance, StokKartuLayer,
+    ):
+        if db.query(model.id).filter(model.barang_id == barang_id).first() is not None:
+            return True
+    return False
+
+
+def apply_barang_item_type_policy(db: Session, data: dict, current: Any = None) -> None:
+    """Normalisasi + validasi payload barang sesuai jenis item (spec §5.3).
+
+    data    : dict payload hasil model_dump — create ( BarangCreate ) atau
+              update_data ( BarangUpdate, exclude_unset ).
+    current : objek Barang saat update / reaktivasi; None saat create baru.
+
+    Aturan:
+    1. Konsistensi payload: itemType JASA selalu dipaksa stock_item=False.
+    2. Immutability: perubahan item_type/stock_item pada barang yang SUDAH
+       dipakai transaksi ditolak (400).
+    3. Jasa/Nonpersediaan: dipaksa stok=0, stok_minimum=0, akun_persediaan=None.
+    4. Jasa: akun_persediaan_id terisi di payload → ditolak (400).
+    """
+    from app.services.item_type_policy import derive_ui_type
+    from app.models.master.barang import ItemTypeBarang
+
+    # Nilai final setelah payload diterapkan (fallback ke nilai current saat update).
+    item_type = data.get('item_type', None if current is None else current.item_type)
+    stock_item = data.get('stock_item', True if current is None else current.stock_item)
+
+    # (1) Normalisasi konsistensi — JASA tidak mungkin stock-tracked.
+    # (perbandingan enum-safe: ItemTypeBarang.JASA == 'JASA' bernilai True)
+    if item_type is not None and (item_type == ItemTypeBarang.JASA or item_type == 'JASA') and stock_item:
+        stock_item = False
+        data['stock_item'] = False
+
+    ui_type = derive_ui_type(item_type, stock_item)
+
+    # (2) Immutability jenis item.
+    if current is not None and (
+        item_type != current.item_type or bool(stock_item) != bool(current.stock_item)
+    ) and has_transaction_references(db, current.id):
+        raise HTTPException(
+            400,
+            'Jenis item tidak dapat diubah karena barang sudah dipakai dalam transaksi '
+            '(baris dokumen penjualan/pembelian/retur atau saldo/mutasi stok). '
+            'Nonaktifkan item ini dan buat item baru bila perlu.',
+        )
+
+    # Guard nilai status (hanya AKTIF / NONAKTIF); status None dibuang
+    # supaya default kolom 'AKTIF' tetap berlaku saat INSERT.
+    if 'status' in data:
+        if data['status'] is None:
+            del data['status']
+        elif data['status'] not in ('AKTIF', 'NONAKTIF'):
+            raise HTTPException(400, "Status harus 'AKTIF' atau 'NONAKTIF'")
+
+    # (3)+(4) Non-stock (Jasa & Nonpersediaan): tanpa stok, tanpa akun persediaan.
+    if ui_type in ('JASA', 'NONPERSEDIAAN'):
+        if ui_type == 'JASA' and data.get('akun_persediaan_id') is not None:
+            raise HTTPException(400, 'Akun persediaan tidak berlaku untuk item Jasa')
+        data['akun_persediaan_id'] = None
+        data['stok_minimum'] = 0
+        data['stok'] = 0
 
 
 def protect_inventory(db, item, data):

@@ -17,6 +17,7 @@ from app.schemas.jurnal import JurnalUmumListResponse, JurnalUmumDetailResponse,
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.accounting_control import require_unposted
 from app.services.posting_service import validate_entries
+from app.services import workflow_service
 
 router = APIRouter()
 
@@ -211,6 +212,14 @@ def create_jurnal_manual(
     except Exception:
         db.rollback()
         raise
+
+    # Administrator (revisi tim akuntansi): langsung diposting tanpa langkah approval.
+    # Gagal finalisasi → seluruh request dibatalkan (jurnal tidak tersimpan).
+    try:
+        workflow_service.direct_complete(db, current_user, 'jurnal_umum', jurnal.id)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     # Return detail response
     return (

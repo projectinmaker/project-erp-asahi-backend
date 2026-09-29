@@ -19,6 +19,7 @@ from app.schemas.persediaan import (
     PermintaanBarangCreate, PermintaanBarangUpdate, PermintaanBarangResponse,
 )
 from app.services import persediaan_service as svc
+from app.services import workflow_service
 from app.services import dashboard_service
 
 router = APIRouter()
@@ -109,7 +110,7 @@ def create_penyesuaian(
 ):
     """Buat Penyesuaian Stok baru (auto-generate no adj + auto-post jurnal)."""
     try:
-        return svc.create_penyesuaian(
+        obj = svc.create_penyesuaian(
             db=db,
             gudang_id=data_in.gudang_id,
             tanggal=data_in.tanggal,
@@ -122,6 +123,10 @@ def create_penyesuaian(
             created_by=current_user.id,
             tanggal_kedaluwarsa=data_in.tanggal_kedaluwarsa,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'penyesuaian_stok', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -243,7 +248,7 @@ def create_pemindahan(
 ):
     """Buat Pemindahan Barang baru (auto-generate no pemindahan)."""
     try:
-        return svc.create_pemindahan(
+        obj = svc.create_pemindahan(
             db=db,
             tanggal=data_in.tanggal,
             proses=data_in.proses,
@@ -255,6 +260,10 @@ def create_pemindahan(
             keterangan=data_in.keterangan,
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'pemindahan_barang', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -393,7 +402,7 @@ def create_permintaan(
 ):
     """Buat Permintaan Barang baru (auto-generate no permintaan)."""
     try:
-        return svc.create_permintaan(
+        obj = svc.create_permintaan(
             db=db,
             tanggal=data_in.tanggal,
             barang_id=data_in.barang_id,
@@ -402,6 +411,10 @@ def create_permintaan(
             keterangan=data_in.keterangan,
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'permintaan_barang', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

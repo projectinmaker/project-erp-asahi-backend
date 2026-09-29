@@ -241,7 +241,11 @@ class BarangBase(BaseSchema):
     # LEGACY
     jenis_barang: Optional[str] = None
 
-class BarangCreate(BarangBase): pass
+class BarangCreate(BarangBase):
+    # Task 27-c — dynamic form barang: status opsional saat create
+    # (default kolom tetap 'AKTIF' di server). Nilai divalidasi di
+    # master_service.apply_barang_item_type_policy (hanya AKTIF/NONAKTIF).
+    status: Optional[str] = None
 
 class BarangUpdate(BaseSchema):
     akun_persediaan_id: Optional[UUID] = None

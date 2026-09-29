@@ -35,3 +35,8 @@ class WorkflowSummary(BaseSchema):
 
 class WorkflowResponse(WorkflowSummary):
     history: List[WorkflowEventResponse]
+
+
+class HardDeleteRequest(BaseSchema):
+    """Body optional untuk endpoint /cancel yang kini menjadi hard delete."""
+    reason: Optional[str] = None

@@ -19,6 +19,7 @@ from app.schemas.kas_bank import (
     TransferBankCreate, TransferBankUpdate, TransferBankResponse,
 )
 from app.services import kas_bank_service as svc
+from app.services import workflow_service
 
 router = APIRouter()
 
@@ -57,7 +58,7 @@ def create_pembayaran(
     """Buat Pembayaran Kas baru (auto-generate no bukti + auto-post jurnal)."""
     try:
         rincian_data = [r.model_dump() for r in data_in.rincian]
-        return svc.create_pembayaran(
+        obj = svc.create_pembayaran(
             db=db,
             no_nukti=data_in.no_nukti,
             tanggal=data_in.tanggal,
@@ -69,6 +70,10 @@ def create_pembayaran(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'pembayaran_kas', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -157,7 +162,7 @@ def create_penerimaan(
     """Buat Penerimaan Kas baru (auto-generate no bukti + auto-post jurnal)."""
     try:
         rincian_data = [r.model_dump() for r in data_in.rincian]
-        return svc.create_penerimaan(
+        obj = svc.create_penerimaan(
             db=db,
             no_nukti=data_in.no_nukti,
             tanggal=data_in.tanggal,
@@ -169,6 +174,10 @@ def create_penerimaan(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'penerimaan_kas', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -255,7 +264,7 @@ def create_transfer(
 ):
     """Buat Transfer Bank baru (auto-generate no transfer + auto-post jurnal)."""
     try:
-        return svc.create_transfer(
+        obj = svc.create_transfer(
             db=db,
             tanggal=data_in.tanggal,
             dari_kas_bank_id=data_in.dari_kas_bank_id,
@@ -266,6 +275,10 @@ def create_transfer(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
+        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        workflow_service.direct_complete(db, current_user, 'transfer_bank', obj.id)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

@@ -6,6 +6,11 @@ Aturan bisnis (maker-checker, status, period lock) TETAP ditegakkan di atasnya.
 Revisi pemilik (21-i): SUPER_ADMIN dibebaskan dari maker-checker — boleh
 menyetujui dokumen yang dibuat/diajukannya sendiri agar bisa full akses solo.
 Role lain tetap terikat RBAC-07 (checker ≠ maker).
+
+Revisi tim akuntansi (28): role ADMINISTRATOR bebas dari LANGKAH approval —
+dokumen yang dibuat administrator langsung difinalisasi otomatis
+(ajukan → setujui → posting/eksekusi dalam satu transaksi) via direct_complete().
+Jejak audit tetap tercatat lengkap di workflow events.
 """
 from fastapi import HTTPException
 from app.models import (
@@ -46,6 +51,29 @@ EXECUTABLE = {
 
 def role(user):
     return getattr(user.role, 'value', user.role)
+
+
+# Role yang bebas dari langkah approval (revisi tim akuntansi — khusus administrator).
+ADMIN_BYPASS_ROLE_CODES = {'SUPER_ADMIN', 'ADMINISTRATOR'}
+
+
+def is_administrator(db, user) -> bool:
+    """True bila user ber-role Administrator/Super Admin (link RBAC v2 atau enum lama).
+
+    Hanya role inilah yang dokumennya langsung difinalisasi tanpa langkah
+    ajukan/setujui/posting. Role lain tetap menjalankan maker-checker penuh.
+    """
+    from app.services.access_service import _user_role_codes
+    codes = _user_role_codes(db, user)
+    # Kompatibilitas lintas versi access_service: versi tertentu mengembalikan
+    # Set[str], versi lain (RBAC v2 asli) mengembalikan list — normalisasi
+    # ke set agar operasi irisan (&) selalu valid (fix TypeError list & set).
+    if not isinstance(codes, (set, frozenset)):
+        codes = set(codes or ())
+    if codes & ADMIN_BYPASS_ROLE_CODES:
+        return True
+    # Fallback parity: user lama tanpa link role — turunkan dari enum role.
+    return role(user) == 'ADMINISTRATOR'
 
 
 def _perms(db, user):
@@ -169,6 +197,75 @@ def describe(db, obj, user):
         'history': [{'version': e.version, 'action': e.action, 'fromState': e.from_state,
                      'toState': e.to_state, 'actorId': e.actor_id, 'reason': e.reason, 'at': e.created_at} for e in events],
     }
+
+
+def direct_complete(db, user, kind, document_id):
+    """ADMINISTRATOR bypass: finalisasi dokumen otomatis tanpa langkah approval.
+
+    Dipanggil endpoint create SETELAH dokumen tersimpan (DRAFT). Bila user bukan
+    administrator → no-op (workflow normal). Bila administrator → jalankan
+    submit → approve → post/execute dalam SATU transaksi (logika identik dengan
+    transition(), termasuk seluruh validasi bisnis), lalu catat event workflow
+    sehingga jejak audit tetap lengkap.
+
+    Bila finalisasi gagal (mis. validasi posting), hanya transaksi ini yang
+    dibatalkan — dokumen tetap DRAFT dan bisa diselesaikan manual lewat tombol.
+    """
+    # Idempotency-Key sudah dikonsumsi transaksi create; buang agar wrapper tidak
+    # menganggap finalisasi ini sebagai replay request yang sama.
+    db.info.pop('idempotency', None)
+    return _direct_complete_tx(db, user, kind, document_id)
+
+
+@atomic_accounting_write
+def _direct_complete_tx(db, user, kind, document_id):
+    if not is_administrator(db, user):
+        return None
+    obj = get_document(db, kind, document_id, lock=True)
+    from app.services.penutupan_periode_service import validate_periode_not_closed
+    validate_periode_not_closed(db, obj.tanggal)
+    wf = find_workflow(db, obj)
+    if wf is None:
+        wf = DocumentWorkflow(document_type=kind, document_id=obj.id, state='DRAFT', version=0)
+        db.add(wf)
+        db.flush()
+    if effective_state(obj, wf) != 'DRAFT':
+        return obj  # Sudah bergerak/berfinal — jangan paksa (idempotent).
+    from app.services.organization_service import validate, for_source
+    validate(db, for_source(db, obj.id))
+
+    # 1) Ajukan (DRAFT → PENDING) — logika sama dengan transition('submit').
+    if kind == 'asset_event':
+        from app.services.asset_cycle_service import prepare
+        prepare(db, obj)
+    if kind in FINANCIAL - {'jurnal_umum', 'asset_event'}:
+        from app.services.document_totals import refresh_totals
+        refresh_totals(obj)
+        if kind in ('penerimaan_kas', 'pembayaran_kas'):
+            from app.services.settlement_service import validate_payment
+            validate_payment(db, obj)
+    wf.submitted_by = user.id
+    wf.approved_by = None
+    append_event(db, wf, 'submit', 'PENDING', user.id)
+
+    # 2) Setujui (PENDING → APPROVED). Administrator boleh menyetujui sendiri (21-i).
+    wf.approved_by = user.id
+    append_event(db, wf, 'approve', 'APPROVED', user.id)
+
+    # 3) Posting/Eksekusi (APPROVED → final). Order berhenti di APPROVED (terminal).
+    if kind in ('sales_retur', 'purchase_retur'):
+        post_existing(db, obj, user.id)
+        append_event(db, wf, 'post', 'POSTED', user.id)
+        execute_existing(db, obj)
+        append_event(db, wf, 'execute', 'POSTED', user.id)
+    elif kind in POSTABLE:
+        post_existing(db, obj, user.id)
+        append_event(db, wf, 'post', 'POSTED', user.id)
+    elif kind in EXECUTABLE:
+        execute_existing(db, obj)
+        append_event(db, wf, 'execute', 'EXECUTED', user.id)
+    db.flush()
+    return obj
 
 
 @atomic_accounting_write

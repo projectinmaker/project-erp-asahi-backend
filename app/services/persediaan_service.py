@@ -119,8 +119,10 @@ def _get_akun_hpp_id(db: Session, barang: Barang) -> UUID:
             return akun_pj
 
     # 3. Fallback setting global
+    # Fix typo KEY_HPP_PENJALAN → KEY_HPP_PENJUALAN (bug lama: AttributeError 500
+    # saat finish_pengiriman untuk barang dagang tanpa mapping HPP per-barang).
     return sa_cfg.get_akun_id_or_raise(
-        db, sa_cfg.KEY_HPP_PENJALAN,
+        db, sa_cfg.KEY_HPP_PENJUALAN,
         f"Barang {barang.kode} (HPP)",
     )
 
