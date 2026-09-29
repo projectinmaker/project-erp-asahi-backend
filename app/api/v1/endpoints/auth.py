@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import bcrypt
 
-from app.api.deps import get_current_db
+from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
 from app.schemas.pengguna import PenggunaCreate, PenggunaResponse, LoginRequest, TokenResponse
 from app.utils.auth import create_access_token
@@ -46,3 +46,21 @@ def login(login_data: LoginRequest, db: Session = Depends(get_current_db)):
     access_token = create_access_token(data={"sub": str(user.id), "role": user.role.value})
 
     return {"access_token": access_token, "token_type": "bearer", "user": user}
+
+
+@router.get("/me/permissions")
+def get_my_permissions(db: Session = Depends(get_current_db),
+                       user: Pengguna = Depends(get_current_user)):
+    """Effective permissions user saat ini — dipakai frontend untuk gating menu.
+
+    Di-resolve fresh dari server per request: perubahan akses oleh admin
+    langsung efektif tanpa perlu login ulang (spesifikasi §7, UAT RBAC-09).
+    """
+    from app.services import access_service
+    summary = access_service.user_access_summary(db, user)
+    return {
+        'permissions': summary['effectivePermissions'],
+        'isSuperAdmin': summary['isSuperAdmin'],
+        'roles': summary['roles'],
+        'legacyRole': summary['legacyRole'],
+    }

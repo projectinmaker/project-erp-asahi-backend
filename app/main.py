@@ -45,6 +45,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.error(f"✗ Database connection: FAILED - {db_status.get('error')}")
 
+    # RBAC v2 — seed registry permission + role template + link user lama (idempotent)
+    try:
+        from app.database import SessionLocal
+        from app.services.access_service import seed_access
+        with SessionLocal() as db_sess:
+            stats = seed_access(db_sess)
+            logger.info(f"✓ RBAC v2 seed: {stats}")
+    except Exception as exc:  # noqa: BLE001 — jangan blok startup bila seed gagal
+        logger.warning(f"RBAC v2 seed dilewati: {exc}")
+
     logger.info("Application startup complete")
     logger.info("=" * 60)
 

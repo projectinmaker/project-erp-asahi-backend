@@ -1,57 +1,66 @@
-"""Explicit role gates shared by each API router, including legacy endpoints."""
+"""RBAC v2 — Permission gate yang menggantikan role-set hard-coded lama.
+
+Setiap request dihitung: permission code via access_registry.infer_permission(),
+lalu dicek terhadap effective permissions user (union role template + ALLOW − DENY;
+super admin short-circuit). Endpoint tak terpetakan → default deny (RBAC-13),
+kecuali modul yang ditegakkan di service (workflow).
+
+Logika idempotency & invariant 409 lama DIPERTAHANKAN persis (maker-checker,
+rekalkulasi dinonaktifkan, endpoint approve_* lama wajib lewat workflow).
+"""
 import hashlib
 import json
 from fastapi import Depends, HTTPException, Request, Header
+from loguru import logger
+
 from app.api.deps import get_current_db, get_current_user
-from app.services.workflow_service import FINANCE, APPROVERS, role
+from app.services.access_registry import infer_permission
+from app.services.access_service import effective_permissions
 
 
-def module_access(module):
+# Modul yang gate-nya ditegakkan di service (bukan di router).
+_SERVICE_ENFORCED = {'workflow'}
+
+
+def module_access(module: str):
     async def check(request: Request, db=Depends(get_current_db), user=Depends(get_current_user),
                     idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
-        user_role = role(user)
-        read = request.method in ('GET', 'HEAD', 'OPTIONS')
-        name = request.scope['endpoint'].__name__
-        allowed = set(FINANCE)
-        if module in ('workflow', 'organisasi'):
-            allowed |= {'STAFF_PENJUALAN', 'STAFF_GUDANG'}
-        if module in ('penjualan', 'master', 'stok_kartu'):
-            allowed.add('STAFF_PENJUALAN')
-        if module in ('persediaan', 'master', 'stok_kartu'):
-            allowed.add('STAFF_GUDANG')
-        if module == 'penjualan' and 'pengiriman' in name:
-            allowed.add('STAFF_GUDANG')
-            if not read:
-                allowed.discard('STAFF_PENJUALAN')
-        if module == 'pembelian' and 'penerimaan' in name:
-            allowed.add('STAFF_GUDANG')
-        if module == 'organisasi' and name == 'list_cashflow_classifications':
-            allowed = set(FINANCE)
-        if module == 'organisasi' and (name in ('create_organization_unit', 'edit_organization_unit', 'list_reporting_audit', 'set_cashflow_classification')):
-            allowed = set(APPROVERS)
-        if module == 'pengguna':
-            allowed = {'ADMINISTRATOR'}
-        elif name == 'reconcile_inventory_ledger':
-            allowed = set(FINANCE)
-        elif module == 'karyawan':
-            allowed = set(APPROVERS)
-        elif not read:
-            if module in ('master', 'coa', 'aset_tetap', 'penutupan_periode') or name.startswith(('cancel_', 'void_', 'delete_', 'hapus_')):
-                allowed = set(APPROVERS)
-            if name in ('complete_rekonsiliasi',):
-                allowed = set(APPROVERS)
-        if user_role not in allowed:
-            raise HTTPException(403, 'Role pengguna tidak memiliki izin untuk aksi ini')
+        fn = request.scope['endpoint'].__name__
+        method = request.method
+        path = str(request.url.path)
+
+        # ── Permission check (RBAC v2) ────────────────────────────────────
+        if module in _SERVICE_ENFORCED:
+            code = infer_permission(module, fn, method, path)
+            if code is None:
+                pass  # get_workflow / act → ditegakkan per-dokumen di workflow_service
+            else:
+                perms, is_super = effective_permissions(db, user)
+                if not is_super and code not in perms:
+                    raise HTTPException(403, 'Role pengguna tidak memiliki izin untuk aksi ini')
+        else:
+            code = infer_permission(module, fn, method, path)
+            perms, is_super = effective_permissions(db, user)
+            if code is None:
+                # Endpoint belum dipetakan → default deny (kecuali super admin)
+                if not is_super:
+                    logger.warning(f"access: unmapped endpoint denied module={module} fn={fn} {method} {path} user={user.username}")
+                    raise HTTPException(403, 'Aksi ini belum memiliki mapping izin (default deny)')
+            elif not is_super and code not in perms:
+                raise HTTPException(403, 'Role pengguna tidak memiliki izin untuk aksi ini')
+
+        # ── Invariant 409 lama (dipertahankan persis) ─────────────────────
+        read = method in ('GET', 'HEAD', 'OPTIONS')
         if not read:
-            if name == 'rekalkulasi_stok_kartu':
+            if fn == 'rekalkulasi_stok_kartu':
                 raise HTTPException(409, 'Rekalkulasi histori dinonaktifkan; gunakan rekonsiliasi dan penyesuaian yang disetujui')
             # Old stock approval endpoints must not bypass submit + maker/checker.
-            if name in ('approve_penyesuaian', 'approve_pemindahan', 'approve_permintaan', 'finish_pengiriman', 'finish_penerimaan'):
+            if fn in ('approve_penyesuaian', 'approve_pemindahan', 'approve_permintaan', 'finish_pengiriman', 'finish_penerimaan'):
                 raise HTTPException(409, 'Gunakan endpoint workflow: submit, approve, lalu execute')
             db.info['request_actor'] = user
             key = request.headers.get('Idempotency-Key')
             # Required for document creates; optional for updates/cancels. Scope per actor.
-            required = request.method == 'POST' and name.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle', 'organisasi')
+            required = request.method == 'POST' and fn.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle', 'organisasi')
             if required and not key:
                 raise HTTPException(400, 'Header Idempotency-Key wajib diisi untuk membuat dokumen')
             if key:

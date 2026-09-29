@@ -84,7 +84,7 @@ def edit_unit(db, unit_id, data, user):
 @atomic_accounting_write
 def assign_document(db, kind, document_id, data, expected_version, user):
     from app.services import workflow_service as wf
-    if not wf.can_make(user, kind):
+    if not wf.can_make(db, user, kind):
         raise HTTPException(403, 'Tidak memiliki akses dokumen ini')
     obj = wf.get_document(db, kind, document_id, lock=True)
     if obj.created_by != user.id and wf.role(user) not in wf.APPROVERS:

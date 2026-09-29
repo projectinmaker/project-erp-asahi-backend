@@ -18,6 +18,11 @@ from app.models.master.kas_bank_akun import KasBankAkun
 from app.models.master.biaya_tambahan import BiayaTambahan
 from app.models.master.setting_akun import SettingAkun
 
+# RBAC v2 — Role & Permission (revisi role user)
+from app.models.master.access import (
+    Role, Permission, RolePermission, UserRole, UserPermissionOverride, AccessAuditLog,
+)
+
 # Transaksi - Kas & Bank
 from app.models.transaksi.kas_bank.pembayaran import PembayaranKas, StatusTransaksi
 from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas

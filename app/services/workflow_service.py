@@ -1,4 +1,8 @@
-"""One-level maker/checker workflow. All writes lock the source document first."""
+"""One-level maker/checker workflow. All writes lock the source document first.
+
+RBAC v2: gate aksi berbasis permission `module.resource.action` (revisi role user).
+Aturan bisnis (maker-checker, status, period lock) TETAP ditegakkan di atasnya.
+"""
 from fastapi import HTTPException
 from app.models import (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
@@ -7,7 +11,10 @@ from app.models import (
 )
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent
 from app.services.accounting_control import atomic_accounting_write
+from app.services.access_registry import KIND_RESOURCE
+from app.services.access_service import effective_permissions
 
+# Kompabilitas lama — modul lain masih mengimpor konstanta ini (jangan dihapus dulu).
 FINANCE = {'ADMINISTRATOR', 'MANAJER_KEUANGAN', 'STAFF_AKUNTANSI'}
 APPROVERS = {'ADMINISTRATOR', 'MANAJER_KEUANGAN'}
 MODELS = {m.__tablename__: m for m in (
@@ -25,12 +32,28 @@ def role(user):
     return getattr(user.role, 'value', user.role)
 
 
-def can_read(user, kind):
-    return role(user) in FINANCE or (role(user) == 'STAFF_PENJUALAN' and kind in SALES | {'pengiriman_barang'}) or (role(user) == 'STAFF_GUDANG' and kind in STOCK)
+def _perms(db, user):
+    """(set permission code, is_super) — resolve per request (RBAC-09: langsung efektif)."""
+    return effective_permissions(db, user)
 
 
-def can_make(user, kind):
-    return role(user) in FINANCE or (role(user) == 'STAFF_PENJUALAN' and kind in SALES) or (role(user) == 'STAFF_GUDANG' and kind in STOCK)
+def _has(db, user, resource: str, action: str) -> bool:
+    perms, is_super = _perms(db, user)
+    return is_super or f"{resource}.{action}" in perms
+
+
+def can_read(db, user, kind):
+    resource = KIND_RESOURCE.get(kind)
+    if not resource:
+        return False
+    return _has(db, user, resource, 'view')
+
+
+def can_make(db, user, kind):
+    resource = KIND_RESOURCE.get(kind)
+    if not resource:
+        return False
+    return _has(db, user, resource, 'create')
 
 
 def get_document(db, kind, document_id, lock=False):
@@ -75,25 +98,37 @@ def append_event(db, wf, action, state, user_id, reason=None):
                          from_state=before, to_state=state, actor_id=user_id, reason=reason))
 
 
-def available_actions(user, obj, wf):
+def available_actions(db, user, obj, wf):
     state = effective_state(obj, wf)
     kind = obj.__tablename__
+    resource = KIND_RESOURCE.get(kind)
     result = []
-    if state in ('DRAFT', 'REJECTED') and can_make(user, kind) and (obj.created_by == user.id or role(user) in APPROVERS):
+    if not resource:
+        return result
+    perms, is_super = _perms(db, user)
+
+    def has(action):
+        return is_super or f'{resource}.{action}' in perms
+
+    can_approve = has('approve')
+    if state in ('DRAFT', 'REJECTED') and has('submit') and (obj.created_by == user.id or can_approve):
         result.append('submit')
     if state == 'PENDING':
-        if role(user) in APPROVERS and user.id not in (obj.created_by, wf.submitted_by):
+        # Akses penuh Super Admin (revisi pemilik): SUPER_ADMIN dibebaskan dari maker-checker
+        # sehingga boleh menyetujui/menolak dokumen yang dibuat/diajukan sendiri.
+        # Role lain tetap terikat RBAC-07 (checker harus berbeda dari maker).
+        if can_approve and (is_super or user.id not in (obj.created_by, wf.submitted_by)):
             result += ['approve', 'reject']
         if user.id == wf.submitted_by:
             result.append('withdraw')
     if state == 'APPROVED':
-        if kind in FINANCIAL and role(user) in FINANCE:
+        if has('post'):
             result.append('post')
-        if kind in STOCK and role(user) in FINANCE | {'STAFF_GUDANG'}:
+        if has('execute'):
             result.append('execute')
-    if kind == 'jurnal_umum' and state != 'CANCELLED' and role(user) in APPROVERS:
+    if kind == 'jurnal_umum' and state != 'CANCELLED' and has('cancel'):
         result.append('cancel')
-    if kind in ('sales_retur', 'purchase_retur') and state == 'POSTED' and getattr(obj.status, 'value', obj.status) != 'SELESAI' and role(user) in FINANCE:
+    if kind in ('sales_retur', 'purchase_retur') and state == 'POSTED' and getattr(obj.status, 'value', obj.status) != 'SELESAI' and has('execute'):
         result.append('execute')
     return result
 
@@ -108,13 +143,13 @@ def describe(db, obj, user):
         'documentNumber': next((getattr(obj, name) for name in ('no_invoice', 'no_form', 'no_retur', 'no_bukti', 'no_transfer', 'no_pesanan', 'no_jurnal', 'no_surat_jalan', 'no_adj', 'no_pemindahan', 'no_permintaan') if hasattr(obj, name)), str(obj.id)),
         'createdBy': obj.created_by, 'submittedBy': wf.submitted_by if wf else None,
         'approvedBy': wf.approved_by if wf else None,
-        'canEdit': effective_state(obj, wf) in ('DRAFT', 'REJECTED') and can_make(user, obj.__tablename__) and (user.id == obj.created_by or role(user) in APPROVERS),
+        'canEdit': effective_state(obj, wf) in ('DRAFT', 'REJECTED') and can_make(db, user, obj.__tablename__) and (user.id == obj.created_by or _has(db, user, KIND_RESOURCE.get(obj.__tablename__, ''), 'approve')),
         'tanggal': obj.tanggal,
         'total': str(getattr(obj, 'grand_total', getattr(obj, 'total_nilai', getattr(obj, 'nilai_transfer', getattr(obj, 'total_debit', getattr(obj, 'total', 0)))))),
         'state': effective_state(obj, wf), 'documentStatus': getattr(obj.status, 'value', obj.status),
         'version': wf.version if wf else 0,
         'journalId': obj.id if obj.__tablename__ == 'jurnal_umum' else getattr(obj, 'jurnal_umum_id', None),
-        'availableActions': available_actions(user, obj, wf),
+        'availableActions': available_actions(db, user, obj, wf),
         'history': [{'version': e.version, 'action': e.action, 'fromState': e.from_state,
                      'toState': e.to_state, 'actorId': e.actor_id, 'reason': e.reason, 'at': e.created_at} for e in events],
     }
@@ -122,7 +157,7 @@ def describe(db, obj, user):
 
 @atomic_accounting_write
 def transition(db, document_type, document_id, action, user, expected_version, reason=None):
-    if not can_read(user, document_type):
+    if not can_read(db, user, document_type):
         raise HTTPException(403, 'Tidak memiliki akses dokumen ini')
     obj = get_document(db, document_type, document_id, lock=True)
     from app.services.penutupan_periode_service import validate_periode_not_closed
@@ -134,8 +169,13 @@ def transition(db, document_type, document_id, action, user, expected_version, r
         db.flush()
     if wf.version != expected_version:
         raise HTTPException(409, 'Versi dokumen berubah. Muat ulang workflow sebelum melanjutkan')
-    if action not in available_actions(user, obj, wf):
-        if action in ('approve', 'reject') and (role(user) not in APPROVERS or user.id in (obj.created_by, wf.submitted_by)):
+    if action not in available_actions(db, user, obj, wf):
+        resource = KIND_RESOURCE.get(document_type, '')
+        _, is_super = _perms(db, user)
+        if action in ('approve', 'reject') and (
+            not _has(db, user, resource, 'approve')
+            or (user.id in (obj.created_by, wf.submitted_by) and not is_super)
+        ):
             raise HTTPException(403, 'Approval memerlukan manajer/admin lain, bukan pembuat atau pengaju dokumen')
         raise HTTPException(409, 'Aksi tidak diizinkan untuk role atau status dokumen saat ini')
     if action in ('submit', 'post', 'execute'):

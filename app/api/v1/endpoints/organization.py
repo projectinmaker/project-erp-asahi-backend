@@ -40,7 +40,7 @@ def edit_organization_unit(unit_id: UUID, data: OrganizationEdit, db=Depends(get
 @router.get('/dokumen/{kind}/{document_id}', response_model=OrganizationDimensions)
 def get_document_organization(kind: str, document_id: UUID, db=Depends(get_current_db), user=Depends(get_current_user)):
     from app.services import workflow_service as wf
-    if not wf.can_read(user, kind):
+    if not wf.can_read(db, user, kind):
         raise HTTPException(403, 'Tidak memiliki akses dokumen')
     wf.get_document(db, kind, document_id)
     return svc.for_source(db, document_id)

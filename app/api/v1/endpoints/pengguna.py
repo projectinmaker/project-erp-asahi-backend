@@ -12,6 +12,39 @@ from app.schemas.pengguna import PenggunaCreate, PenggunaUpdate, PenggunaRespons
 router = APIRouter()
 
 
+def _sync_role_template(db: Session, user: Pengguna) -> None:
+    """Tautkan user ke role template sesuai enum role (RBAC v2 auto-link).
+
+    Hanya mengganti link bila link yang ada persis template lama (belum
+    dikustomisasi via UI Role & Akses) — akses kustom tidak pernah ditimpa.
+    """
+    from app.models.master.access import Role, UserRole
+    from app.services.access_registry import LEGACY_TEMPLATE, ROLE_TEMPLATES
+    legacy = getattr(user.role, 'value', user.role)
+    want_code = LEGACY_TEMPLATE.get(legacy)
+    if not want_code:
+        return
+    want = db.query(Role).filter(Role.code == want_code).first()
+    if not want:
+        return
+    links = db.query(UserRole).filter_by(user_id=user.id).all()
+    if len(links) == 1:
+        current = db.get(Role, links[0].role_id)
+        if current and current.code == want_code:
+            return  # sudah benar
+        # Link lama = template default enum lama → ganti mengikuti enum baru
+        if current and current.code in LEGACY_TEMPLATE.values() and current.code != 'SUPER_ADMIN':
+            db.delete(links[0])
+    elif len(links) == 0:
+        pass  # belum ada link → buat baru
+    else:
+        return  # multiple/kustom → jangan disentuh
+    if ROLE_TEMPLATES.get(want_code, {}).get('super', False):
+        db.add(UserRole(user_id=user.id, role_id=want.id))
+    else:
+        db.add(UserRole(user_id=user.id, role_id=want.id))
+
+
 @router.get("", response_model=PaginatedResponse[PenggunaResponse])
 def get_pengguna_list(
     skip: int = Query(0, ge=0),
@@ -65,6 +98,8 @@ def create_pengguna(
         role=data_in.role,
     )
     db.add(db_obj)
+    db.flush()
+    _sync_role_template(db, db_obj)
     db.commit()
     db.refresh(db_obj)
     return db_obj
@@ -109,6 +144,9 @@ def update_pengguna(
         setattr(item, field, value)
 
     db.add(item)
+    db.flush()
+    if "role" in update_data:
+        _sync_role_template(db, item)
     db.commit()
     db.refresh(item)
     return item
@@ -129,6 +167,26 @@ def delete_pengguna(
         raise HTTPException(status_code=404, detail="Pengguna tidak ditemukan")
     if item.status == "NONAKTIF":
         raise HTTPException(status_code=400, detail="Pengguna sudah tidak aktif")
+
+    # RBAC-15: jangan nonaktifkan satu-satunya super admin
+    from app.services.access_service import effective_permissions
+    from app.models.master.access import Role, UserRole
+    _, is_super = effective_permissions(db, item)
+    if is_super:
+        other_supers = (
+            db.query(UserRole)
+            .join(Role, Role.id == UserRole.role_id)
+            .filter(Role.code == 'SUPER_ADMIN', UserRole.user_id != item.id)
+            .count()
+        )
+        legacy_admins = (
+            db.query(Pengguna)
+            .filter(Pengguna.status == 'AKTIF', Pengguna.id != item.id,
+                    Pengguna.role == 'ADMINISTRATOR')
+            .count()
+        )
+        if other_supers == 0 and legacy_admins == 0:
+            raise HTTPException(status_code=400, detail="Tidak bisa menonaktifkan satu-satunya super admin")
 
     item.status = "NONAKTIF"
     db.add(item)

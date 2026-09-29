@@ -1,5 +1,6 @@
 import enum
 from sqlalchemy import Column, String, DateTime, Enum as SQLEnum
+from sqlalchemy.orm import relationship
 from app.database import BaseModel
 from app.models.base import BaseMixin
 
@@ -26,3 +27,13 @@ class Pengguna(BaseModel, BaseMixin):
     def nama(self) -> str:
         """Compatibility for transaction responses exposing creator.nama."""
         return self.nama_lengkap
+
+    # RBAC v2 — relasi role template & override (lazy untuk hindari circular import)
+    role_links = relationship(
+        "UserRole", primaryjoin="Pengguna.id == UserRole.user_id",
+        foreign_keys="UserRole.user_id", lazy="selectin", cascade="all, delete-orphan",
+    )
+    permission_overrides = relationship(
+        "UserPermissionOverride", primaryjoin="Pengguna.id == UserPermissionOverride.user_id",
+        foreign_keys="UserPermissionOverride.user_id", lazy="selectin", cascade="all, delete-orphan",
+    )

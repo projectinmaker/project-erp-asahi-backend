@@ -48,3 +48,6 @@ api_router.include_router(asset_cycle.router, prefix='/aset-transaksi', tags=['S
 
 from app.api.v1.endpoints import organization
 api_router.include_router(organization.router, prefix='/organisasi', tags=['Organisasi'], dependencies=[Depends(module_access('organisasi'))])
+
+from app.api.v1.endpoints import access
+api_router.include_router(access.router, prefix='/access', tags=['Role & Akses'])
