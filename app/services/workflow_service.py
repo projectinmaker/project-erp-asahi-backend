@@ -2,6 +2,10 @@
 
 RBAC v2: gate aksi berbasis permission `module.resource.action` (revisi role user).
 Aturan bisnis (maker-checker, status, period lock) TETAP ditegakkan di atasnya.
+
+Revisi pemilik (21-i): SUPER_ADMIN dibebaskan dari maker-checker — boleh
+menyetujui dokumen yang dibuat/diajukannya sendiri agar bisa full akses solo.
+Role lain tetap terikat RBAC-07 (checker ≠ maker).
 """
 from fastapi import HTTPException
 from app.models import (
@@ -26,6 +30,18 @@ SALES = {'sales_order', 'sales_invoice', 'sales_retur'}
 STOCK = {'pengiriman_barang', 'penerimaan_barang', 'penyesuaian_stok', 'pemindahan_barang', 'permintaan_barang'}
 ORDERS = {'sales_order', 'purchase_order'}
 FINANCIAL = set(MODELS) - STOCK - ORDERS
+
+# Dokumen yang didukung aksi POST (posting jurnal) dan EXECUTE (finalisasi stok/retur).
+# Mencegah KeyError saat tombol post/execute dipanggil untuk jenis dokumen tanpa handler
+# (bug: tombol "Eksekusi" muncul di pembayaran_kas padahal kas&bank hanya punya alur post).
+POSTABLE = {
+    'sales_invoice', 'sales_retur', 'purchase_invoice', 'purchase_retur',
+    'pembayaran_kas', 'penerimaan_kas', 'transfer_bank', 'jurnal_umum', 'asset_event',
+}
+EXECUTABLE = {
+    'pengiriman_barang', 'penerimaan_barang', 'penyesuaian_stok', 'pemindahan_barang',
+    'permintaan_barang', 'sales_retur', 'purchase_retur',
+}
 
 
 def role(user):
@@ -122,9 +138,9 @@ def available_actions(db, user, obj, wf):
         if user.id == wf.submitted_by:
             result.append('withdraw')
     if state == 'APPROVED':
-        if has('post'):
+        if has('post') and kind in POSTABLE:
             result.append('post')
-        if has('execute'):
+        if has('execute') and kind in EXECUTABLE:
             result.append('execute')
     if kind == 'jurnal_umum' and state != 'CANCELLED' and has('cancel'):
         result.append('cancel')
@@ -247,6 +263,8 @@ def post_existing(db, obj, actor_id):
         is_settlement = bool(getattr(obj, 'alokasi', None))
         methods[obj.__tablename__](db, obj, actor_id, is_settlement=is_settlement)
     else:
+        if obj.__tablename__ not in methods:
+            raise HTTPException(409, f"Jenis dokumen '{obj.__tablename__}' tidak mendukung aksi posting")
         methods[obj.__tablename__](db, obj, actor_id)
 
 
@@ -261,6 +279,8 @@ def execute_existing(db, obj):
     }
     db.info['workflow_executing'] = True
     try:
+        if obj.__tablename__ not in methods:
+            raise HTTPException(409, f"Jenis dokumen '{obj.__tablename__}' tidak mendukung aksi eksekusi. Gunakan aksi posting untuk dokumen kas&bank/invoice/jurnal.")
         methods[obj.__tablename__](db, obj)
     finally:
         db.info.pop('workflow_executing', None)
