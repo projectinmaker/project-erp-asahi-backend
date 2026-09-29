@@ -41,11 +41,12 @@ def _find_group_coa(db: Session, keywords: list[str], header: HeaderCOA) -> Opti
 def _generate_next_detail_kode(db: Session, parent: AkunPerkiraan) -> str:
     """Generate kode detail berikutnya di bawah parent.
 
-    Support 2 format kode yang mungkin ada di DB:
+    Support 3 format kode yang mungkin ada di DB:
+    - FLAT 6-digit (COA ASAHI): 111000 -> child 111001, 111002, ...
     - FLAT 9-digit: 111000000 -> 111000001, 111000002, ...
     - DOTTED: 111.000.000 -> 111.000.001, 111.000.002, ...
     Format hasil generate mengikuti format kode parent-nya (deteksi via
-    ada/tidaknya '.').
+    ada/tidaknya '.' dan panjang digit).
 
     Logic:
     1. Cari semua child langsung dari parent (induk_id == parent.id)
@@ -80,10 +81,15 @@ def _generate_next_detail_kode(db: Session, parent: AkunPerkiraan) -> str:
         segments = parent_kode.split(".")
         prefix = ".".join(segments[:2])  # "111.000"
         return f"{prefix}.{next_seq:03d}"
-    else:
-        # Ambil 6 digit depan parent, tambahkan 3 digit sequence
-        prefix_6 = parent_kode[:6]
-        return f"{prefix_6}{next_seq:03d}"
+
+    digits_only = parent_kode.replace(".", "")
+    if len(digits_only) <= 6:
+        # FLAT 6-digit (COA ASAHI 111xxx): child = 3 digit prefix + 3 digit seq
+        prefix_3 = parent_kode[:3]
+        return f"{prefix_3}{next_seq:03d}"
+    # FLAT 9-digit: 6 digit depan parent + 3 digit sequence
+    prefix_6 = parent_kode[:6]
+    return f"{prefix_6}{next_seq:03d}"
 
 
 def _create_detail_coa(

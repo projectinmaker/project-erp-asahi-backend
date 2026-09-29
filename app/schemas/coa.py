@@ -42,6 +42,18 @@ class COABase(BaseSchema):
 class COACreate(COABase):
     """Schema untuk membuat COA baru.
 
+    Dua mode input:
+
+    1. MODE BARU (revisi form) — kirim `type_code` (dari GET /coa/account-types)
+       plus input minimal (nama, induk_id, kode opsional). Server menurunkan
+       header/tingkat/saldo_normal/klasifikasi/aturan posting dari template
+       registry + validasi parent. Field klasifikasi di payload akan
+       DITIMPA derivasi server — jangan percaya flag control/system dari
+       payload user biasa.
+
+    2. MODE LEGACY — tanpa type_code; header/tingkat/saldo_normal wajib
+       diisi manual (backward compatibility untuk importer/frontend lama).
+
     Field tambahan (opsional):
     - jenis_kas_bank: Jika COA detail di bawah AKTIVA (Kas dan Setara Kas),
       isi 'KAS' atau 'BANK' untuk auto-membuat KasBankAkun.
@@ -64,6 +76,18 @@ class COACreate(COABase):
     - active: default True (False = akun di-hide dari transaksi baru, tapi
       tetap terbaca di laporan historis)
     """
+    # Mode baru: type_code + is_sub + structural_type (server derive sisanya)
+    type_code: Optional[str] = None
+    is_sub: Optional[bool] = None
+    structural_type: Optional[str] = None  # GROUP | DETAIL (untuk root)
+
+    # Override COABase jadi opsional — wajib HANYA pada mode legacy.
+    # Validasi keberadaan dilakukan di endpoint/service.
+    kode: Optional[str] = None  # mode baru: kosong = auto-generate dari parent
+    header: Optional[HeaderCOA] = None
+    tingkat: Optional[TingkatAkun] = None
+    saldo_normal: Optional[SaldoNormal] = None
+
     jenis_kas_bank: Optional[str] = None  # 'KAS' atau 'BANK'
     saldo: Decimal = Decimal("0")
     tanggal: Optional[datetime] = None
@@ -104,6 +128,95 @@ class COAUpdate(BaseSchema):
     system_account_type: Optional[str] = None
     reconciliation_required: Optional[bool] = None
     active: Optional[bool] = None
+
+
+# ==========================================
+# Registry template tipe akun — revisi form COA
+# ==========================================
+
+class AccountTypeTemplateResponse(BaseSchema):
+    """Template tipe akun dari registry server (dropdown Tipe Akun).
+
+    Frontend WAJIB memakai data ini — jangan menduplikasi klasifikasi
+    di select statis.
+    """
+    type_code: str
+    display_name: str
+    account_class: str
+    financial_statement: str
+    report_group: Optional[str] = None
+    account_subclass: Optional[str] = None
+    saldo_normal: str
+    default_posting_level: str
+    default_system_posting: bool
+    default_manual_posting: bool
+    default_control: bool
+    default_reconciliation: bool
+    subledger_type: Optional[str] = None
+    is_system_reserved: bool
+    allowed_parent_subclasses: List[str] = []
+    supports_root: bool = False
+    requires_jenis_kas_bank: bool = False
+
+
+class COAParentOptionResponse(BaseSchema):
+    """Akun induk yang eligible untuk sebuah tipe akun."""
+    id: UUID
+    kode: str
+    nama: str
+    tingkat: str
+    account_class: Optional[str] = None
+    account_subclass: Optional[str] = None
+    recommended: bool = False
+
+
+class COAPreviewRequest(BaseSchema):
+    """Request preview akun baru — tanpa menyimpan ke DB."""
+    type_code: str
+    is_sub: bool = True
+    induk_id: Optional[UUID] = None
+    structural_type: Optional[str] = None  # GROUP | DETAIL (root)
+    kode: Optional[str] = None
+    nama: Optional[str] = None
+    jenis_kas_bank: Optional[str] = None
+
+
+class COAPreviewResponse(BaseSchema):
+    """Hasil preview: kode usulan + klasifikasi turunan + warnings/errors.
+
+    `errors` = blocking (frontend disable tombol Simpan).
+    `warnings` = informatif saja.
+    """
+    type_code: str
+    display_name: str
+    kode: Optional[str] = None
+    kode_generated: bool = False
+    nama: Optional[str] = None
+    induk_id: Optional[UUID] = None
+    induk_kode: Optional[str] = None
+    induk_nama: Optional[str] = None
+    tingkat: Optional[str] = None
+    header: Optional[str] = None
+    saldo_normal: Optional[str] = None
+    account_class: Optional[str] = None
+    account_subclass: Optional[str] = None
+    financial_statement: Optional[str] = None
+    report_group: Optional[str] = None
+    allow_system_posting: Optional[bool] = None
+    allow_manual_posting: Optional[bool] = None
+    is_control_account: Optional[bool] = None
+    subledger_type: Optional[str] = None
+    system_account_type: Optional[str] = None
+    reconciliation_required: Optional[bool] = None
+    active: Optional[bool] = None
+    jenis_kas_bank: Optional[str] = None
+    warnings: List[str] = []
+    errors: List[str] = []
+
+
+class COACreateValidationWarning(BaseSchema):
+    field: str
+    message: str
 
 
 # --- Saldo Awal ---

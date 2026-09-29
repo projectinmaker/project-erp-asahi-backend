@@ -141,11 +141,14 @@ def create_coa(db: Session, coa_in: COACreate) -> AkunPerkiraan:
     - is_control_account / reconciliation_required: default False kalau None.
     - active: default True kalau None, sync ke `status`.
     """
-    # Extract jenis_kas_bank sebelum dump (bukan field model)
+    # Extract jenis_kas_bank sebelum dump (bukan field model).
+    # type_code/is_sub/structural_type hanya input resolver registry — bukan
+    # field model (sudah di-resolve endpoint jadi field legacy + new).
     jenis_kas_bank = coa_in.jenis_kas_bank
 
     # Default untuk field baru kalau None
-    create_data = coa_in.model_dump(exclude={"jenis_kas_bank"})
+    create_data = coa_in.model_dump(
+        exclude={"jenis_kas_bank", "type_code", "is_sub", "structural_type"})
 
     if create_data.get("account_class") is None:
         create_data["account_class"] = _derive_account_class_from_header(coa_in.header)

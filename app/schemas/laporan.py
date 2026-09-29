@@ -95,16 +95,83 @@ class NeracaResponse(BaseSchema):
 
 
 # --- Arus Kas ---
+class ArusKasCounterAccount(BaseSchema):
+    """Akun lawan pada jurnal mixed (MIXED_UNALLOCATED).
+
+    Hanya diisi ketika alokasi per akun tidak bisa dilakukan secara tepat
+    (debit/kredit lawan campuran atau jumlah tidak match). Frontend
+    menampilkan ini sebagai detail, bukan sebagai baris nilai utama.
+    """
+    account_id: Optional[UUID] = None
+    account_code: Optional[str] = None
+    account_name: Optional[str] = None
+    jumlah: Decimal = Decimal("0")
+
+
 class ArusKasItem(BaseSchema):
+    """Satu baris arus kas dengan identitas COA lengkap (revisi arus kas).
+
+    Field legacy (tetap dikirim untuk backward compatibility):
+    - journal_id, no_jurnal, nama, jumlah
+
+    Field baru (additive — frontend lama tidak rusak):
+    - category: OPERASIONAL/INVESTASI/PEMBIAYAAN/BELUM_DIKLASIFIKASIKAN
+    - direction: INFLOW/OUTFLOW
+    - account_id/code/name: identitas akun lawan kas (None untuk mixed)
+    - cash_account_id/code/name: akun kas/bank yang terdampak
+    - transaction_description: keterangan bebas header jurnal
+    - line_description: keterangan line akun lawan (jika EXACT)
+    - source_module/source_id/source_no: identitas dokumen sumber
+    - tanggal: tanggal jurnal (YYYY-MM-DD)
+    - reversal_of_id/reversal_of_no_jurnal: trace jurnal sumber pembalik
+    - allocation_status: EXACT / MIXED_UNALLOCATED
+    - counter_accounts: detail akun lawan untuk jurnal mixed
+    """
     journal_id: Optional[UUID] = None
     no_jurnal: Optional[str] = None
     nama: str
     jumlah: Decimal = Decimal("0")
 
+    # === Revisi: identitas COA & narasi (additive) ===
+    category: Optional[str] = None
+    direction: Optional[str] = None
+    account_id: Optional[UUID] = None
+    account_code: Optional[str] = None
+    account_name: Optional[str] = None
+    cash_account_id: Optional[UUID] = None
+    cash_account_code: Optional[str] = None
+    cash_account_name: Optional[str] = None
+    transaction_description: Optional[str] = None
+    line_description: Optional[str] = None
+    source_module: Optional[str] = None
+    source_id: Optional[str] = None
+    source_no: Optional[str] = None
+    tanggal: Optional[str] = None
+    reversal_of_id: Optional[UUID] = None
+    reversal_of_no_jurnal: Optional[str] = None
+    allocation_status: Optional[str] = None
+    counter_accounts: List[ArusKasCounterAccount] = []
+
+
+class ArusKasAccountGroup(BaseSchema):
+    """Ringkasan arus kas per akun lawan (grouping).
+
+    account_id None = kumpulan item mixed/tanpa alokasi akun.
+    """
+    account_id: Optional[UUID] = None
+    account_code: Optional[str] = None
+    account_name: Optional[str] = None
+    inflow: Decimal = Decimal("0")
+    outflow: Decimal = Decimal("0")
+    net: Decimal = Decimal("0")
+    transaction_count: int = 0
+
 
 class ArusKasBagian(BaseSchema):
     items: List[ArusKasItem] = []
     total: Decimal = Decimal("0")
+    # Ringkasan per akun lawan (additive; view=summary fokus ke sini)
+    account_groups: List[ArusKasAccountGroup] = []
 
 
 class ArusKasResponse(BaseSchema):

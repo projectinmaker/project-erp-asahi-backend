@@ -4,15 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
-from app.models.akun_perkiraan import HeaderCOA, TingkatAkun
+from app.models.akun_perkiraan import HeaderCOA, TingkatAkun, HEADER_TO_ACCOUNT_CLASS
 from app.models.master.pengguna import Pengguna
 from app.schemas.coa import (
     COACreate, COAUpdate, COAResponse,
     SaldoAwalRequest, SaldoAwalResponse, NextKodeResponse,
     MigrationApplyRequest, MigrationApplyResponse,
+    AccountTypeTemplateResponse, COAParentOptionResponse,
+    COAPreviewRequest, COAPreviewResponse,
 )
 from app.services import coa_service
 from app.services import coa_migration_service
+from app.services import coa_type_registry
 from app.schemas.base import PaginatedResponse
 
 router = APIRouter()
@@ -120,19 +123,48 @@ def create_coa(
 ):
     """Tambah Akun Perkiraan (COA) baru.
 
+    MODE BARU (revisi form): kirim `typeCode` (dari GET /coa/account-types)
+    + input minimal. Server menurunkan klasifikasi dari template registry:
+    header, tingkat, saldoNormal, accountClass, financialStatement,
+    reportGroup, aturan posting. Validasi parent compatibility & uniqueness
+    kode dilakukan server-side; kode kosong akan di-generate otomatis dari
+    parent (untuk sub-akun).
+
+    MODE LEGACY: tanpa typeCode — header/tingkat/saldoNormal wajib manual
+    (backward compatibility importer/frontend lama).
+
     Jika field jenisKasBank diisi ('KAS'/'BANK'), akan auto-membuat
     KasBankAkun yang mengaitkan COA ini ke modul Kas & Bank.
     Opsi ini hanya relevan untuk COA DETAIL di bawah akun Kas dan Setara Kas.
 
-    Field baru (ASAHI COA Revisi v2):
-    - accountClass: ASSET/LIABILITY/EQUITY/REVENUE/COGS/EXPENSE. Jika None,
-      di-derive dari `header` (AKTIVA->ASSET, dst).
-    - isControlAccount: True untuk akun control (AR/AP/INVENTORY). Default False.
-    - subledgerType: AR/AP/INVENTORY/BANK_TRANSFER. Default None.
-    - allowSystemPosting/allowManualPosting: True/False. Default True.
-    - systemAccountType: AR_CONTROL/AP_CONTROL/BANK_CLEARING/CURRENT_EARNINGS/...
-    - active: True/False. Default True. Sync ke `status`.
+    Flag isControlAccount / systemAccountType / subledgerType hanya boleh
+    diatur Admin Finance / Administrator (COA-03) — server menolak payload
+    user biasa.
     """
+    # === Resolusi template tipe akun (mode baru) ===
+    if coa_in.type_code:
+        try:
+            resolved = coa_type_registry.build_create_payload(
+                db, coa_in.model_dump(exclude={"jenis_kas_bank"}), current_user)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        resolved["jenis_kas_bank"] = coa_in.jenis_kas_bank
+        resolved["saldo"] = coa_in.saldo
+        coa_in = COACreate(**resolved)
+    else:
+        # === Mode legacy: field wajib harus lengkap ===
+        missing = [f for f in ("kode", "header", "tingkat", "saldo_normal") if getattr(coa_in, f) is None]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Field wajib ({', '.join(missing)}) harus diisi bila typeCode tidak dipakai.",
+            )
+        # Validasi flag control untuk user biasa tetap dijaga di mode legacy
+        try:
+            coa_type_registry.validate_control_flags(coa_in.model_dump(), current_user)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
     existing = coa_service.get_coa_by_kode(db, kode=coa_in.kode)
     if existing:
         raise HTTPException(
@@ -151,6 +183,24 @@ def create_coa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="jenisKasBank hanya boleh diisi untuk akun tingkat DETAIL.",
         )
+
+    # === Validasi parent compatibility (mode legacy; mode baru sudah
+    # tervalidasi oleh build_create_payload) ===
+    if coa_in.induk_id and not coa_in.type_code:
+        parent = coa_service.get_coa_by_id(db, coa_in.induk_id)
+        if parent is None:
+            raise HTTPException(status_code=400, detail="Akun induk tidak ditemukan.")
+        if parent.tingkat not in (TingkatAkun.HEADER, TingkatAkun.GROUP):
+            raise HTTPException(status_code=400, detail="Akun induk harus level HEADER atau GROUP.")
+        if not parent.active:
+            raise HTTPException(status_code=400, detail="Akun induk harus berstatus aktif.")
+        parent_class = parent.account_class or HEADER_TO_ACCOUNT_CLASS.get(parent.header)
+        own_class = coa_in.account_class or HEADER_TO_ACCOUNT_CLASS.get(coa_in.header)
+        if parent_class and own_class and parent_class != own_class:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Kelas akun induk ({parent_class}) tidak kompatibel dengan kelas akun baru ({own_class}).",
+            )
 
     coa = coa_service.create_coa(db, coa_in=coa_in)
     return _coa_to_dict(coa, coa_service._get_jenis_kas_bank_for_coa(db, coa.id))
@@ -271,6 +321,78 @@ def migration_apply(
 
 
 # ==========================================
+# REGISTRY TIPE AKUN — revisi form COA
+# (harus sebelum /{coa_id} supaya routing benar)
+# ==========================================
+
+@router.get("/account-types", response_model=list[AccountTypeTemplateResponse])
+def get_account_types(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar template tipe akun (istilah bisnis) dari registry server.
+
+    Form Tambah/Edit Akun memakai ini untuk dropdown Tipe Akun — frontend
+    TIDAK menduplikasi klasifikasi di select statis. Setiap template membawa
+    default klasifikasi laporan (account_class, financial_statement,
+    report_group), saldo normal, dan aturan posting yang akan diturunkan
+    server saat create.
+    """
+    return coa_type_registry.list_templates()
+
+
+@router.get("/parents", response_model=list[COAParentOptionResponse])
+def get_eligible_parents(
+    type_code: str = Query(..., description="Kode tipe akun (dari GET /coa/account-types)"),
+    exclude_id: Optional[UUID] = Query(None, description="Untuk edit: exclude akun sendiri & descendant-nya (anti siklik)"),
+    search: Optional[str] = Query(None, description="Cari berdasarkan kode/nama"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Akun induk yang eligible untuk sebuah tipe akun.
+
+    Syarat: aktif, HEADER/GROUP, kelas akun kompatibel dengan tipe.
+    Parent dengan subclass yang cocok ditandai `recommended=true` dan
+    muncul paling atas (mis. tipe Kas & Bank → grup Kas dan Setara Kas).
+    """
+    try:
+        return coa_type_registry.eligible_parents(
+            db, type_code, exclude_id=exclude_id, search=search)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/preview", response_model=COAPreviewResponse)
+def preview_coa(
+    req: COAPreviewRequest,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Preview akun baru TANPA menyimpan: kode usulan + klasifikasi turunan.
+
+    Dipakai form saat user memilih tipe akun / parent / mengedit kode —
+    server menghitung derived values (header, tingkat, saldoNormal,
+    accountClass, reportGroup, aturan posting) + warnings/errors.
+    `errors` bersifat blocking (frontend menonaktifkan tombol Simpan);
+    `warnings` hanya informatif. Kode usulan di-generate dari parent bila
+    kosong; collision dengan kode existing dilaporkan sebagai error.
+    """
+    try:
+        return coa_type_registry.preview_account(
+            db,
+            type_code=req.type_code,
+            is_sub=req.is_sub,
+            parent_id=req.induk_id,
+            structural_type=req.structural_type,
+            kode=req.kode,
+            nama=req.nama,
+            jenis_kas_bank=req.jenis_kas_bank,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
 # DETAIL / UPDATE
 # ==========================================
 
@@ -303,10 +425,24 @@ def update_coa(
     - isControlAccount, subledgerType, reconciliationRequired
     - systemAccountType
     - active (akan otomatis sync ke `status` AKTIF/NONAKTIF)
+
+    Pembatasan (revisi form COA — dijaga di server, bukan hanya UI):
+    - Akun yang sudah punya jurnal terposting: perubahan structural/mapping
+      (induk, kelas, tipe kontrol, subledger) DITOLAK — tampilkan lock reason
+      dari error message.
+    - Flag control/system/subledger hanya boleh diatur Admin Finance
+      (MANAJER_KEUANGAN) / Administrator.
+    - Induk baru harus HEADER/GROUP, kelas kompatibel, dan tidak siklik.
     """
     coa = coa_service.get_coa_by_id(db, coa_id=coa_id)
     if not coa:
         raise HTTPException(status_code=404, detail="Akun Perkiraan tidak ditemukan")
+
+    try:
+        coa_type_registry.validate_coa_configuration(
+            db, coa, coa_in.model_dump(exclude_unset=True), current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     updated = coa_service.update_coa(db, db_obj=coa, obj_in=coa_in)
     return _coa_to_dict(updated, coa_service._get_jenis_kas_bank_for_coa(db, updated.id))

@@ -112,10 +112,21 @@ def get_neraca(
 def get_arus_kas(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
+    view: str = Query("detail", description="detail = items + account_groups; summary = hanya account_groups + total (nilai tidak berubah)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Laporan Arus Kas."""
+    """Laporan Arus Kas.
+
+    Setiap item menyertakan identitas COA akun lawan (account_code/name),
+    akun kas/bank, narasi transaksi, referensi dokumen sumber, direction,
+    allocation_status (EXACT / MIXED_UNALLOCATED) dan counter_accounts untuk
+    jurnal mixed. Field legacy (nama, jumlah, journal_id, no_jurnal) tetap
+    dikirim untuk backward compatibility.
+
+    view=summary mengosongkan `items` (volume besar) tapi tetap menyertakan
+    account_groups + total; seluruh nilai total identik dengan view=detail.
+    """
     try:
         date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
         date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
@@ -124,7 +135,14 @@ def get_arus_kas(
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
-    return laporan_service.get_arus_kas(db, date_from, date_to)
+    if view not in ("detail", "summary"):
+        raise HTTPException(status_code=400, detail="view harus 'detail' atau 'summary'")
+
+    result = laporan_service.get_arus_kas(db, date_from, date_to)
+    if view == "summary":
+        for section in ("operasional", "investasi", "pembiayaan", "belum_diklasifikasikan"):
+            result[section]["items"] = []
+    return result
 
 
 # ==========================================

@@ -439,6 +439,10 @@ _EXPLICIT = {
     'get_next_kode': 'accounting.coa.view',
     'migration_preview': 'accounting.coa.view',
     'migration_apply': 'accounting.coa.edit',
+    # coa — registry tipe akun (revisi form COA)
+    'get_account_types': 'accounting.coa.view',
+    'get_eligible_parents': 'accounting.coa.view',
+    'preview_coa': 'accounting.coa.view',
     # jurnal
     'list_ref_modules': 'accounting.journal.view',
     'create_jurnal_manual': 'accounting.journal.create',
