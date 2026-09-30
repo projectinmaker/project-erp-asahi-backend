@@ -3,6 +3,8 @@ from uuid import UUID
 from decimal import Decimal
 from typing import Optional, List
 
+from pydantic import Field
+
 from app.schemas.base import BaseSchema
 from app.models.akun_perkiraan import HeaderCOA, TingkatAkun
 from app.models.master.barang import ItemTypeBarang, MetodeValuasi
@@ -60,6 +62,12 @@ class PelangganBase(BaseSchema):
 
 class PelangganCreate(PelangganBase):
     akun_piutang_id: Optional[UUID] = None  # kalau diisi, skip auto-create COA (link ke COA existing)
+    # Induk untuk auto-create COA subledger piutang. Default: akun root dari
+    # setting_akun PIUTANG_USAHA (mis. 112000) — cocok untuk COA v2 di mana
+    # root ber-level DETAIL. Dipakai form "Pilih Akun Perkiraan".
+    # exclude=True: field instruksi (bukan kolom tabel) — tidak ikut model_dump
+    # sehingga create_master tidak mencoba set kolom yang tidak ada.
+    akun_piutang_parent_id: Optional[UUID] = Field(default=None, exclude=True)
 
 class PelangganUpdate(BaseSchema):
     kode: Optional[str] = None  # immutable setelah dipakai transaksi (di-enforce di service)
@@ -104,9 +112,11 @@ class PelangganFromCoaCreate(BaseSchema):
     syarat_bayar_default: Optional[str] = "Tunai"
 
 class PelangganCoaResponse(BaseSchema):
-    coa_id: UUID
-    kode: str
-    nama: str
+    # coa_id/kode/nama bisa None untuk baris "pelanggan tanpa akun piutang"
+    # (belum ter-link ke COA mana pun) — tetap ditampilkan di master pelanggan.
+    coa_id: Optional[UUID] = None
+    kode: Optional[str] = None
+    nama: Optional[str] = None
     pelanggan_id: Optional[UUID] = None
     kode_pelanggan: Optional[str] = None
     nama_pelanggan: Optional[str] = None
@@ -151,6 +161,9 @@ class SupplierBase(BaseSchema):
 
 class SupplierCreate(SupplierBase):
     akun_hutang_id: Optional[UUID] = None  # kalau diisi, skip auto-create COA (link ke COA existing)
+    # Induk untuk auto-create COA subledger hutang (mirror pelanggan).
+    # exclude=True: field instruksi (bukan kolom tabel).
+    akun_hutang_parent_id: Optional[UUID] = Field(default=None, exclude=True)
 
 class SupplierUpdate(BaseSchema):
     kode: Optional[str] = None  # immutable setelah dipakai transaksi
@@ -205,9 +218,11 @@ class SupplierFromCoaCreate(BaseSchema):
     syarat_bayar_default: Optional[str] = "Tunai"
 
 class SupplierCoaResponse(BaseSchema):
-    coa_id: UUID
-    kode: str
-    nama: str
+    # coa_id/kode/nama bisa None untuk baris "supplier tanpa akun hutang"
+    # (belum ter-link ke COA mana pun) — tetap ditampilkan di master supplier.
+    coa_id: Optional[UUID] = None
+    kode: Optional[str] = None
+    nama: Optional[str] = None
     supplier_id: Optional[UUID] = None
     kode_supplier: Optional[str] = None
     nama_supplier: Optional[str] = None

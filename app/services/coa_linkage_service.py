@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 from decimal import Decimal
 from loguru import logger
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun, SaldoNormal, HeaderCOA
 from app.models.master.pelanggan import Pelanggan
@@ -22,7 +23,8 @@ _UTANG_SALDO_NORMAL = SaldoNormal.KREDIT
 
 def _find_group_coa(db: Session, keywords: list[str], header: HeaderCOA) -> Optional[AkunPerkiraan]:
     """Cari COA GROUP berdasarkan nama yang mengandung keyword.
-    Prioritas: GROUP dulu, lalu HEADER.
+    Prioritas: GROUP dulu, lalu HEADER, lalu DETAIL dengan nama persis
+    (COA revisi v2 di mana 'Piutang Usaha'/'Hutang Usaha' ber-level DETAIL).
     """
     query = db.query(AkunPerkiraan).filter(
         AkunPerkiraan.header == header,
@@ -35,7 +37,22 @@ def _find_group_coa(db: Session, keywords: list[str], header: HeaderCOA) -> Opti
     if group:
         return group
     header_coa = query.filter(AkunPerkiraan.tingkat == TingkatAkun.HEADER).first()
-    return header_coa
+    if header_coa:
+        return header_coa
+
+    # FIX: COA revisi v2 (mis. ASAHI 6-digit) menaruh 'Piutang Usaha' (112000)
+    # dan 'Hutang Usaha' (211000) di level DETAIL. Tanpa fallback ini root
+    # tidak pernah ketemu kalau setting_akun belum di-configure → auto-create
+    # COA piutang/hutang untuk pelanggan/supplier baru gagal diam-diam →
+    # pelanggan/supplier "hilang" dari halaman master (COA-first).
+    exact_name = " ".join(keywords)  # mis. "PIUTANG USAHA"
+    detail = (
+        query.filter(AkunPerkiraan.tingkat == TingkatAkun.DETAIL)
+        .filter(func.upper(func.trim(AkunPerkiraan.nama)) == exact_name)
+        .order_by(AkunPerkiraan.kode)
+        .first()
+    )
+    return detail
 
 
 def _generate_next_detail_kode(db: Session, parent: AkunPerkiraan) -> str:
@@ -186,13 +203,26 @@ def find_hutang_root_coa(db: Session) -> Optional[AkunPerkiraan]:
     return _resolve_root_coa(db, KEY_HUTANG_USAHA, _UTANG_KEYWORDS, _UTANG_HEADER, "Hutang Usaha")
 
 
-def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan) -> Optional[UUID]:
+def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan, parent_id: Optional[UUID] = None) -> Optional[UUID]:
     """Auto-buat COA detail Piutang untuk Pelanggan.
 
     Cari GROUP/HEADER 'Piutang Usaha' -> buat DETAIL dengan nama pelanggan.
+    parent_id: induk override dari form "Pilih Akun Perkiraan" (mis. 112000
+    'Piutang Usaha' level DETAIL di COA v2). Kalau None / invalid, fallback ke
+    root default (setting_akun PIUTANG_USAHA → pencarian by-nama).
     Return: UUID of new COA, atau None jika gagal.
     """
-    group = _resolve_root_coa(db, KEY_PIUTANG_USAHA, _PIUTANG_KEYWORDS, _PIUTANG_HEADER, "Piutang Usaha")
+    group = None
+    if parent_id:
+        parent = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == parent_id).first()
+        if parent and parent.status == "AKTIF" and parent.header == _PIUTANG_HEADER:
+            group = parent
+        else:
+            logger.warning(
+                f"Parent piutang override invalid (id={parent_id}), fallback ke root default"
+            )
+    if group is None:
+        group = _resolve_root_coa(db, KEY_PIUTANG_USAHA, _PIUTANG_KEYWORDS, _PIUTANG_HEADER, "Piutang Usaha")
     if not group:
         logger.warning("COA 'Piutang Usaha' tidak ditemukan, skip auto-create piutang")
         return None
@@ -222,13 +252,24 @@ def auto_create_piutang_coa(db: Session, pelanggan: Pelanggan) -> Optional[UUID]
     return coa.id
 
 
-def auto_create_hutang_coa(db: Session, supplier: Supplier) -> Optional[UUID]:
+def auto_create_hutang_coa(db: Session, supplier: Supplier, parent_id: Optional[UUID] = None) -> Optional[UUID]:
     """Auto-buat COA detail Hutang untuk Supplier.
 
     Cari GROUP/HEADER 'Hutang Usaha' -> buat DETAIL dengan nama supplier.
+    parent_id: induk override (mirror auto_create_piutang_coa).
     Return: UUID of new COA, atau None jika gagal.
     """
-    group = _resolve_root_coa(db, KEY_HUTANG_USAHA, _UTANG_KEYWORDS, _UTANG_HEADER, "Hutang Usaha")
+    group = None
+    if parent_id:
+        parent = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == parent_id).first()
+        if parent and parent.status == "AKTIF" and parent.header == _UTANG_HEADER:
+            group = parent
+        else:
+            logger.warning(
+                f"Parent hutang override invalid (id={parent_id}), fallback ke root default"
+            )
+    if group is None:
+        group = _resolve_root_coa(db, KEY_HUTANG_USAHA, _UTANG_KEYWORDS, _UTANG_HEADER, "Hutang Usaha")
     if not group:
         logger.warning("COA 'Hutang Usaha' tidak ditemukan, skip auto-create hutang")
         return None

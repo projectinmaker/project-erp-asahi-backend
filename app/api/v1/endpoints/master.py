@@ -89,10 +89,22 @@ def create_pelanggan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
+    # Validasi akun induk piutang SEBELUM create supaya pelanggan tidak
+    # tersimpan setengah jalan kalau parent-nya invalid.
+    from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA
+    if data_in.akun_piutang_parent_id and not data_in.akun_piutang_id:
+        parent = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.akun_piutang_parent_id).first()
+        if not parent or parent.status != "AKTIF":
+            raise HTTPException(status_code=400, detail="Akun induk piutang tidak ditemukan atau tidak aktif")
+        if parent.header != HeaderCOA.AKTIVA:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Akun induk piutang harus bertipe AKTIVA (akun {parent.kode} '{parent.nama}' bertipe {parent.header.value})",
+            )
     pelanggan = master_service.create_master(db, Pelanggan, data_in)
     # Kalau akun_piutang_id sudah diisi manual (link ke COA existing), skip auto-create
     if not pelanggan.akun_piutang_id:
-        piutang_coa_id = auto_create_piutang_coa(db, pelanggan)
+        piutang_coa_id = auto_create_piutang_coa(db, pelanggan, parent_id=data_in.akun_piutang_parent_id)
         if piutang_coa_id:
             pelanggan.akun_piutang_id = piutang_coa_id
             db.add(pelanggan)
@@ -154,34 +166,52 @@ def get_pelanggan_coa(
     current_user: Pengguna = Depends(get_current_user)
 ):
     """
-    Skenario B2: List semua COA DETAIL di bawah 'Piutang Usaha', LEFT JOIN ke
-    Pelanggan (kalau sudah linked via akun_piutang_id). Dipakai frontend untuk
-    menampilkan & melengkapi data pelanggan dari COA piutang yang sudah
-    di-import manual sebelumnya.
+    Skenario B2: List COA DETAIL di bawah 'Piutang Usaha' (termasuk root
+    itu sendiri kalau ber-level DETAIL — COA revisi v2 mis. 112000), LEFT JOIN
+    ke Pelanggan (kalau sudah linked via akun_piutang_id).
+
+    FIX: pelanggan yang ter-link langsung ke root DETAIL (mis. 112000) dan
+    pelanggan yang belum punya akun piutang sama sekali tetap ditampilkan
+    supaya tidak "hilang" dari master pelanggan (sebelumnya halaman bisa
+    kosong padahal data pelanggan ada & dipakai modul penjualan).
     """
-    from app.models.akun_perkiraan import AkunPerkiraan
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
     group = find_piutang_root_coa(db)
-    if not group:
-        return []
 
-    detail_ids = get_coa_detail_ids_under(db, group.id)
-    if not detail_ids:
-        return []
+    rows: list = []
+    if group:
+        detail_ids = get_coa_detail_ids_under(db, group.id)
+        # Root 'Piutang Usaha' yang ber-level DETAIL ikut dilist — konsisten
+        # dengan POST /pelanggan-from-coa yang membolehkan link langsung ke
+        # root (mis. pelanggan di-link ke 112000).
+        if group.tingkat == TingkatAkun.DETAIL and group.id not in detail_ids:
+            detail_ids = [group.id] + detail_ids
+        if detail_ids:
+            rows = (
+                db.query(AkunPerkiraan, Pelanggan)
+                .outerjoin(Pelanggan, Pelanggan.akun_piutang_id == AkunPerkiraan.id)
+                .filter(AkunPerkiraan.id.in_(detail_ids))
+                .order_by(AkunPerkiraan.kode)
+                .all()
+            )
 
-    rows = (
-        db.query(AkunPerkiraan, Pelanggan)
-        .outerjoin(Pelanggan, Pelanggan.akun_piutang_id == AkunPerkiraan.id)
-        .filter(AkunPerkiraan.id.in_(detail_ids))
-        .order_by(AkunPerkiraan.kode)
+    # Pelanggan tanpa akun piutang (belum di-link / auto-create gagal karena
+    # root COA belum dikonfigurasi) tetap muncul sebagai baris tanpa akun.
+    linked_pelanggan_ids = {pel.id for _, pel in rows if pel is not None}
+    orphans = (
+        db.query(Pelanggan)
+        .filter(Pelanggan.akun_piutang_id.is_(None))
+        .order_by(Pelanggan.kode)
         .all()
     )
+    rows = rows + [(None, pel) for pel in orphans if pel.id not in linked_pelanggan_ids]
 
     return [
         {
-            "coa_id": coa.id,
-            "kode": coa.kode,
-            "nama": coa.nama,
+            "coa_id": coa.id if coa else None,
+            "kode": coa.kode if coa else None,
+            "nama": coa.nama if coa else None,
             "pelanggan_id": pelanggan.id if pelanggan else None,
             "kode_pelanggan": pelanggan.kode if pelanggan else None,
             "nama_pelanggan": pelanggan.nama if pelanggan else None,
@@ -191,7 +221,7 @@ def get_pelanggan_coa(
             "kontak_person": pelanggan.kontak_person if pelanggan else None,
             "npwp": pelanggan.npwp if pelanggan else None,
             "syarat_bayar_default": pelanggan.syarat_bayar_default if pelanggan else None,
-            "status": pelanggan.status if pelanggan else coa.status,
+            "status": pelanggan.status if pelanggan else (coa.status if coa else "AKTIF"),
             "is_linked": pelanggan is not None,
         }
         for coa, pelanggan in rows
@@ -265,10 +295,21 @@ def create_supplier(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
+    # Validasi akun induk hutang SEBELUM create (mirror create_pelanggan).
+    from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA
+    if data_in.akun_hutang_parent_id and not data_in.akun_hutang_id:
+        parent = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.akun_hutang_parent_id).first()
+        if not parent or parent.status != "AKTIF":
+            raise HTTPException(status_code=400, detail="Akun induk hutang tidak ditemukan atau tidak aktif")
+        if parent.header != HeaderCOA.KEWAJIBAN:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Akun induk hutang harus bertipe KEWAJIBAN (akun {parent.kode} '{parent.nama}' bertipe {parent.header.value})",
+            )
     supplier = master_service.create_master(db, Supplier, data_in)
     # Kalau akun_hutang_id sudah diisi manual (link ke COA existing), skip auto-create
     if not supplier.akun_hutang_id:
-        hutang_coa_id = auto_create_hutang_coa(db, supplier)
+        hutang_coa_id = auto_create_hutang_coa(db, supplier, parent_id=data_in.akun_hutang_parent_id)
         if hutang_coa_id:
             supplier.akun_hutang_id = hutang_coa_id
             db.add(supplier)
@@ -313,32 +354,43 @@ def get_supplier_coa(
     current_user: Pengguna = Depends(get_current_user)
 ):
     """
-    Skenario B2: List semua COA DETAIL di bawah 'Hutang Usaha', LEFT JOIN ke
-    Supplier (kalau sudah linked via akun_hutang_id). Mirror dari /pelanggan-coa.
+    Skenario B2: List COA DETAIL di bawah 'Hutang Usaha' (termasuk root
+    itu sendiri kalau ber-level DETAIL — COA revisi v2 mis. 211000), LEFT JOIN
+    ke Supplier (kalau sudah linked via akun_hutang_id). Mirror dari
+    /pelanggan-coa — termasuk fix baris supplier tanpa akun hutang.
     """
-    from app.models.akun_perkiraan import AkunPerkiraan
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
     group = find_hutang_root_coa(db)
-    if not group:
-        return []
 
-    detail_ids = get_coa_detail_ids_under(db, group.id)
-    if not detail_ids:
-        return []
+    rows: list = []
+    if group:
+        detail_ids = get_coa_detail_ids_under(db, group.id)
+        if group.tingkat == TingkatAkun.DETAIL and group.id not in detail_ids:
+            detail_ids = [group.id] + detail_ids
+        if detail_ids:
+            rows = (
+                db.query(AkunPerkiraan, Supplier)
+                .outerjoin(Supplier, Supplier.akun_hutang_id == AkunPerkiraan.id)
+                .filter(AkunPerkiraan.id.in_(detail_ids))
+                .order_by(AkunPerkiraan.kode)
+                .all()
+            )
 
-    rows = (
-        db.query(AkunPerkiraan, Supplier)
-        .outerjoin(Supplier, Supplier.akun_hutang_id == AkunPerkiraan.id)
-        .filter(AkunPerkiraan.id.in_(detail_ids))
-        .order_by(AkunPerkiraan.kode)
+    linked_supplier_ids = {spl.id for _, spl in rows if spl is not None}
+    orphans = (
+        db.query(Supplier)
+        .filter(Supplier.akun_hutang_id.is_(None))
+        .order_by(Supplier.kode)
         .all()
     )
+    rows = rows + [(None, spl) for spl in orphans if spl.id not in linked_supplier_ids]
 
     return [
         {
-            "coa_id": coa.id,
-            "kode": coa.kode,
-            "nama": coa.nama,
+            "coa_id": coa.id if coa else None,
+            "kode": coa.kode if coa else None,
+            "nama": coa.nama if coa else None,
             "supplier_id": supplier.id if supplier else None,
             "kode_supplier": supplier.kode if supplier else None,
             "nama_supplier": supplier.nama if supplier else None,
@@ -348,7 +400,7 @@ def get_supplier_coa(
             "kontak_person": supplier.kontak_person if supplier else None,
             "npwp": supplier.npwp if supplier else None,
             "syarat_bayar_default": supplier.syarat_bayar_default if supplier else None,
-            "status": supplier.status if supplier else coa.status,
+            "status": supplier.status if supplier else (coa.status if coa else "AKTIF"),
             "is_linked": supplier is not None,
         }
         for coa, supplier in rows
