@@ -172,6 +172,11 @@ class PurchaseInvoiceDetailBase(BaseSchema):
     sub_total: Decimal = Decimal("0")
     # Phase D: UOM on detail
     satuan_id: Optional[UUID] = None
+    # === Phase 5 — Source-line trace (Roadmap §20) ===
+    # Link baris invoice ke baris PO dan/atau baris penerimaan sumber
+    # (dipakai fitur tarik-data + hitung sisa faktur per PO line).
+    purchase_order_detail_id: UUID | None = None
+    penerimaan_barang_detail_id: UUID | None = None
 
 
 class PurchaseInvoiceDetailCreate(PurchaseInvoiceDetailBase):
@@ -222,6 +227,9 @@ class PurchaseInvoiceUpdate(BaseSchema):
     # Phase D: new fields
     purchase_order_id: Optional[UUID] = None
     invoice_type: Optional[str] = None
+    # Update #3 — penggantian baris detail (termasuk link source-line
+    # purchase_order_detail_id / penerimaan_barang_detail_id) saat invoice masih draft.
+    details: list[PurchaseInvoiceDetailCreate] | None = None
 
 
 class PurchaseInvoiceResponse(PurchaseInvoiceBase):
@@ -262,11 +270,15 @@ class PurchaseReturDetailBase(BaseSchema):
 
 
 class PurchaseReturDetailCreate(PurchaseReturDetailBase):
-    pass
+    # Source-line trace (tarik data dari invoice/PO)
+    purchase_invoice_detail_id: Optional[UUID] = None
+    purchase_order_detail_id: Optional[UUID] = None
 
 
 class PurchaseReturDetailResponse(PurchaseReturDetailBase):
     id: UUID
+    purchase_invoice_detail_id: Optional[UUID] = None
+    purchase_order_detail_id: Optional[UUID] = None
     barang: Optional[BarangSimpleResponse] = None
 
 
@@ -334,6 +346,9 @@ class PenerimaanBarangDetailBase(BaseSchema):
     barang_id: UUID
     qty: int = 0
     satuan_id: UUID
+    # === Phase 5 — source-line trace (Roadmap §19): link ke baris PO sumber ===
+    # (dipakai fitur tarik-data + hitung sisa terima per PO line)
+    purchase_order_detail_id: UUID | None = None
 
 
 class PenerimaanBarangDetailCreate(PenerimaanBarangDetailBase):
@@ -389,3 +404,40 @@ class PenerimaanBarangResponse(PenerimaanBarangBase):
     supplier: Optional[SupplierSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     details: List[PenerimaanBarangDetailResponse] = []
+
+
+
+# ==========================================
+# SISA PURCHASE ORDER (tarik data — Update #3)
+# ==========================================
+class PurchaseOrderSisaDetailResponse(BaseSchema):
+    """Satu baris PO + qty yang sudah dipakai dokumen lanjutan.
+
+    qtyDiterima = SUM penerimaan (status DIPROSES/SELESAI) untuk baris PO ini
+    (mirror purchase_validation.get_qty_received_so_far).
+    qtyTerfaktur = SUM invoice (status DIPROSES/SELESAI) via dua jalur link
+    (purchase_order_detail_id langsung ATAU penerimaan_barang_detail_id dari
+    penerimaan baris PO ini) — mirror purchase_validation.get_qty_invoiced_for_po_detail.
+    """
+    purchase_order_detail_id: UUID
+    barang_id: UUID
+    kode_barang: str | None = None
+    nama_barang: str | None = None
+    satuan_id: UUID | None = None
+    satuan_nama: str | None = None
+    qty_pesanan: int
+    qty_diterima: int
+    qty_terfaktur: int
+    sisa_terima: int
+    sisa_faktur: int
+    harga: float
+    diskon: float
+
+
+class PurchaseOrderSisaResponse(BaseSchema):
+    purchase_order_id: UUID
+    supplier_id: UUID
+    no_pesanan: str
+    alamat: str | None = None
+    syarat_bayar_id: UUID | None = None
+    details: list[PurchaseOrderSisaDetailResponse] = []

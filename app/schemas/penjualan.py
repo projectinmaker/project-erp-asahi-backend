@@ -106,7 +106,6 @@ class SalesOrderBase(BaseSchema):
     tanggal: datetime
     pelanggan_id: UUID
     syarat_bayar_id: Optional[UUID] = None
-    fob: Optional[str] = None
     ekspedisi: Optional[str] = None
     tanggal_pengiriman: Optional[datetime] = None
     penjual: Optional[str] = None
@@ -131,7 +130,6 @@ class SalesOrderUpdate(BaseSchema):
     tanggal: Optional[datetime] = None
     pelanggan_id: Optional[UUID] = None
     syarat_bayar_id: Optional[UUID] = None
-    fob: Optional[str] = None
     ekspedisi: Optional[str] = None
     tanggal_pengiriman: Optional[datetime] = None
     penjual: Optional[str] = None
@@ -184,6 +182,11 @@ class SalesInvoiceDetailBase(BaseSchema):
     qty: int = 0
     diskon: Optional[Decimal] = Decimal("0")
     sub_total: Decimal = Decimal("0")
+    # === Phase 4 — Source-line trace (Roadmap §14) ===
+    # Link baris invoice ke baris SO dan/atau baris pengiriman sumber
+    # (dipakai fitur tarik-data + hitung sisa faktur per SO line).
+    sales_order_detail_id: UUID | None = None
+    delivery_detail_id: UUID | None = None
 
 
 class SalesInvoiceDetailCreate(SalesInvoiceDetailBase):
@@ -204,7 +207,6 @@ class SalesInvoiceBase(BaseSchema):
     pelanggan_id: UUID
     syarat_bayar_id: Optional[UUID] = None
     sales_order_id: Optional[UUID] = None
-    fob: Optional[str] = None
     ekspedisi: Optional[str] = None
     tanggal_pengiriman: Optional[datetime] = None
     alamat_pengiriman: Optional[str] = None
@@ -226,7 +228,6 @@ class SalesInvoiceUpdate(BaseSchema):
     pelanggan_id: Optional[UUID] = None
     syarat_bayar_id: Optional[UUID] = None
     sales_order_id: Optional[UUID] = None
-    fob: Optional[str] = None
     ekspedisi: Optional[str] = None
     tanggal_pengiriman: Optional[datetime] = None
     alamat_pengiriman: Optional[str] = None
@@ -235,6 +236,9 @@ class SalesInvoiceUpdate(BaseSchema):
     ppn: Optional[Decimal] = None
     keterangan: Optional[str] = None
     auto_post_jurnal: Optional[bool] = None
+    # Update #3 — penggantian baris detail (termasuk link source-line
+    # sales_order_detail_id / delivery_detail_id) saat invoice masih draft.
+    details: list[SalesInvoiceDetailCreate] | None = None
 
 
 class SalesInvoiceResponse(SalesInvoiceBase):
@@ -409,3 +413,113 @@ class PengirimanBarangResponse(PengirimanBarangBase):
     pelanggan: Optional[PelangganSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     details: List[PengirimanBarangDetailResponse] = []
+
+
+
+# ==========================================
+# SISA SALES ORDER (tarik data — Update #3)
+# ==========================================
+class SalesOrderSisaDetailResponse(BaseSchema):
+    """Satu baris SO + qty yang sudah dipakai dokumen lanjutan.
+
+    qtyTerkirim = SUM pengiriman (status DIPROSES/SELESAI) untuk baris SO ini
+    (mirror sales_validation.get_qty_delivered_so_far).
+    qtyTerfaktur = SUM invoice (status DIPROSES/SELESAI) via dua jalur link
+    (sales_order_detail_id langsung ATAU delivery_detail_id dari pengiriman
+    baris SO ini) — mirror sales_validation.get_qty_invoiced_for_so_detail.
+    """
+    sales_order_detail_id: UUID
+    barang_id: UUID
+    kode_barang: str | None = None
+    nama_barang: str | None = None
+    satuan_id: UUID | None = None
+    satuan_nama: str | None = None
+    qty_pesanan: int
+    qty_terkirim: int
+    qty_terfaktur: int
+    sisa_kirim: int
+    sisa_faktur: int
+    harga: float
+    diskon: float
+
+
+class SalesOrderSisaResponse(BaseSchema):
+    sales_order_id: UUID
+    pelanggan_id: UUID
+    syarat_bayar_id: UUID | None = None
+    no_pesanan: str
+    alamat_pengiriman: str | None = None
+    details: list[SalesOrderSisaDetailResponse] = []
+
+
+# ==========================================
+# PENAWARAN (quotation — Update #3)
+# ==========================================
+class PenawaranDetailBase(BaseSchema):
+    barang_id: UUID
+    harga: Decimal = Decimal("0")
+    qty: int = 0
+    diskon: Decimal | None = Decimal("0")
+    sub_total: Decimal = Decimal("0")
+    satuan_id: UUID | None = None
+    keterangan: str | None = None
+
+
+class PenawaranDetailCreate(PenawaranDetailBase):
+    pass
+
+
+class PenawaranDetailResponse(PenawaranDetailBase):
+    id: UUID
+    barang: BarangSimpleResponse | None = None
+    satuan: SatuanSimpleResponse | None = None
+
+
+class PenawaranBase(BaseSchema):
+    tanggal: datetime
+    berlaku_hingga: date | None = None
+    pelanggan_id: UUID
+    syarat_bayar_id: UUID | None = None
+    alamat_pengiriman: str | None = None
+    keterangan: str | None = None
+    mata_uang: str = "IDR"
+    diskon_global: Decimal | None = Decimal("0")
+    ppn: Decimal = Decimal("11")
+
+
+class PenawaranCreate(PenawaranBase):
+    details: list[PenawaranDetailCreate]
+    biaya_tambahan: list[TransaksiBiayaCreate] = []
+
+
+class PenawaranUpdate(BaseSchema):
+    tanggal: datetime | None = None
+    berlaku_hingga: date | None = None
+    pelanggan_id: UUID | None = None
+    syarat_bayar_id: UUID | None = None
+    alamat_pengiriman: str | None = None
+    keterangan: str | None = None
+    mata_uang: str | None = None
+    diskon_global: Decimal | None = None
+    ppn: Decimal | None = None
+    details: list[PenawaranDetailCreate] | None = None
+    biaya_tambahan: list[TransaksiBiayaCreate] | None = None
+
+
+class PenawaranResponse(PenawaranBase):
+    id: UUID
+    no_penawaran: str
+    sub_total: Decimal
+    total_diskon: Decimal
+    total_ppn: Decimal
+    total_biaya_tambahan: Decimal
+    grand_total: Decimal
+    status: str
+    created_by: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    pelanggan: PelangganSimpleResponse | None = None
+    syarat_bayar: SyaratBayarSimpleResponse | None = None
+    creator: PenggunaSimpleResponse | None = None
+    details: list[PenawaranDetailResponse] = []
+    biaya_tambahan: list[TransaksiBiayaResponse] = []

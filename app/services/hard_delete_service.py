@@ -48,6 +48,7 @@ STOCK_DOCUMENTS = {
 NUMBER_FIELDS = (
     'no_invoice', 'no_form', 'no_retur', 'no_bukti', 'no_transfer', 'no_pesanan',
     'no_jurnal', 'no_surat_jalan', 'no_adj', 'no_pemindahan', 'no_permintaan',
+    'no_penawaran',
 )
 
 

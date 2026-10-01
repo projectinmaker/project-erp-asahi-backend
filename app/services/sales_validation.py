@@ -16,7 +16,7 @@ from uuid import UUID
 from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.models.master.pelanggan import Pelanggan
 from app.models.master.barang import Barang, ItemTypeBarang
@@ -122,6 +122,45 @@ def get_qty_invoiced_so_far(
         .join(SalesInvoice, SalesInvoice.id == SalesInvoiceDetail.sales_invoice_id)
         .filter(
             SalesInvoiceDetail.delivery_detail_id == delivery_detail_id,
+            SalesInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+        )
+    )
+    if exclude_invoice_detail_id is not None:
+        query = query.filter(SalesInvoiceDetail.id != exclude_invoice_detail_id)
+    return int(query.scalar() or 0)
+
+
+def get_qty_invoiced_for_so_detail(
+    db: Session,
+    sales_order_detail_id: UUID,
+    exclude_invoice_detail_id: UUID | None = None,
+) -> int:
+    """Hitung total qty yang sudah di-invoice untuk SalesOrderDetail tertentu.
+
+    Dipakai endpoint sisa SO (tarik data). Menggabungkan DUA jalur link
+    SalesInvoiceDetail → SO detail (konsisten dengan arsitektur source-line
+    trace Phase 4 dan semangat validate_over_invoice):
+      (a) SalesInvoiceDetail.sales_order_detail_id = sales_order_detail_id
+      (b) SalesInvoiceDetail.delivery_detail_id ∈ PengirimanBarangDetail
+          yang menunjuk sales_order_detail_id tersebut.
+
+    Satu baris invoice yang punya kedua link hanya dihitung SEKALI (kondisi OR).
+    Filter: hanya invoice berstatus DIPROSES / SELESAI.
+    """
+    delivery_detail_ids = [
+        row.id
+        for row in db.query(PengirimanBarangDetail.id).filter(
+            PengirimanBarangDetail.sales_order_detail_id == sales_order_detail_id
+        )
+    ]
+    query = (
+        db.query(func.coalesce(func.sum(SalesInvoiceDetail.qty), 0))
+        .join(SalesInvoice, SalesInvoice.id == SalesInvoiceDetail.sales_invoice_id)
+        .filter(
+            or_(
+                SalesInvoiceDetail.sales_order_detail_id == sales_order_detail_id,
+                SalesInvoiceDetail.delivery_detail_id.in_(delivery_detail_ids),
+            ),
             SalesInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
         )
     )

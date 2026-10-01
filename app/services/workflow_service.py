@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from app.models import (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
     AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
-    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum,
+    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran,
 )
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent
 from app.services.accounting_control import atomic_accounting_write
@@ -29,11 +29,11 @@ APPROVERS = {'ADMINISTRATOR', 'MANAJER_KEUANGAN'}
 MODELS = {m.__tablename__: m for m in (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
     AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
-    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum,
+    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran,
 )}
 SALES = {'sales_order', 'sales_invoice', 'sales_retur'}
 STOCK = {'pengiriman_barang', 'penerimaan_barang', 'penyesuaian_stok', 'pemindahan_barang', 'permintaan_barang'}
-ORDERS = {'sales_order', 'purchase_order'}
+ORDERS = {'sales_order', 'purchase_order', 'penawaran'}
 FINANCIAL = set(MODELS) - STOCK - ORDERS
 
 # Dokumen yang didukung aksi POST (posting jurnal) dan EXECUTE (finalisasi stok/retur).

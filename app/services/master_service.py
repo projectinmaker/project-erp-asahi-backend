@@ -276,7 +276,7 @@ def protect_inventory(db, item, data):
                 raise HTTPException(400, 'Stok, biaya, dan metode valuasi tidak boleh diubah langsung setelah ada saldo/mutasi')
 
 
-def inventory_account_candidates(db):
+def inventory_account_candidates(db, item_type: str | None = None):
     """Kandidat akun Persediaan untuk mapping akun barang.
 
     Hanya akun AKTIVA DETAIL (saldo DEBIT, AKTIF, non-subledger) yang terklasifikasi
@@ -284,6 +284,14 @@ def inventory_account_candidates(db):
     kas-bank/piutang/hutang. Dipakai dropdown "Akun Persediaan" pada form barang
     (GET /master/barang-akun-persediaan) dan validasi mapping barang — mencegah
     akun kas/bank/piutang terpilih sebagai akun persediaan.
+
+    Update #3 — parameter opsional ``item_type`` (BARANG_DAGANG / BARANG_JADI /
+    BARANG_BAKU / BARANG_BANTU / JASA) mempersempit kandidat sesuai subclass:
+      BARANG_DAGANG | BARANG_JADI -> INVENTORY_FINISHED
+      BARANG_BAKU                -> INVENTORY_RAW
+      BARANG_BANTU               -> INVENTORY_AUX
+      JASA                       -> tanpa akun persediaan (hasil kosong)
+    Tanpa parameter = seluruh 4 subclass (backward compatible).
     """
     from app.models.akun_perkiraan import AkunPerkiraan
     from app.models.master.kas_bank_akun import KasBankAkun
@@ -291,12 +299,88 @@ def inventory_account_candidates(db):
     from app.models.master.supplier import Supplier
     account = AkunPerkiraan
     inventory_subclasses = ('INVENTORY_RAW', 'INVENTORY_AUX', 'INVENTORY_WIP', 'INVENTORY_FINISHED')
+
+    if item_type is not None:
+        item_type_map = {
+            'BARANG_DAGANG': ('INVENTORY_FINISHED',),
+            'BARANG_JADI': ('INVENTORY_FINISHED',),
+            'BARANG_BAKU': ('INVENTORY_RAW',),
+            'BARANG_BANTU': ('INVENTORY_AUX',),
+            'JASA': (),
+        }
+        if item_type not in item_type_map:
+            raise HTTPException(
+                400,
+                "item_type tidak valid. Gunakan BARANG_DAGANG, BARANG_JADI, "
+                "BARANG_BAKU, BARANG_BANTU, atau JASA.",
+            )
+        inventory_subclasses = item_type_map[item_type]
+
     query = db.query(account).filter(account.header == 'AKTIVA', account.tingkat == 'DETAIL',
         account.saldo_normal == 'DEBIT', account.status == 'AKTIF', account.is_subledger == False,
         account.account_subclass.in_(inventory_subclasses))
     for model, field in ((KasBankAkun, 'akun_perkiraan_id'), (Pelanggan, 'akun_piutang_id'), (Supplier, 'akun_hutang_id')):
         query = query.filter(~db.query(model.id).filter(getattr(model, field) == account.id).exists())
     return query
+
+
+def barang_akun_pilihan(db) -> dict:
+    """Daftar pilihan akun untuk picker COA di form Barang & Jasa (Update #3).
+
+    Return {"hpp": [...], "penjualan": [...], "retur": [...], "diskon": [...]}
+    dengan item {id, kode, nama}:
+
+    - hpp      : akun DETAIL AKTIF account_class=COGS + account_subclass=COGS
+                 (mis. 531001 HPP Produk Jadi).
+    - penjualan: REVENUE + OPERATING_REVENUE + system_account_type=SALES,
+                 DIKECUALIKAN akun yang di-map setting_akun RETUR_PENJUALAN
+                 dan POTONGAN_PENJUALAN (mis. 411001-411003).
+    - retur    : akun yang di-map setting_akun RETUR_PENJUALAN (mis. 411004).
+    - diskon   : akun yang di-map setting_akun POTONGAN_PENJUALAN (mis. 411005).
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+    from app.models.master.setting_akun import SettingAkun
+
+    account = AkunPerkiraan
+
+    def _mapped_account_ids(key: str) -> set:
+        rows = db.query(SettingAkun.akun_perkiraan_id).filter(SettingAkun.key == key).all()
+        return {row[0] for row in rows}
+
+    retur_ids = _mapped_account_ids('RETUR_PENJUALAN')
+    diskon_ids = _mapped_account_ids('POTONGAN_PENJUALAN')
+    excluded_ids = retur_ids | diskon_ids
+
+    def _serialize(query):
+        return [
+            {"id": row.id, "kode": row.kode, "nama": row.nama}
+            for row in query.order_by(account.kode, account.id).all()
+        ]
+
+    hpp = _serialize(
+        db.query(account).filter(
+            account.tingkat == 'DETAIL',
+            account.status == 'AKTIF',
+            account.account_class == 'COGS',
+            account.account_subclass == 'COGS',
+        )
+    )
+    penjualan_query = db.query(account).filter(
+        account.tingkat == 'DETAIL',
+        account.status == 'AKTIF',
+        account.account_class == 'REVENUE',
+        account.account_subclass == 'OPERATING_REVENUE',
+        account.system_account_type == 'SALES',
+    )
+    if excluded_ids:
+        penjualan_query = penjualan_query.filter(~account.id.in_(excluded_ids))
+    penjualan = _serialize(penjualan_query)
+
+    retur_query = db.query(account).filter(account.tingkat == 'DETAIL', account.status == 'AKTIF')
+    retur = _serialize(retur_query.filter(account.id.in_(retur_ids))) if retur_ids else []
+    diskon = _serialize(retur_query.filter(account.id.in_(diskon_ids))) if diskon_ids else []
+
+    return {"hpp": hpp, "penjualan": penjualan, "retur": retur, "diskon": diskon}
 
 
 def validate_barang_account(db, account_id):

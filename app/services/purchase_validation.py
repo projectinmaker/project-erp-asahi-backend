@@ -14,7 +14,7 @@ from uuid import UUID
 from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.models.master.supplier import Supplier
 from app.models.detail.purchase_order_detail import PurchaseOrderDetail
@@ -144,6 +144,45 @@ def get_qty_invoiced_purchase_so_far(
         .join(PurchaseInvoice, PurchaseInvoice.id == PurchaseInvoiceDetail.purchase_invoice_id)
         .filter(
             PurchaseInvoiceDetail.penerimaan_barang_detail_id == penerimaan_barang_detail_id,
+            PurchaseInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+        )
+    )
+    if exclude_invoice_detail_id is not None:
+        query = query.filter(PurchaseInvoiceDetail.id != exclude_invoice_detail_id)
+    return int(query.scalar() or 0)
+
+
+def get_qty_invoiced_for_po_detail(
+    db: Session,
+    purchase_order_detail_id: UUID,
+    exclude_invoice_detail_id: UUID | None = None,
+) -> int:
+    """Hitung total qty yang sudah di-invoice untuk PurchaseOrderDetail tertentu.
+
+    Dipakai endpoint sisa PO (tarik data). Menggabungkan DUA jalur link
+    PurchaseInvoiceDetail → PO detail (konsisten dengan source-line trace
+    Phase 5 dan semangat validate_over_invoice_purchase):
+      (a) PurchaseInvoiceDetail.purchase_order_detail_id = purchase_order_detail_id
+      (b) PurchaseInvoiceDetail.penerimaan_barang_detail_id ∈ PenerimaanBarangDetail
+          yang menunjuk purchase_order_detail_id tersebut.
+
+    Satu baris invoice yang punya kedua link hanya dihitung SEKALI (kondisi OR).
+    Filter: hanya invoice berstatus DIPROSES / SELESAI.
+    """
+    receipt_detail_ids = [
+        row.id
+        for row in db.query(PenerimaanBarangDetail.id).filter(
+            PenerimaanBarangDetail.purchase_order_detail_id == purchase_order_detail_id
+        )
+    ]
+    query = (
+        db.query(func.coalesce(func.sum(PurchaseInvoiceDetail.qty), 0))
+        .join(PurchaseInvoice, PurchaseInvoice.id == PurchaseInvoiceDetail.purchase_invoice_id)
+        .filter(
+            or_(
+                PurchaseInvoiceDetail.purchase_order_detail_id == purchase_order_detail_id,
+                PurchaseInvoiceDetail.penerimaan_barang_detail_id.in_(receipt_detail_ids),
+            ),
             PurchaseInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
         )
     )

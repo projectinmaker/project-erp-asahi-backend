@@ -6,7 +6,7 @@ from app.models.base import BaseMixin
 
 
 class TransaksiBiaya(BaseModel, BaseMixin):
-    """Biaya tambahan per transaksi (SO, SINV, PO, PINV). 
+    """Biaya tambahan per transaksi (SO, SINV, PO, PINV, Penawaran).
     Hanya 1 FK yang boleh terisi per row."""
     __tablename__ = "transaksi_biaya"
 
@@ -14,6 +14,7 @@ class TransaksiBiaya(BaseModel, BaseMixin):
     sales_invoice_id = Column(UUID(as_uuid=True), ForeignKey("sales_invoice.id"), nullable=True)
     purchase_order_id = Column(UUID(as_uuid=True), ForeignKey("purchase_order.id"), nullable=True)
     purchase_invoice_id = Column(UUID(as_uuid=True), ForeignKey("purchase_invoice.id"), nullable=True)
+    penawaran_id = Column(UUID(as_uuid=True), ForeignKey("penawaran.id"), nullable=True)
     nama = Column(String(100), nullable=False)
     jumlah = Column(Numeric(18, 2), default=0, nullable=False)
 
@@ -22,3 +23,4 @@ class TransaksiBiaya(BaseModel, BaseMixin):
     sales_invoice = relationship("SalesInvoice", back_populates="biaya_tambahan")
     purchase_order = relationship("PurchaseOrder", back_populates="biaya_tambahan")
     purchase_invoice = relationship("PurchaseInvoice", back_populates="biaya_tambahan")
+    penawaran = relationship("Penawaran", back_populates="biaya_tambahan")

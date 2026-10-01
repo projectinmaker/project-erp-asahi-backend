@@ -19,10 +19,15 @@ from app.schemas.pembelian import (
     PurchaseInvoiceCreate, PurchaseInvoiceUpdate, PurchaseInvoiceResponse,
     PurchaseReturCreate, PurchaseReturUpdate, PurchaseReturResponse,
     PenerimaanBarangCreate, PenerimaanBarangUpdate, PenerimaanBarangResponse,
+    PurchaseOrderSisaResponse,
 )
 from app.services import pembelian_service as svc
 from app.services import workflow_service
 from app.services.hard_delete_service import hard_delete_document
+from app.services.purchase_validation import (
+    get_qty_received_so_far,
+    get_qty_invoiced_for_po_detail,
+)
 from app.schemas.workflow import HardDeleteRequest
 
 
@@ -110,6 +115,56 @@ def get_purchase_order_detail(
     if not item:
         raise HTTPException(status_code=404, detail="Purchase Order tidak ditemukan")
     return item
+
+
+@router.get("/purchase-order/{po_id}/sisa", response_model=PurchaseOrderSisaResponse)
+def get_purchase_order_sisa(
+    po_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Sisa qty per baris Purchase Order (fitur tarik data — Update #3).
+
+    - qtyDiterima = SUM qty penerimaan berstatus DIPROSES/SELESAI untuk baris
+      PO tersebut (mirror purchase_validation.get_qty_received_so_far).
+    - qtyTerfaktur = SUM qty invoice berstatus DIPROSES/SELESAI lewat dua
+      jalur link: purchase_order_detail_id langsung ATAU penerimaan_barang_detail_id
+      dari penerimaan baris PO tersebut.
+    - sisaTerima = qtyPesanan - qtyDiterima (min 0);
+      sisaFaktur = qtyPesanan - qtyTerfaktur (min 0).
+    """
+    po = svc.get_purchase_order_by_id(db, po_id)
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase Order tidak ditemukan")
+
+    details = []
+    for d in po.details:
+        qty_diterima = get_qty_received_so_far(db, d.id)
+        qty_terfaktur = get_qty_invoiced_for_po_detail(db, d.id)
+        details.append({
+            "purchase_order_detail_id": d.id,
+            "barang_id": d.barang_id,
+            "kode_barang": d.barang.kode if d.barang else None,
+            "nama_barang": d.barang.nama if d.barang else None,
+            "satuan_id": d.satuan_id,
+            "satuan_nama": d.satuan.nama if d.satuan else None,
+            "qty_pesanan": d.qty,
+            "qty_diterima": qty_diterima,
+            "qty_terfaktur": qty_terfaktur,
+            "sisa_terima": max(d.qty - qty_diterima, 0),
+            "sisa_faktur": max(d.qty - qty_terfaktur, 0),
+            "harga": float(d.harga or 0),
+            "diskon": float(d.diskon or 0),
+        })
+
+    return {
+        "purchase_order_id": po.id,
+        "supplier_id": po.supplier_id,
+        "no_pesanan": po.no_pesanan,
+        "alamat": po.alamat,
+        "syarat_bayar_id": po.syarat_bayar_id,
+        "details": details,
+    }
 
 
 @router.put("/purchase-order/{po_id}", response_model=PurchaseOrderResponse)

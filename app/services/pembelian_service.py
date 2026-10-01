@@ -466,6 +466,11 @@ def create_purchase_invoice(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
+                # Phase D: UOM on detail
+                satuan_id=d.get("satuan_id"),
+                # === Phase 5 — source-line trace (Roadmap §20) ===
+                purchase_order_detail_id=d.get("purchase_order_detail_id"),
+                penerimaan_barang_detail_id=d.get("penerimaan_barang_detail_id"),
             )
             db.add(detail)
 
@@ -509,8 +514,9 @@ def update_purchase_invoice(
     auto_post_jurnal: Optional[bool] = None,
     tanggal_jatuh_tempo=None,
     syarat_bayar_id=None,
+    details: list | None = None,
 ) -> PurchaseInvoice:
-    """Update data purchase invoice (hanya field header)."""
+    """Update data purchase invoice (field header + opsional replace detail)."""
     require_unposted(db_obj)
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Purchase Invoice dengan status {db_obj.status.value} tidak bisa diupdate")
@@ -531,6 +537,25 @@ def update_purchase_invoice(
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+
+    # Update #3 — penggantian baris detail (persist link source-line
+    # purchase_order_detail_id / penerimaan_barang_detail_id + satuan_id)
+    # saat invoice masih draft.
+    if details is not None:
+        db_obj.details.clear()
+        db.flush()
+        for d in details:
+            db_obj.details.append(PurchaseInvoiceDetail(
+                barang_id=d["barang_id"],
+                harga=Decimal(str(d["harga"])),
+                qty=int(d["qty"]),
+                diskon=safe_decimal(d.get("diskon")),
+                sub_total=Decimal(str(d.get("sub_total", 0))),
+                satuan_id=d.get("satuan_id"),
+                purchase_order_detail_id=d.get("purchase_order_detail_id"),
+                penerimaan_barang_detail_id=d.get("penerimaan_barang_detail_id"),
+            ))
+        db.flush()
 
     db.add(db_obj)
     from app.services.document_totals import refresh_totals
@@ -686,6 +711,8 @@ def create_purchase_retur(
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
                 sub_total=Decimal(str(d["sub_total"])),
+                purchase_invoice_detail_id=d.get("purchase_invoice_detail_id"),
+                purchase_order_detail_id=d.get("purchase_order_detail_id"),
             )
             db.add(detail)
 
@@ -898,6 +925,8 @@ def create_penerimaan(
                 barang_id=d["barang_id"],
                 qty=int(d["qty"]),
                 satuan_id=d["satuan_id"],
+                # === Phase 5 — source-line trace (Roadmap §19) ===
+                purchase_order_detail_id=d.get("purchase_order_detail_id"),
             )
             db.add(detail)
 

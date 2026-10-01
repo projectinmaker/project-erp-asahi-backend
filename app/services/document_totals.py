@@ -21,7 +21,7 @@ def refresh_totals(obj):
     # Dokumen posting (strict: qty & detail wajib) + dokumen order
     # (toleran: draft order lama boleh punya qty 0; tanpa detail → skip recompute).
     strict_docs = ('sales_invoice', 'purchase_invoice', 'sales_retur', 'purchase_retur')
-    order_docs = ('sales_order', 'purchase_order')
+    order_docs = ('sales_order', 'purchase_order', 'penawaran')
     if name in strict_docs or name in order_docs:
         strict = name in strict_docs
         if not obj.details:

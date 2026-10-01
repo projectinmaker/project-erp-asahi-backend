@@ -153,7 +153,6 @@ def create_sales_order(
     details_data: list,
     biaya_data: Optional[list] = None,
     syarat_bayar_id: Optional[UUID] = None,
-    fob: Optional[str] = None,
     ekspedisi: Optional[str] = None,
     tanggal_pengiriman: Optional[datetime] = None,
     penjual: Optional[str] = None,
@@ -210,7 +209,6 @@ def create_sales_order(
             tanggal=tanggal,
             pelanggan_id=pelanggan_id,
             syarat_bayar_id=syarat_bayar_id,
-            fob=fob,
             ekspedisi=ekspedisi,
             tanggal_pengiriman=tanggal_pengiriman,
             penjual=penjual,
@@ -277,7 +275,6 @@ def update_sales_order(
     tanggal: Optional[datetime] = None,
     pelanggan_id: Optional[UUID] = None,
     syarat_bayar_id: Optional[UUID] = None,
-    fob: Optional[str] = None,
     ekspedisi: Optional[str] = None,
     tanggal_pengiriman: Optional[datetime] = None,
     penjual: Optional[str] = None,
@@ -298,8 +295,6 @@ def update_sales_order(
         db_obj.pelanggan_id = pelanggan_id
     if syarat_bayar_id is not None:
         db_obj.syarat_bayar_id = syarat_bayar_id
-    if fob is not None:
-        db_obj.fob = fob
     if ekspedisi is not None:
         db_obj.ekspedisi = ekspedisi
     if tanggal_pengiriman is not None:
@@ -415,7 +410,6 @@ def create_sales_invoice(
     biaya_data: Optional[list] = None,
     syarat_bayar_id: Optional[UUID] = None,
     sales_order_id: Optional[UUID] = None,
-    fob: Optional[str] = None,
     ekspedisi: Optional[str] = None,
     tanggal_pengiriman: Optional[datetime] = None,
     alamat_pengiriman: Optional[str] = None,
@@ -477,7 +471,6 @@ def create_sales_invoice(
             pelanggan_id=pelanggan_id,
             syarat_bayar_id=syarat_bayar_id,
             sales_order_id=sales_order_id,
-            fob=fob,
             ekspedisi=ekspedisi,
             tanggal_pengiriman=tanggal_pengiriman,
             alamat_pengiriman=alamat_pengiriman,
@@ -506,6 +499,9 @@ def create_sales_invoice(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
+                # === Phase 4 — source-line trace (Roadmap §14) ===
+                sales_order_detail_id=d.get("sales_order_detail_id"),
+                delivery_detail_id=d.get("delivery_detail_id"),
             )
             db.add(detail)
 
@@ -541,7 +537,6 @@ def update_sales_invoice(
     pelanggan_id: Optional[UUID] = None,
     syarat_bayar_id: Optional[UUID] = None,
     sales_order_id: Optional[UUID] = None,
-    fob: Optional[str] = None,
     ekspedisi: Optional[str] = None,
     tanggal_pengiriman: Optional[datetime] = None,
     alamat_pengiriman: Optional[str] = None,
@@ -551,8 +546,9 @@ def update_sales_invoice(
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
     tanggal_jatuh_tempo=None,
+    details: Optional[list] = None,
 ) -> SalesInvoice:
-    """Update data sales invoice (hanya field header)."""
+    """Update data sales invoice (field header + opsional replace detail)."""
     require_unposted(db_obj)
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Sales Invoice dengan status {db_obj.status.value} tidak bisa diupdate")
@@ -565,8 +561,6 @@ def update_sales_invoice(
         db_obj.syarat_bayar_id = syarat_bayar_id
     if sales_order_id is not None:
         db_obj.sales_order_id = sales_order_id
-    if fob is not None:
-        db_obj.fob = fob
     if ekspedisi is not None:
         db_obj.ekspedisi = ekspedisi
     if tanggal_pengiriman is not None:
@@ -583,6 +577,23 @@ def update_sales_invoice(
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+
+    # Update #3 — penggantian baris detail (persist link source-line
+    # sales_order_detail_id / delivery_detail_id) saat invoice masih draft.
+    if details is not None:
+        db_obj.details.clear()
+        db.flush()
+        for d in details:
+            db_obj.details.append(SalesInvoiceDetail(
+                barang_id=d["barang_id"],
+                harga=Decimal(str(d["harga"])),
+                qty=int(d["qty"]),
+                diskon=safe_decimal(d.get("diskon")),
+                sub_total=Decimal(str(d.get("sub_total", 0))),
+                sales_order_detail_id=d.get("sales_order_detail_id"),
+                delivery_detail_id=d.get("delivery_detail_id"),
+            ))
+        db.flush()
 
     db.add(db_obj)
     from app.services.document_totals import refresh_totals

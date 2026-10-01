@@ -14,7 +14,6 @@ class SalesInvoice(BaseModel, BaseMixin):
     tanggal_jatuh_tempo = Column(Date, nullable=True)
     akun_kontrol_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=True)
     syarat_bayar_id = Column(UUID(as_uuid=True), ForeignKey("syarat_bayar.id"), nullable=True)
-    fob = Column(String(50), nullable=True)
     ekspedisi = Column(String(100), nullable=True)
     tanggal_pengiriman = Column(DateTime(timezone=True), nullable=True)
     sales_order_id = Column(UUID(as_uuid=True), ForeignKey("sales_order.id"), nullable=True)

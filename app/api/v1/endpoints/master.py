@@ -462,15 +462,49 @@ def create_supplier_from_coa(
 # ==========================================
 @router.get('/barang-akun-persediaan', response_model=PaginatedResponse[COASimpleResponse])
 def get_barang_inventory_accounts(skip: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
-    search: Optional[str] = None, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    search: str | None = None, item_type: str | None = Query(None,
+        description="Filter per jenis item: BARANG_DAGANG/BARANG_JADI -> INVENTORY_FINISHED, "
+                    "BARANG_BAKU -> INVENTORY_RAW, BARANG_BANTU -> INVENTORY_AUX, JASA -> kosong. "
+                    "Tanpa param = semua akun persediaan."),
+    db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     from app.models.akun_perkiraan import AkunPerkiraan
     from sqlalchemy import or_
-    query = master_service.inventory_account_candidates(db)
+    query = master_service.inventory_account_candidates(db, item_type=item_type)
     if search:
         query = query.filter(or_(AkunPerkiraan.kode.ilike(f'%{search}%'), AkunPerkiraan.nama.ilike(f'%{search}%')))
     total = query.count()
     return {'data': query.order_by(AkunPerkiraan.kode, AkunPerkiraan.id).offset(skip).limit(limit).all(),
             'total': total, 'skip': skip, 'limit': limit}
+
+
+class AkunPilihanItemResponse(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+
+
+class BarangAkunPilihanResponse(BaseSchema):
+    """Pilihan akun untuk picker COA di form Barang & Jasa (Update #3)."""
+    hpp: list[AkunPilihanItemResponse]
+    penjualan: list[AkunPilihanItemResponse]
+    retur: list[AkunPilihanItemResponse]
+    diskon: list[AkunPilihanItemResponse]
+
+
+@router.get('/barang-akun-pilihan', response_model=BarangAkunPilihanResponse)
+def get_barang_akun_pilihan(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar pilihan akun per kategori mapping barang (Update #3).
+
+    - hpp      : akun COGS/COGS tingkat DETAIL AKTIF (mis. 531001).
+    - penjualan: akun REVENUE/OPERATING_REVENUE system SALES, dikecualikan akun
+                 yang di-map ke RETUR_PENJUALAN & POTONGAN_PENJUALAN (411001-411003).
+    - retur    : akun setting_akun RETUR_PENJUALAN (mis. 411004).
+    - diskon   : akun setting_akun POTONGAN_PENJUALAN (mis. 411005).
+    """
+    return master_service.barang_akun_pilihan(db)
 
 
 @router.get("/barang", response_model=PaginatedResponse[BarangResponse])

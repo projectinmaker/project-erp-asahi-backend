@@ -21,10 +21,17 @@ from app.schemas.penjualan import (
     SalesInvoiceCreate, SalesInvoiceUpdate, SalesInvoiceResponse,
     SalesReturCreate, SalesReturUpdate, SalesReturResponse,
     PengirimanBarangCreate, PengirimanBarangUpdate, PengirimanBarangResponse,
+    SalesOrderSisaResponse,
+    PenawaranCreate, PenawaranUpdate, PenawaranResponse,
 )
 from app.services import penjualan_service as svc
+from app.services import penawaran_service
 from app.services import workflow_service
 from app.services.hard_delete_service import hard_delete_document
+from app.services.sales_validation import (
+    get_qty_delivered_so_far,
+    get_qty_invoiced_for_so_detail,
+)
 from app.schemas.workflow import HardDeleteRequest
 
 
@@ -84,7 +91,6 @@ def create_sales_order(
             details_data=details_data,
             biaya_data=biaya_data,
             syarat_bayar_id=data_in.syarat_bayar_id,
-            fob=data_in.fob,
             ekspedisi=data_in.ekspedisi,
             tanggal_pengiriman=data_in.tanggal_pengiriman,
             penjual=data_in.penjual,
@@ -117,6 +123,56 @@ def get_sales_order_detail(
     if not item:
         raise HTTPException(status_code=404, detail="Sales Order tidak ditemukan")
     return item
+
+
+@router.get("/sales-order/{so_id}/sisa", response_model=SalesOrderSisaResponse)
+def get_sales_order_sisa(
+    so_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Sisa qty per baris Sales Order (fitur tarik data — Update #3).
+
+    - qtyTerkirim = SUM qty pengiriman berstatus DIPROSES/SELESAI untuk baris
+      SO tersebut (mirror sales_validation.get_qty_delivered_so_far).
+    - qtyTerfaktur = SUM qty invoice berstatus DIPROSES/SELESAI lewat dua
+      jalur link: sales_order_detail_id langsung ATAU delivery_detail_id dari
+      pengiriman baris SO tersebut.
+    - sisaKirim = qtyPesanan - qtyTerkirim (min 0);
+      sisaFaktur = qtyPesanan - qtyTerfaktur (min 0).
+    """
+    so = svc.get_sales_order_by_id(db, so_id)
+    if not so:
+        raise HTTPException(status_code=404, detail="Sales Order tidak ditemukan")
+
+    details = []
+    for d in so.details:
+        qty_terkirim = get_qty_delivered_so_far(db, d.id)
+        qty_terfaktur = get_qty_invoiced_for_so_detail(db, d.id)
+        details.append({
+            "sales_order_detail_id": d.id,
+            "barang_id": d.barang_id,
+            "kode_barang": d.barang.kode if d.barang else None,
+            "nama_barang": d.barang.nama if d.barang else None,
+            "satuan_id": d.satuan_id,
+            "satuan_nama": d.satuan.nama if d.satuan else None,
+            "qty_pesanan": d.qty,
+            "qty_terkirim": qty_terkirim,
+            "qty_terfaktur": qty_terfaktur,
+            "sisa_kirim": max(d.qty - qty_terkirim, 0),
+            "sisa_faktur": max(d.qty - qty_terfaktur, 0),
+            "harga": float(d.harga or 0),
+            "diskon": float(d.diskon or 0),
+        })
+
+    return {
+        "sales_order_id": so.id,
+        "pelanggan_id": so.pelanggan_id,
+        "syarat_bayar_id": so.syarat_bayar_id,
+        "no_pesanan": so.no_pesanan,
+        "alamat_pengiriman": so.alamat_pengiriman,
+        "details": details,
+    }
 
 
 @router.put("/sales-order/{so_id}", response_model=SalesOrderResponse)
@@ -207,7 +263,6 @@ def create_sales_invoice(
             biaya_data=biaya_data,
             syarat_bayar_id=data_in.syarat_bayar_id,
             sales_order_id=data_in.sales_order_id,
-            fob=data_in.fob,
             ekspedisi=data_in.ekspedisi,
             tanggal_pengiriman=data_in.tanggal_pengiriman,
             alamat_pengiriman=data_in.alamat_pengiriman,
@@ -617,3 +672,129 @@ def get_invoice_belum_bayar(
         })
 
     return result
+
+
+# ==========================================
+# PENAWARAN (quotation — Update #3)
+# ==========================================
+
+@router.get("/penawaran", response_model=PaginatedResponse[PenawaranResponse])
+def get_penawaran_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    search: str | None = Query(None, description="Cari berdasarkan no penawaran, nama pelanggan"),
+    status_filter: str | None = Query(None, alias="status", description="Filter status"),
+    pelanggan_id: UUID | None = Query(None, description="Filter pelanggan"),
+    tanggal_from: date | None = Query(None, description="Filter tanggal mulai"),
+    tanggal_to: date | None = Query(None, description="Filter tanggal sampai"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil daftar Penawaran dengan filter dan pagination."""
+    data, total = penawaran_service.get_penawaran_list(
+        db, skip=skip, limit=limit, search=search,
+        status=status_filter, pelanggan_id=pelanggan_id,
+        tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+    )
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+
+@router.post("/penawaran", response_model=PenawaranResponse, status_code=status.HTTP_201_CREATED)
+def create_penawaran(
+    data_in: PenawaranCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buat Penawaran baru (tanpa jurnal, tanpa workflow — status DRAFT)."""
+    try:
+        details_data = [d.model_dump() for d in data_in.details]
+        biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
+        return penawaran_service.create_penawaran(
+            db=db,
+            tanggal=data_in.tanggal,
+            pelanggan_id=data_in.pelanggan_id,
+            details_data=details_data,
+            biaya_data=biaya_data,
+            syarat_bayar_id=data_in.syarat_bayar_id,
+            alamat_pengiriman=data_in.alamat_pengiriman,
+            keterangan=data_in.keterangan,
+            mata_uang=data_in.mata_uang,
+            diskon_global=data_in.diskon_global,
+            ppn=data_in.ppn,
+            berlaku_hingga=data_in.berlaku_hingga,
+            created_by=current_user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+@router.get("/penawaran/{penawaran_id}", response_model=PenawaranResponse)
+def get_penawaran_detail(
+    penawaran_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil detail 1 Penawaran."""
+    item = penawaran_service.get_penawaran_by_id(db, penawaran_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan")
+    return item
+
+
+@router.put("/penawaran/{penawaran_id}", response_model=PenawaranResponse)
+def update_penawaran(
+    penawaran_id: UUID,
+    data_in: PenawaranUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Update Penawaran (hanya status DRAFT; header + replace details + biaya)."""
+    item = penawaran_service.get_penawaran_by_id(db, penawaran_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan")
+
+    update_data = _service_kwargs(penawaran_service.update_penawaran, data_in.model_dump(exclude_unset=True))
+    try:
+        return penawaran_service.update_penawaran(db, db_obj=item, **update_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/penawaran/{penawaran_id}/cancel")
+def cancel_penawaran(
+    penawaran_id: UUID,
+    payload: HardDeleteRequest | None = Body(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Hapus permanen Penawaran (hard delete).
+
+    Dokumen + rincian + biaya tambahan dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
+    try:
+        return hard_delete_document(
+            db, 'penawaran', penawaran_id, current_user,
+            reason=payload.reason if payload else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/penawaran/{penawaran_id}/to-sales-order")
+def convert_penawaran_to_sales_order(
+    penawaran_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Konversi Penawaran menjadi Sales Order (Update #3).
+
+    - Guard: hanya penawaran berstatus DRAFT/DIPROSES (panggil kedua kali → 400).
+    - SO dibuat + difinalisasi (admin: langsung APPROVED), penawaran jadi SELESAI.
+    - Return: {"salesOrderId": str, "noPesanan": str}.
+    """
+    try:
+        so = penawaran_service.convert_to_so(db, penawaran_id, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"salesOrderId": str(so.id), "noPesanan": so.no_pesanan}

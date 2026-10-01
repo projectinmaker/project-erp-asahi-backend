@@ -15,10 +15,10 @@ class StatusPenjualan(str, enum.Enum):
 
 class FulfillmentStatus(str, enum.Enum):
     """Separate fulfillment status from workflow status (Catatan Sales Order §8).
-    
+
     workflow_status (existing `status` field): DRAFT → DIPROSES → SELESAI/DIBATALKAN
     fulfillment_status (new): OPEN → PARTIAL → FULFILLED → CLOSED
-    
+
     These two are independent: an SO can be APPROVED (workflow) but PARTIAL (fulfillment).
     """
     OPEN = "OPEN"           # No delivery yet
@@ -33,7 +33,6 @@ class SalesOrder(BaseModel, BaseMixin):
     no_pesanan = Column(String(30), unique=True, nullable=False, index=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     syarat_bayar_id = Column(UUID(as_uuid=True), ForeignKey("syarat_bayar.id"), nullable=True)
-    fob = Column(String(50), nullable=True)
     ekspedisi = Column(String(100), nullable=True)
     tanggal_pengiriman = Column(DateTime(timezone=True), nullable=True)
     penjual = Column(String(100), nullable=True)
