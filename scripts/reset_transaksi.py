@@ -3,12 +3,14 @@
 reset_transaksi.py — Reset data transaksi ASAHI BOOKS ERP
 ==========================================================
 
-Menghapus SEMUA data transaksi hasil test per modul (jurnal, penjualan,
-pembelian, kas & bank, persediaan, aset tetap, pelunasan, workflow,
-histori dokumen terhapus, dsb.) TANPA menyentuh:
+Menghapus SEMUA data transaksi hasil test per modul (jurnal, penjualan
+(termasuk Penawaran & Tukar Faktur), pembelian, kas & bank, persediaan,
+aset tetap, pelunasan, workflow, histori dokumen terhapus, dsb.) TANPA
+menyentuh:
 
   - Akun Perkiraan (COA) + snapshot saldo awalnya
-  - Setting Akun
+  - Setting Akun + Setting Aplikasi global (app_setting, mis. metode
+    valuasi)
   - Master data menu Pengaturan (Pelanggan, Supplier, Barang + konversi
     satuan, Satuan, Gudang, Kategori Barang, Kategori Aset, Syarat Bayar,
     Biaya Tambahan, Kas/Bank Akun, Karyawan)
@@ -40,6 +42,9 @@ Opsi:
                           (dokumen stok, mutasi, kartu stok, saldo gudang,
                           dan kolom barang.stok). Berguna kalau saldo awal
                           stok sudah di-set rapi dan tidak mau diulang.
+                          Catatan: link Sales Order di permintaan_barang
+                          (kolom sales_order_id) otomatis di-NULL-kan karena
+                          dokumen SO ikut dihapus.
     --reset-saldo-awal    Selain menghapus jurnal saldo awal, snapshot
                           akun_perkiraan.saldo juga dinol-kan.
     --reset-kas-saldo     Nol-kan snapshot saldo kas/bank (kas_bank_akun.saldo).
@@ -47,13 +52,24 @@ Opsi:
 
 Efek setelah reset (yang diharapkan):
     - Nomor dokumen otomatis mulai dari -001 lagi (dihitung dari data
-      tersisa di database).
+      tersisa di database) — termasuk Penawaran (PEN-) dan Tukar Faktur
+      (TF-).
     - Semua periode kembali terbuka (penutupan_periode dihapus).
     - Halaman Saldo Awal tampak "belum di-set" karena jurnal SALDO_AWAL
       ikut terhapus — input ulang kapan saja lewat menu.
     - Idempotency-Key lama bisa dipakai ulang (cache idempotent_operation
       dikosongkan).
     - Login user / password / role tidak berubah sama sekali.
+
+Changelog:
+    2026-10-01  Selaras dengan update #3–#5:
+                + WIPE : penawaran, penawaran_detail (update #3),
+                         tukar_faktur, tukar_faktur_detail (update #4)
+                + KEEP : app_setting (update #2 — setting global,
+                         mis. metode valuasi)
+                + --keep-stok kini otomatis me-NULL-kan
+                  permintaan_barang.sales_order_id (link SO update #4)
+                  karena tabel sales_order ikut dihapus.
 
 Catatan keamanan:
     - Script TIDAK perlu dijalankan bersamaan dengan backend berhenti,
@@ -88,9 +104,10 @@ STOK_TABLES = frozenset({
 
 # Master / konfigurasi — TIDAK PERNAH disentuh
 KEEP_TABLES = frozenset({
-    # COA & setting akuntansi
+    # COA & setting akuntansi + setting aplikasi global
     "akun_perkiraan",
     "setting_akun",
+    "app_setting",  # key-value global (update #2: METODE_VALUASI, dsb.)
     # Master data (menu Pengaturan)
     "kategori_barang",
     "satuan",
@@ -130,7 +147,9 @@ WIPE_TABLES = frozenset({
     "transfer_bank",
     "rekonsiliasi_bank",
     "rekonsiliasi_bank_detail",
-    # Penjualan
+    # Penjualan (Penawaran & Tukar Faktur termasuk — update #3/#4)
+    "penawaran",
+    "penawaran_detail",
     "sales_order",
     "sales_order_detail",
     "pengiriman_barang",
@@ -139,6 +158,8 @@ WIPE_TABLES = frozenset({
     "sales_invoice_detail",
     "sales_retur",
     "sales_retur_detail",
+    "tukar_faktur",
+    "tukar_faktur_detail",
     # Pembelian
     "purchase_order",
     "purchase_order_detail",
@@ -172,8 +193,10 @@ WIPE_GROUPS = [
         "transfer_bank", "rekonsiliasi_bank", "rekonsiliasi_bank_detail",
     ]),
     ("Penjualan", [
+        "penawaran", "penawaran_detail",
         "sales_order", "sales_order_detail", "pengiriman_barang", "pengiriman_barang_detail",
         "sales_invoice", "sales_invoice_detail", "sales_retur", "sales_retur_detail",
+        "tukar_faktur", "tukar_faktur_detail",
     ]),
     ("Pembelian", [
         "purchase_order", "purchase_order_detail", "penerimaan_barang", "penerimaan_barang_detail",
@@ -193,7 +216,7 @@ WIPE_GROUPS = [
 ]
 
 KEEP_GROUPS = [
-    ("COA & Setting", ["akun_perkiraan", "setting_akun"]),
+    ("COA & Setting", ["akun_perkiraan", "setting_akun", "app_setting"]),
     ("Master Data", [
         "barang", "barang_satuan", "pelanggan", "supplier", "kategori_barang",
         "satuan", "gudang", "kategori_aset", "syarat_bayar", "biaya_tambahan",
