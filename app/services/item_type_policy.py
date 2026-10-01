@@ -46,8 +46,11 @@ ITEM_TYPE_POLICY = {
         can_purchase=True,
         can_sell=True,
         visible_tabs=['umum', 'jual_beli', 'stok', 'akun', 'gambar', 'lainnya'],
-        account_fields=['akun_persediaan_id', 'akun_hpp_id', 'akun_penjualan_id'],
-        stock_fields=['metode_valuasi', 'stok_minimum'],
+        account_fields=['akun_persediaan_id', 'akun_hpp_id', 'akun_penjualan_id',
+                        'akun_retur_penjualan_id', 'akun_diskon_penjualan_id'],
+        # metode_valuasi dipindahkan ke setting global (Setting Akun) —
+        # bukan lagi field per-barang.
+        stock_fields=['stok_minimum'],
         description='Barang fisik yang stok-nya dilacak (kartu stok, valuasi, gudang).',
     ),
     UI_TYPE_NONPERSEDIAAN: dict(
@@ -59,7 +62,8 @@ ITEM_TYPE_POLICY = {
         can_purchase=True,
         can_sell=True,
         visible_tabs=['umum', 'jual_beli', 'akun', 'gambar', 'lainnya'],
-        account_fields=['akun_hpp_id', 'akun_penjualan_id'],
+        account_fields=['akun_hpp_id', 'akun_penjualan_id',
+                        'akun_retur_penjualan_id', 'akun_diskon_penjualan_id'],
         stock_fields=[],
         description='Barang/jasa terjual-terbeli tanpa pelacakan stok (tanpa kartu stok/valuasi).',
     ),
@@ -72,7 +76,7 @@ ITEM_TYPE_POLICY = {
         can_purchase=True,
         can_sell=True,
         visible_tabs=['umum', 'jual_beli', 'akun', 'gambar', 'lainnya'],
-        account_fields=['akun_penjualan_id'],
+        account_fields=['akun_penjualan_id', 'akun_retur_penjualan_id', 'akun_diskon_penjualan_id'],
         stock_fields=[],
         description='Item jasa — pendapatan/beban tanpa gerakan stok, gudang, atau valuasi.',
     ),

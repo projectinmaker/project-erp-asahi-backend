@@ -10,8 +10,15 @@ def money(value):
     return Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
-def method(barang):
-    return getattr(barang.metode_valuasi, 'value', barang.metode_valuasi) or 'AVERAGE'
+def method(db, barang=None):
+    """Metode valuasi efektif untuk barang.
+
+    Dipindahkan dari per-barang ke setting global (Setting Akun → Metode
+    Valuasi). Kolom barang.metode_valuasi dipertahankan untuk backward-compat
+    histori, tetapi sumber kebenaran engine valuasi adalah konfigurasi global.
+    """
+    from app.services import app_setting_service
+    return app_setting_service.get_metode_valuasi(db)
 
 
 def ensure_balances(db, barang):
@@ -19,7 +26,7 @@ def ensure_balances(db, barang):
     db.flush()
     if db.query(StockBalance).filter_by(barang_id=barang.id).first():
         return
-    if method(barang) == 'AVERAGE':
+    if method(db, barang) == 'AVERAGE':
         db.add(StockBalance(barang_id=barang.id, location_key='UNASSIGNED',
                             qty=barang.stok or 0, nilai=money((barang.stok or 0) * (barang.harga_pokok or 0))))
     else:
@@ -67,23 +74,23 @@ def value_move(db, barang, qty, masuk, gudang_id, harga, tanggal, ref_module=Non
         # a discounted PO price can create value that no stored layer contains.
         parts = [dict(p, harga=str(money(p['harga']))) for p in parts]
         total = sum((money(p['qty'] * Decimal(p['harga'])) for p in parts), Decimal(0))
-        if method(barang) != 'AVERAGE':
+        if method(db, barang) != 'AVERAGE':
             for part in parts:
-                if method(barang) == 'FEFO' and not part.get('expiry'):
+                if method(db, barang) == 'FEFO' and not part.get('expiry'):
                     raise ValueError('Barang FEFO memerlukan tanggal kedaluwarsa')
                 db.add(StokKartuLayer(barang_id=barang.id, gudang_id=gudang_id, qty_masuk=part['qty'], qty_sisa=part['qty'],
                     harga_satuan=part['harga'], tanggal_masuk=part.get('tanggal') or tanggal, tanggal_kedaluwarsa=part.get('expiry'),
                     ref_module=ref_module, ref_no=ref_no, ref_id=ref_id))
-    elif method(barang) == 'AVERAGE':
+    elif method(db, barang) == 'AVERAGE':
         total = pos.nilai if qty == pos.qty else money(pos.nilai * qty / pos.qty)
     else:
         layers = db.query(StokKartuLayer).filter_by(barang_id=barang.id, gudang_id=gudang_id).filter(StokKartuLayer.qty_sisa > 0)
-        if method(barang) == 'FEFO':
+        if method(db, barang) == 'FEFO':
             layers = layers.order_by(StokKartuLayer.tanggal_kedaluwarsa.asc().nullslast())
         layers = layers.order_by(StokKartuLayer.tanggal_masuk, StokKartuLayer.created_at, StokKartuLayer.id).all()
         if sum(x.qty_sisa for x in layers) != pos.qty or money(sum((x.qty_sisa*x.harga_satuan for x in layers), Decimal(0))) != pos.nilai:
             raise ValueError('Layer valuasi tidak cocok dengan saldo gudang; transaksi dibatalkan')
-        if method(barang) == 'FEFO' and any(x.tanggal_kedaluwarsa is None for x in layers):
+        if method(db, barang) == 'FEFO' and any(x.tanggal_kedaluwarsa is None for x in layers):
             raise ValueError('Layer FEFO lama belum memiliki tanggal kedaluwarsa; rekonsiliasi terlebih dahulu')
         remaining, total = qty, Decimal(0)
         for layer in layers:
@@ -110,9 +117,9 @@ def reconcile(db, barang):
             'selisihQty': barang.stok - sum(r.qty for r in rows), 'nilaiGudang': sum((r.nilai for r in rows), Decimal(0)),
             'locations': [{'gudangId': r.gudang_id, 'locationKey': r.location_key, 'qty': r.qty, 'nilai': r.nilai} for r in rows],
             'perluInisialisasi': not rows,
-            'layerQty': sum(x.qty_sisa for x in layers) if method(barang) != 'AVERAGE' else None,
-            'layerNilai': sum((x.qty_sisa*x.harga_satuan for x in layers), Decimal(0)) if method(barang) != 'AVERAGE' else None,
-            'layerTanpaExpiry': sum(x.tanggal_kedaluwarsa is None for x in layers) if method(barang) == 'FEFO' else 0}
+            'layerQty': sum(x.qty_sisa for x in layers) if method(db, barang) != 'AVERAGE' else None,
+            'layerNilai': sum((x.qty_sisa*x.harga_satuan for x in layers), Decimal(0)) if method(db, barang) != 'AVERAGE' else None,
+            'layerTanpaExpiry': sum(x.tanggal_kedaluwarsa is None for x in layers) if method(db, barang) == 'FEFO' else 0}
 
 
 def reconcile_ledger(db):
@@ -130,7 +137,7 @@ def reconcile_ledger(db):
         values = db.query(StockBalance).filter_by(barang_id=item.id).all()
         if values:
             value = sum((x.nilai for x in values), Decimal(0))
-        elif method(item) == 'AVERAGE':
+        elif method(db, item) == 'AVERAGE':
             value = money((item.stok or 0)*(item.harga_pokok or 0))
         else:
             value = db.query(func.sum(StokKartuLayer.qty_sisa*StokKartuLayer.harga_satuan)).filter_by(barang_id=item.id).scalar() or Decimal(0)

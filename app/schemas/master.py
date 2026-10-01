@@ -246,12 +246,15 @@ class BarangBase(BaseSchema):
     kategori_id: UUID
     satuan_id: UUID  # base_uom
     harga_pokok: Decimal = 0
+    harga_jual: Decimal = 0  # harga jual default (bukan HPP; HPP mengikuti valuasi stok)
     stok_minimum: int = 0
     metode_valuasi: MetodeValuasi = MetodeValuasi.AVERAGE  # inventory_method
     # NEW Phase 2 — P0 fields
     item_type: Optional[ItemTypeBarang] = None  # item_type canonical enum
     akun_hpp_id: Optional[UUID] = None  # COGS_account
     akun_penjualan_id: Optional[UUID] = None  # sales_account (revenue)
+    akun_retur_penjualan_id: Optional[UUID] = None  # sales_return_account (contra-revenue)
+    akun_diskon_penjualan_id: Optional[UUID] = None  # sales_discount_account (contra-revenue)
     stock_item: bool = True  # stock_item flag (True=stock-tracked, False=non-stock/jasa)
     # LEGACY
     jenis_barang: Optional[str] = None
@@ -268,6 +271,7 @@ class BarangUpdate(BaseSchema):
     kategori_id: Optional[UUID] = None
     satuan_id: Optional[UUID] = None
     harga_pokok: Optional[Decimal] = None
+    harga_jual: Optional[Decimal] = None
     stok_minimum: Optional[int] = None
     metode_valuasi: Optional[MetodeValuasi] = None
     status: Optional[str] = None
@@ -275,6 +279,8 @@ class BarangUpdate(BaseSchema):
     item_type: Optional[ItemTypeBarang] = None
     akun_hpp_id: Optional[UUID] = None
     akun_penjualan_id: Optional[UUID] = None
+    akun_retur_penjualan_id: Optional[UUID] = None
+    akun_diskon_penjualan_id: Optional[UUID] = None
     stock_item: Optional[bool] = None
     # LEGACY
     jenis_barang: Optional[str] = None
@@ -283,6 +289,8 @@ class BarangResponse(BarangBase):
     akun_persediaan: Optional[COASimpleResponse] = None
     akun_hpp: Optional[COASimpleResponse] = None  # NEW Phase 2
     akun_penjualan: Optional[COASimpleResponse] = None  # NEW Phase 2
+    akun_retur_penjualan: Optional[COASimpleResponse] = None
+    akun_diskon_penjualan: Optional[COASimpleResponse] = None
     id: UUID
     stok: int
     status: str
@@ -470,3 +478,15 @@ class SettingAkunResponse(BaseSchema):
     akun_perkiraan: Optional[COASimpleResponse] = None
     created_at: datetime
     updated_at: datetime
+
+
+# ==========================================
+# SETTING APLIKASI GLOBAL (non-COA) — app_setting
+# ==========================================
+class AppSettingUpdate(BaseSchema):
+    value: str
+
+class AppSettingResponse(BaseSchema):
+    key: str
+    value: str
+    updated_at: Optional[datetime] = None

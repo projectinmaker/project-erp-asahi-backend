@@ -176,7 +176,9 @@ def reverse_stock_movement(
 
     # Load cost_parts asli (untuk restore layer FIFO/FEFO)
     cost_parts = original.cost_parts or []
-    metode = getattr(barang.metode_valuasi, 'value', barang.metode_valuasi) or 'AVERAGE'
+    # Metode valuasi sekarang global (Setting Akun), bukan per-barang
+    from app.services import app_setting_service
+    metode = app_setting_service.get_metode_valuasi(db)
 
     if metode != 'AVERAGE':
         if original_is_masuk:

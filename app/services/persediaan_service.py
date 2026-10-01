@@ -360,7 +360,9 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
     # === Phase A: FEFO + TAMBAH requires tanggal_kedaluwarsa ===
     barang = db_obj.barang
     if barang:
-        metode = getattr(barang.metode_valuasi, 'value', barang.metode_valuasi) or 'AVERAGE'
+        # Metode valuasi sekarang global (Setting Akun), bukan per-barang
+        from app.services import app_setting_service
+        metode = app_setting_service.get_metode_valuasi(db)
         if metode == 'FEFO' and db_obj.tipe.value == 'TAMBAH' and not db_obj.tanggal_kedaluwarsa:
             raise ValueError(
                 f"Barang '{barang.nama}' (kode: {barang.kode}) menggunakan metode FEFO. "
@@ -703,6 +705,9 @@ def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBaran
         outgoing['mutasi'].expense_account_id = inventory_account_id  # untuk transfer, akun lawan sama
 
     # Tambah stok ke gudang tujuan
+    # Metode valuasi sekarang global (Setting Akun), bukan per-barang
+    from app.services import app_setting_service
+    metode_valuasi_global = app_setting_service.get_metode_valuasi(db)
     incoming = update_stok_barang(
         db=db,
         barang_id=db_obj.barang_id,
@@ -715,7 +720,7 @@ def approve_pemindahan(db: Session, db_obj: PemindahanBarang) -> PemindahanBaran
         gudang_id=db_obj.ke_gudang_id,
         harga_satuan=outgoing['harga_satuan'],
         incoming_parts=outgoing['parts'] or None,
-        exact_total=outgoing['total_nilai'] if getattr(db_obj.barang.metode_valuasi, 'value', db_obj.barang.metode_valuasi) == 'AVERAGE' else None,
+        exact_total=outgoing['total_nilai'] if metode_valuasi_global == 'AVERAGE' else None,
     )
     # Set inventory_account_id snapshot di mutasi masuk juga
     if inventory_account_id and incoming.get('mutasi'):

@@ -68,12 +68,21 @@ class Barang(BaseModel, BaseMixin):
         UUID(as_uuid=True), ForeignKey('akun_perkiraan.id', name='fk_barang_akun_penjualan'),
         nullable=True, index=True
     )
+    akun_retur_penjualan_id = Column(  # sales_return_account (contra-revenue)
+        UUID(as_uuid=True), ForeignKey('akun_perkiraan.id', name='fk_barang_akun_retur_penjualan'),
+        nullable=True, index=True
+    )
+    akun_diskon_penjualan_id = Column(  # sales_discount_account (contra-revenue)
+        UUID(as_uuid=True), ForeignKey('akun_perkiraan.id', name='fk_barang_akun_diskon_penjualan'),
+        nullable=True, index=True
+    )
     stock_item = Column(  # stock_item flag (True = stock-tracked, False = non-stock/jasa)
         Boolean, default=True, nullable=False
     )
 
     # === Operational fields ===
     harga_pokok = Column(Numeric(18, 2), default=0, nullable=False)
+    harga_jual = Column(Numeric(18, 2), default=0, nullable=False)
     stok = Column(Integer, default=0, nullable=False)
     stok_minimum = Column(Integer, default=0, nullable=False)
 
@@ -84,5 +93,7 @@ class Barang(BaseModel, BaseMixin):
     akun_persediaan = relationship('AkunPerkiraan', foreign_keys=[akun_persediaan_id])
     akun_hpp = relationship('AkunPerkiraan', foreign_keys=[akun_hpp_id])
     akun_penjualan = relationship('AkunPerkiraan', foreign_keys=[akun_penjualan_id])
+    akun_retur_penjualan = relationship('AkunPerkiraan', foreign_keys=[akun_retur_penjualan_id])
+    akun_diskon_penjualan = relationship('AkunPerkiraan', foreign_keys=[akun_diskon_penjualan_id])
     kategori = relationship("KategoriBarang", backref="barangs")
     satuan = relationship("Satuan")

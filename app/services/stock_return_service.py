@@ -55,11 +55,11 @@ def execute_sales_return(db, obj):
         original_value = sum((m.total_nilai for m in moves), Decimal(0))
         # Average returns use cumulative rounding so the final return restores exactly the original COGS.
         value = money(original_value*(previous+qty)/original_qty) - money(original_value*previous/original_qty)
-        if method(item) != 'AVERAGE' and remaining:
+        if method(db, item) != 'AVERAGE' and remaining:
             raise ValueError('Snapshot layer pengiriman tidak lengkap')
         movement = update_stok_barang(db, item_id, qty, 'TAMBAH', ref_module=RefModule.SALES_RETUR,
             ref_id=obj.id, ref_no=obj.no_retur, gudang_id=obj.gudang_id, harga_satuan=money(value/qty),
-            incoming_parts=parts or None, exact_total=value if method(item) == 'AVERAGE' else None)
+            incoming_parts=parts or None, exact_total=value if method(db, item) == 'AVERAGE' else None)
         total = movement['total_nilai']
         if total:
             entries += [JurnalEntryItem(inventory, debit=total), JurnalEntryItem(expense, kredit=total)]

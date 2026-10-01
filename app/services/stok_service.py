@@ -32,7 +32,7 @@ def update_stok_barang(db, barang_id, qty_change, mode="KURANGI", deskripsi="", 
         harga_satuan if harga_satuan is not None else barang.harga_pokok,
         tanggal or datetime.now(timezone.utc), ref_module, ref_no, ref_id, tanggal_kedaluwarsa, incoming_parts)
     if exact_total is not None:
-        if not incoming or wh.method(barang) != 'AVERAGE':
+        if not incoming or wh.method(db, barang) != 'AVERAGE':
             raise ValueError('Nilai transfer hanya untuk penerimaan average')
         pos = db.query(StockBalance).filter_by(barang_id=barang.id, location_key=str(gudang_id) if gudang_id else 'UNASSIGNED').one()
         pos.nilai += exact_total - val['total_nilai']
@@ -149,13 +149,15 @@ def hitung_nilai_stok(
     """
     from app.models.transaksi.stock_balance import StockBalance
     from sqlalchemy import func
+    from app.services import app_setting_service
     if db.query(StockBalance).filter_by(barang_id=barang_id).first():
         return db.query(func.sum(StockBalance.nilai)).filter_by(barang_id=barang_id).scalar() or Decimal(0)
     barang = db.query(Barang).filter(Barang.id == barang_id).first()
     if not barang:
         raise ValueError(f"Barang dengan ID {barang_id} tidak ditemukan")
 
-    metode = MetodeValuasi(barang.metode_valuasi) if barang.metode_valuasi else MetodeValuasi.AVERAGE
+    # Metode valuasi sekarang global (Setting Akun), bukan per-barang
+    metode = MetodeValuasi(app_setting_service.get_metode_valuasi(db))
 
     if metode == MetodeValuasi.AVERAGE:
         return Decimal(str(barang.harga_pokok or 0)) * (barang.stok or 0)

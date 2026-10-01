@@ -14,6 +14,7 @@ from app.models.master.syarat_bayar import SyaratBayar
 from app.models.master.kategori_aset import KategoriAset
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
 from app.models.master.setting_akun import SettingAkun
+from app.models.master.app_setting import AppSetting
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
 from app.models.detail.barang_satuan import BarangSatuan
@@ -32,6 +33,7 @@ from app.schemas.master import (
     KategoriAsetCreate, KategoriAsetUpdate, KategoriAsetResponse,
     KasBankAkunCreate, KasBankAkunUpdate, KasBankAkunResponse,
     SettingAkunUpdate, SettingAkunResponse,
+    AppSettingUpdate, AppSettingResponse,
     COASimpleResponse,
 )
 
@@ -44,6 +46,7 @@ class BarangSimpleResponse(BaseSchema):
     kode: str
     nama: str
     harga_pokok: Decimal = Decimal("0")
+    harga_jual: Decimal = Decimal("0")
     stok: int = 0
 
 
@@ -867,6 +870,41 @@ def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depe
         raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
     item = master_service.update_master(db, item, data_in)
     setting_akun_service.clear_cache()
+    return item
+
+
+
+# ==========================================
+# APP SETTING ENDPOINTS (Setting global non-COA)
+# Contoh: METODE_VALUASI — metode valuasi persediaan global
+# yang dikonfigurasi dari halaman Setting Akun.
+# ==========================================
+@router.get("/app-setting/{key}", response_model=AppSettingResponse)
+def get_app_setting(key: str, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    """Ambil nilai setting aplikasi global berdasarkan key."""
+    from app.services import app_setting_service
+
+    if key == app_setting_service.KEY_METODE_VALUASI:
+        # Selalu ada jawaban valid (default AVERAGE bila belum dikonfigurasi)
+        return {"key": key, "value": app_setting_service.get_metode_valuasi(db)}
+
+    item = db.query(AppSetting).filter(AppSetting.key == key).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Setting tidak ditemukan")
+    return item
+
+
+@router.put("/app-setting/{key}", response_model=AppSettingResponse)
+def update_app_setting(key: str, data_in: AppSettingUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    """Update nilai setting aplikasi global."""
+    from app.services import app_setting_service
+
+    if key != app_setting_service.KEY_METODE_VALUASI:
+        raise HTTPException(status_code=404, detail="Setting tidak ditemukan")
+    try:
+        item = app_setting_service.set_metode_valuasi(db, data_in.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return item
 
 

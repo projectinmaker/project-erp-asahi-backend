@@ -158,7 +158,9 @@ def get_stok_kartu_summary(
     if not barang:
         raise ValueError(f"Barang dengan ID {barang_id} tidak ditemukan")
 
-    metode = MetodeValuasi(barang.metode_valuasi) if barang.metode_valuasi else MetodeValuasi.AVERAGE
+    # Metode valuasi sekarang global (Setting Akun), bukan per-barang
+    from app.services import app_setting_service
+    metode = MetodeValuasi(app_setting_service.get_metode_valuasi(db))
 
     if metode == MetodeValuasi.AVERAGE:
         total_nilai = (Decimal(str(barang.harga_pokok or 0)) * (barang.stok or 0)).quantize(
