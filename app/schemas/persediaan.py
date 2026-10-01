@@ -8,6 +8,8 @@ from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
 
+from pydantic import Field
+
 from app.schemas.base import BaseSchema
 
 
@@ -62,7 +64,11 @@ class PenyesuaianStokBase(BaseSchema):
 
 
 class PenyesuaianStokCreate(PenyesuaianStokBase):
-    pass
+    # Audit manufaktur (cross-check 2026-10-01): qty wajib bilangan bulat > 0.
+    # Sebelumnya default 0 diterima create → direct_complete gagal senyap
+    # untuk admin (dokumen sampah DIAJUKAN tertinggal) / auto-approve untuk
+    # dokumen tanpa cek qty. Validasi ganda dengan service layer.
+    qty: int = Field(gt=0, description="Kuantitas penyesuaian (bilangan bulat minimal 1)")
 
 
 class PenyesuaianStokUpdate(BaseSchema):
@@ -106,7 +112,8 @@ class PemindahanBarangBase(BaseSchema):
 
 
 class PemindahanBarangCreate(PemindahanBarangBase):
-    pass
+    # Audit manufaktur (cross-check 2026-10-01): qty wajib bilangan bulat > 0.
+    qty: int = Field(gt=0, description="Kuantitas pemindahan (bilangan bulat minimal 1)")
 
 
 class PemindahanBarangUpdate(BaseSchema):
@@ -149,7 +156,10 @@ class PermintaanBarangBase(BaseSchema):
 
 
 class PermintaanBarangCreate(PermintaanBarangBase):
-    pass
+    # Audit manufaktur (cross-check 2026-10-01): qty wajib bilangan bulat > 0.
+    # Sebelumnya qty=0 diterima & malah ter-approve otomatis (approve_permintaan
+    # tidak memvalidasi apa pun).
+    qty: int = Field(gt=0, description="Kuantitas permintaan (bilangan bulat minimal 1)")
 
 
 class PermintaanBarangUpdate(BaseSchema):

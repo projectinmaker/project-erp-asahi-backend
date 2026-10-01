@@ -31,6 +31,11 @@ from app.services import setting_akun_service as sa_cfg
 from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal
 from app.utils.nomor_dokumen import get_nomor_dokumen
 
+# Sentinel pembeda "field tidak dikirim" vs "dikirim null" (audit manufaktur
+# 2026-10-01): dipakai update_permintaan agar sales_order_id=null benar-benar
+# MELEPAS link SO, bukan diabaikan.
+_UNSET = object()
+
 
 # ==========================================
 # HELPER: Resolve COA Persediaan (Tahap 2 — prefer mapping barang, fallback kategori/default)
@@ -238,8 +243,35 @@ def create_penyesuaian(
     - Hitung total = qty * biaya_satuan
     - Flag auto_post_jurnal disimpan; jurnal diposting saat approve
     - tanggal_kedaluwarsa: wajib untuk FEFO + TAMBAH (di-enforce di approve)
+
+    Audit manufaktur (cross-check 2026-10-01): gudang & qty divalidasi SEJAK
+    CREATE (bukan hanya approve). Sebelumnya create tanpa gudang / qty <= 0
+    berhasil commit dokumen DIAJUKAN, lalu direct_complete admin gagal →
+    API balas 400 tetapi baris dokumen sampah tetap tertinggal di DB
+    (partial failure: terbukti ADJ-2026-10-001..004 saat audit).
     """
     try:
+        # Validasi gudang (dulu hanya di-enforce di approve — terlambat)
+        if gudang_id is None:
+            raise ValueError(
+                "Gudang wajib diisi untuk penyesuaian stok. "
+                "Transaksi stok baru harus warehouse-explicit (Catatan Audit Inventory §3 item 7)."
+            )
+        # Validasi qty (dulu lolos create dengan 0/negatif)
+        if qty is None or qty <= 0:
+            raise ValueError("Qty penyesuaian harus berupa bilangan bulat minimal 1.")
+
+        # Audit manufaktur (2026-10-01): FEFO + TAMBAH wajib expiry SEJAK CREATE.
+        # Dulu hanya divalidasi di approve (yang berjalan di direct_complete SETELAH
+        # create commit) → API balas 400 tetapi baris DIAJUKAN sampah tertinggal.
+        if tipe == "TAMBAH" and tanggal_kedaluwarsa is None:
+            from app.services import app_setting_service
+            if app_setting_service.get_metode_valuasi(db) == "FEFO":
+                raise ValueError(
+                    "Metode valuasi global FEFO aktif: penyesuaian TAMBAH wajib "
+                    "mengisi tanggal kedaluwarsa."
+                )
+
         # Validasi barang
         barang = db.query(Barang).filter(Barang.id == barang_id).first()
         if not barang:
@@ -308,6 +340,10 @@ def update_penyesuaian(
     require_unposted(db_obj)
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Penyesuaian Stok dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    # Audit manufaktur (2026-10-01): tolak qty <= 0 di update juga
+    if qty is not None and qty <= 0:
+        raise ValueError("Qty penyesuaian harus berupa bilangan bulat minimal 1.")
 
     if gudang_id is not None:
         db_obj.gudang_id = gudang_id
@@ -560,6 +596,12 @@ def create_pemindahan(
         if dari_gudang_id == ke_gudang_id:
             raise ValueError("Gudang asal dan tujuan tidak boleh sama")
 
+        # Audit manufaktur (2026-10-01): qty wajib > 0 sejak create
+        # (dulu lolos → direct_complete admin gagal senyap & baris DIAJUKAN
+        # sampah tertinggal di DB)
+        if qty is None or qty <= 0:
+            raise ValueError("Qty pemindahan harus berupa bilangan bulat minimal 1.")
+
         dari_gudang = db.query(Gudang).filter(Gudang.id == dari_gudang_id).first()
         if dari_gudang_id and not dari_gudang:
             raise ValueError(f"Gudang asal dengan ID {dari_gudang_id} tidak ditemukan")
@@ -637,6 +679,10 @@ def update_pemindahan(
     require_unposted(db_obj)
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Pemindahan Barang dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    # Audit manufaktur (2026-10-01): tolak qty <= 0 di update juga
+    if qty is not None and qty <= 0:
+        raise ValueError("Qty pemindahan harus berupa bilangan bulat minimal 1.")
 
     if tanggal is not None:
         db_obj.tanggal = tanggal
@@ -845,6 +891,13 @@ def create_permintaan(
     - Update #4: sales_order_id opsional — SO harus ada & belum dibatalkan
     """
     try:
+        # Audit manufaktur (2026-10-01): qty wajib > 0 sejak create.
+        # Sebelumnya qty=0 diterima & malah ter-approve otomatis karena
+        # approve_permintaan tidak memvalidasi apa pun (terbukti REQ-2026-10-005
+        # qty=0 status DISETUJUI saat audit).
+        if qty is None or qty <= 0:
+            raise ValueError("Qty permintaan harus berupa bilangan bulat minimal 1.")
+
         # Validasi barang
         barang = db.query(Barang).filter(Barang.id == barang_id).first()
         if not barang:
@@ -891,12 +944,23 @@ def update_permintaan(
     qty: Optional[int] = None,
     diajukan_oleh: Optional[str] = None,
     keterangan: Optional[str] = None,
-    sales_order_id: UUID | None = None,
+    sales_order_id: UUID | None | object = _UNSET,
 ) -> PermintaanBarang:
-    """Update data permintaan barang (Update #4: + sales_order_id opsional)."""
+    """Update data permintaan barang (Update #4: + sales_order_id opsional).
+
+    Audit manufaktur (2026-10-01):
+    - qty <= 0 ditolak.
+    - sales_order_id pakai sentinel _UNSET: field TIDAK dikirim → link SO
+      dipertahankan; dikirim eksplisit null → link SO DILEPAS (dulu null
+      diabaikan sehingga user tidak bisa melepas link dari UI).
+    """
     require_unposted(db_obj)
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Permintaan Barang dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    # Audit manufaktur (2026-10-01): tolak qty <= 0 di update juga
+    if qty is not None and qty <= 0:
+        raise ValueError("Qty permintaan harus berupa bilangan bulat minimal 1.")
 
     if tanggal is not None:
         db_obj.tanggal = tanggal
@@ -908,8 +972,8 @@ def update_permintaan(
         db_obj.diajukan_oleh = diajukan_oleh
     if keterangan is not None:
         db_obj.keterangan = keterangan
-    if sales_order_id is not None:
-        _validate_sales_order(db, sales_order_id)
+    if sales_order_id is not _UNSET:
+        _validate_sales_order(db, sales_order_id)  # None valid = lepas link
         db_obj.sales_order_id = sales_order_id
 
     db.add(db_obj)
