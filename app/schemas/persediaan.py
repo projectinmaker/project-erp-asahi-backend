@@ -38,6 +38,13 @@ class JurnalSimpleResponse(BaseSchema):
     no_jurnal: str
 
 
+class SalesOrderSimpleResponse(BaseSchema):
+    """Nested SO ringan — definisi LOKAL (bukan import schemas/penjualan.py)
+    untuk menghindari circular import (pola BarangSimpleResponse di file ini)."""
+    id: UUID
+    no_pesanan: str
+
+
 # ==========================================
 # PENYESUAIAN STOK
 # ==========================================
@@ -137,6 +144,8 @@ class PermintaanBarangBase(BaseSchema):
     qty: int = 0
     diajukan_oleh: str
     keterangan: Optional[str] = None
+    # Update #4 — link opsional ke Sales Order sumber
+    sales_order_id: UUID | None = None
 
 
 class PermintaanBarangCreate(PermintaanBarangBase):
@@ -149,6 +158,8 @@ class PermintaanBarangUpdate(BaseSchema):
     qty: Optional[int] = None
     diajukan_oleh: Optional[str] = None
     keterangan: Optional[str] = None
+    # Update #4 — link opsional ke Sales Order sumber
+    sales_order_id: UUID | None = None
 
 
 class PermintaanBarangResponse(PermintaanBarangBase):
@@ -162,3 +173,4 @@ class PermintaanBarangResponse(PermintaanBarangBase):
     barang: Optional[BarangSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     jurnal: Optional[JurnalSimpleResponse] = None
+    sales_order: SalesOrderSimpleResponse | None = None

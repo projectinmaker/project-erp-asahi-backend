@@ -35,6 +35,7 @@ from app.models.transaksi.penjualan.pengiriman_barang import PengirimanBarang
 from app.models.transaksi.penjualan.sales_invoice import SalesInvoice
 from app.models.transaksi.penjualan.sales_retur import SalesRetur
 from app.models.transaksi.penjualan.penawaran import Penawaran
+from app.models.transaksi.penjualan.tukar_faktur import TukarFaktur
 
 # Transaksi - Pembelian
 from app.models.transaksi.pembelian.purchase_order import PurchaseOrder
@@ -72,6 +73,7 @@ from app.models.detail.purchase_retur_detail import PurchaseReturDetail
 from app.models.detail.purchase_invoice_receipt_match import PurchaseInvoiceReceiptMatch
 from app.models.detail.barang_satuan import BarangSatuan
 from app.models.detail.penawaran_detail import PenawaranDetail
+from app.models.detail.tukar_faktur_detail import TukarFakturDetail
 
 __all__ = [
     # Master
@@ -102,6 +104,7 @@ __all__ = [
     "SalesInvoice",
     "SalesRetur",
     "Penawaran",
+    "TukarFaktur",
     # Transaksi - Pembelian
     "PurchaseOrder",
     "PenerimaanBarang",
@@ -135,6 +138,7 @@ __all__ = [
     "PurchaseInvoiceReceiptMatch",
     "BarangSatuan",
     "PenawaranDetail",
+    "TukarFakturDetail",
     # Enums
     "StatusTransaksi",
     "StatusPenjualan",

@@ -43,3 +43,17 @@ class SalesInvoice(BaseModel, BaseMixin):
     details = relationship("SalesInvoiceDetail", back_populates="sales_invoice", cascade="all, delete-orphan")
     biaya_tambahan = relationship("TransaksiBiaya", back_populates="sales_invoice", cascade="all, delete-orphan")
     retur = relationship("SalesRetur", back_populates="sales_invoice")
+
+    @property
+    def no_surat_jalan(self) -> str | None:
+        """Distinct no_surat_jalan dari pengiriman yang ter-link via detail
+        (delivery_detail_id → pengiriman). Join koma. None bila invoice dibuat
+        langsung dari SO tanpa pengiriman. (Update #4)"""
+        seen = []
+        for d in self.details:
+            dd = getattr(d, "delivery_detail", None)
+            peng = getattr(dd, "pengiriman", None) if dd else None
+            no = getattr(peng, "no_surat_jalan", None) if peng else None
+            if no and no not in seen:
+                seen.append(no)
+        return ", ".join(seen) if seen else None

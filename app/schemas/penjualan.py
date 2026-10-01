@@ -48,6 +48,9 @@ class SatuanSimpleResponse(BaseSchema):
 class SalesOrderSimpleResponse(BaseSchema):
     id: UUID
     no_pesanan: str
+    # Update #4 — ikut mengalir ke semua response memakai nested ini
+    # (SalesInvoiceResponse.salesOrder, PengirimanBarangResponse.salesOrder, dll).
+    customer_po_number: str | None = None
 
 
 class SalesInvoiceSimpleResponse(BaseSchema):
@@ -261,6 +264,10 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     jurnal: Optional[JurnalSimpleResponse] = None
     details: List[SalesInvoiceDetailResponse] = []
     biaya_tambahan: List[TransaksiBiayaResponse] = []
+    # Update #4 — distinct no_surat_jalan pengiriman ter-link via detail
+    # (dibaca dari @property SalesInvoice.no_surat_jalan; None bila invoice
+    # dibuat langsung dari SO tanpa pengiriman).
+    no_surat_jalan: str | None = None
 
     @computed_field  # type: ignore[misc]
     @property

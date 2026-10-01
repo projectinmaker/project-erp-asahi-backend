@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from app.models import (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
     AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
-    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran,
+    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran, TukarFaktur,
 )
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent
 from app.services.accounting_control import atomic_accounting_write
@@ -29,11 +29,11 @@ APPROVERS = {'ADMINISTRATOR', 'MANAJER_KEUANGAN'}
 MODELS = {m.__tablename__: m for m in (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
     AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
-    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran,
+    PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran, TukarFaktur,
 )}
 SALES = {'sales_order', 'sales_invoice', 'sales_retur'}
 STOCK = {'pengiriman_barang', 'penerimaan_barang', 'penyesuaian_stok', 'pemindahan_barang', 'permintaan_barang'}
-ORDERS = {'sales_order', 'purchase_order', 'penawaran'}
+ORDERS = {'sales_order', 'purchase_order', 'penawaran', 'tukar_faktur'}
 FINANCIAL = set(MODELS) - STOCK - ORDERS
 
 # Dokumen yang didukung aksi POST (posting jurnal) dan EXECUTE (finalisasi stok/retur).
@@ -384,6 +384,10 @@ def execute_existing(db, obj):
 
 
 def validate_order_approval(db, obj):
+    # permintaan_barang hanya MENYEBUT SO (link informasional — Update #4),
+    # bukan dokumen pemenuhan order: tidak dikenai syarat approval/party-check.
+    if obj.__tablename__ == 'permintaan_barang':
+        return
     for field, model in (('sales_order_id', SalesOrder), ('purchase_order_id', PurchaseOrder)):
         ref_id = getattr(obj, field, None)
         if ref_id:

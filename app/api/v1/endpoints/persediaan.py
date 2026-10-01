@@ -421,6 +421,7 @@ def create_permintaan(
             qty=data_in.qty,
             diajukan_oleh=data_in.diajukan_oleh,
             keterangan=data_in.keterangan,
+            sales_order_id=data_in.sales_order_id,
             created_by=current_user.id,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.

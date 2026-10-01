@@ -24,8 +24,12 @@ from app.schemas.penjualan import (
     SalesOrderSisaResponse,
     PenawaranCreate, PenawaranUpdate, PenawaranResponse,
 )
+from app.schemas.tukar_faktur import (
+    TukarFakturCreate, TukarFakturUpdate, TukarFakturResponse,
+)
 from app.services import penjualan_service as svc
 from app.services import penawaran_service
+from app.services import tukar_faktur_service
 from app.services import workflow_service
 from app.services.hard_delete_service import hard_delete_document
 from app.services.sales_validation import (
@@ -798,3 +802,127 @@ def convert_penawaran_to_sales_order(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"salesOrderId": str(so.id), "noPesanan": so.no_pesanan}
+
+
+# ==========================================
+# TUKAR FAKTUR (proof of receipt — Update #4)
+# ==========================================
+
+@router.get("/tukar-faktur", response_model=PaginatedResponse[TukarFakturResponse])
+def get_tukar_faktur_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    search: str | None = Query(None, description="Cari berdasarkan no tukar faktur, nama pelanggan"),
+    status_filter: str | None = Query(None, alias="status", description="Filter status"),
+    pelanggan_id: UUID | None = Query(None, description="Filter pelanggan"),
+    tanggal_from: date | None = Query(None, description="Filter tanggal mulai"),
+    tanggal_to: date | None = Query(None, description="Filter tanggal sampai"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil daftar Tukar Faktur dengan filter dan pagination."""
+    data, total = tukar_faktur_service.get_tukar_faktur_list(
+        db, skip=skip, limit=limit, search=search,
+        status=status_filter, pelanggan_id=pelanggan_id,
+        tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+    )
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+
+@router.post("/tukar-faktur", response_model=TukarFakturResponse, status_code=status.HTTP_201_CREATED)
+def create_tukar_faktur(
+    data_in: TukarFakturCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buat Tukar Faktur baru dari Sales Invoice.
+
+    Tanpa jurnal, tanpa stok, tanpa workflow (tidak ada direct_complete) —
+    status DRAFT; snapshot header + copy detail diambil dari invoice.
+    """
+    try:
+        return tukar_faktur_service.create_tukar_faktur(
+            db=db,
+            tanggal=data_in.tanggal,
+            sales_invoice_id=data_in.sales_invoice_id,
+            keterangan=data_in.keterangan,
+            created_by=current_user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+@router.get("/tukar-faktur/{tf_id}", response_model=TukarFakturResponse)
+def get_tukar_faktur_detail(
+    tf_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil detail 1 Tukar Faktur."""
+    item = tukar_faktur_service.get_tukar_faktur_by_id(db, tf_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Tukar Faktur tidak ditemukan")
+    return item
+
+
+@router.put("/tukar-faktur/{tf_id}", response_model=TukarFakturResponse)
+def update_tukar_faktur(
+    tf_id: UUID,
+    data_in: TukarFakturUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Update Tukar Faktur (hanya status DRAFT; header-only tanggal/keterangan)."""
+    item = tukar_faktur_service.get_tukar_faktur_by_id(db, tf_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Tukar Faktur tidak ditemukan")
+
+    update_data = _service_kwargs(
+        tukar_faktur_service.update_tukar_faktur, data_in.model_dump(exclude_unset=True)
+    )
+    try:
+        return tukar_faktur_service.update_tukar_faktur(db, db_obj=item, **update_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/tukar-faktur/{tf_id}/selesaikan")
+def selesaikan_tukar_faktur(
+    tf_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Tandai Tukar Faktur SELESAI (manual, tanpa workflow).
+
+    Guard: hanya DRAFT (panggil kedua kali → 400).
+    Return: {"id": str, "noTukarFaktur": str}.
+    """
+    item = tukar_faktur_service.get_tukar_faktur_by_id(db, tf_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Tukar Faktur tidak ditemukan")
+    try:
+        tf = tukar_faktur_service.selesaikan_tukar_faktur(db, db_obj=item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"id": str(tf.id), "noTukarFaktur": tf.no_tukar_faktur}
+
+
+@router.post("/tukar-faktur/{tf_id}/cancel")
+def cancel_tukar_faktur(
+    tf_id: UUID,
+    payload: HardDeleteRequest | None = Body(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Hapus permanen Tukar Faktur (hard delete).
+
+    Dokumen + rincian dihapus dari database (tanpa jurnal/stok — tidak ada
+    efek samping); jejak lengkap tersimpan di log dokumen terhapus (Histori).
+    """
+    try:
+        return hard_delete_document(
+            db, 'tukar_faktur', tf_id, current_user,
+            reason=payload.reason if payload else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e

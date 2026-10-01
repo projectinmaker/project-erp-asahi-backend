@@ -24,6 +24,8 @@ class PermintaanBarang(BaseModel, BaseMixin):
     diajukan_oleh = Column(String(100), nullable=False)
     auto_post_jurnal = Column(Boolean, default=False, nullable=False)
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
+    # Update #4 — link opsional ke Sales Order sumber (dipakai produksi internal)
+    sales_order_id = Column(UUID(as_uuid=True), ForeignKey("sales_order.id"), nullable=True)
     keterangan = Column(Text, nullable=True)
     status = Column(SQLEnum(StatusPersediaan), default=StatusPersediaan.DIAJUKAN, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
@@ -31,4 +33,5 @@ class PermintaanBarang(BaseModel, BaseMixin):
     # Relationships
     barang = relationship("Barang")
     jurnal = relationship("JurnalUmum")
+    sales_order = relationship("SalesOrder")
     creator = relationship("Pengguna", foreign_keys=[created_by])

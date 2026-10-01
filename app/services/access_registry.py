@@ -46,7 +46,7 @@ RESOURCE_NAMES = {
     # sales
     'sales_order': 'Pesanan Penjualan', 'delivery': 'Pengiriman', 'sales_invoice': 'Invoice Penjualan',
     'sales_return': 'Retur Penjualan', 'ar_settlement': 'Pelunasan Piutang',
-    'penawaran': 'Penawaran',
+    'penawaran': 'Penawaran', 'tukar_faktur': 'Tukar Faktur',
     # purchase
     'purchase_order': 'Purchase Order', 'goods_receipt': 'Penerimaan Barang',
     'purchase_invoice': 'Invoice Pembelian', 'purchase_return': 'Retur Pembelian',
@@ -118,6 +118,7 @@ REGISTRY: list = (
     # ── Sales ─────────────────────────────────────────────────────────────
     + _res('sales', 'sales_order', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'print', 'export'])
     + _res('sales', 'penawaran', ['view', 'create', 'edit', 'cancel', 'print'])
+    + _res('sales', 'tukar_faktur', ['view', 'create', 'edit', 'cancel', 'print'])  # TANPA submit (tanpa workflow — Update #4)
     + _res('sales', 'sales_invoice', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'print', 'export'])
     + _res('sales', 'sales_return', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'export'])
     + _res('sales', 'delivery', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'execute', 'reverse', 'print', 'export'])
@@ -250,6 +251,7 @@ ROLE_TEMPLATES = {
             'accounting.coa.view', 'accounting.opening_balance.view', 'accounting.period.view',
             'sales.sales_order.view', 'sales.sales_invoice.view', 'sales.sales_return.view', 'sales.delivery.view',
             'sales.penawaran.view',
+            'sales.tukar_faktur.view',
             'purchase.purchase_order.view', 'purchase.goods_receipt.view', 'purchase.purchase_invoice.view',
             'purchase.purchase_return.view',
             'inventory.stock.view', 'inventory.valuation.view', 'inventory.transfer.view',
@@ -292,6 +294,8 @@ ROLE_TEMPLATES = {
             'sales.sales_order.cancel', 'sales.sales_order.submit', 'sales.sales_order.print',
             'sales.penawaran.view', 'sales.penawaran.create', 'sales.penawaran.edit',
             'sales.penawaran.cancel', 'sales.penawaran.print',
+            'sales.tukar_faktur.view', 'sales.tukar_faktur.create', 'sales.tukar_faktur.edit',
+            'sales.tukar_faktur.cancel', 'sales.tukar_faktur.print',
             'sales.delivery.view', 'sales.delivery.create', 'sales.delivery.edit',
             'sales.delivery.cancel', 'sales.delivery.submit', 'sales.delivery.print',
             'sales.sales_invoice.view', 'sales.sales_invoice.create', 'sales.sales_invoice.edit',
@@ -359,6 +363,7 @@ KIND_RESOURCE = {
     'sales_invoice': 'sales.sales_invoice',
     'sales_retur': 'sales.sales_return',
     'penawaran': 'sales.penawaran',
+    'tukar_faktur': 'sales.tukar_faktur',
     'purchase_order': 'purchase.purchase_order',
     'purchase_invoice': 'purchase.purchase_invoice',
     'purchase_retur': 'purchase.purchase_return',
@@ -383,6 +388,7 @@ KIND_RESOURCE = {
 _ROUTER_PREFIXES = {
     'penjualan': [
         ('penawaran', 'sales.penawaran'),
+        ('tukar_faktur', 'sales.tukar_faktur'),
         ('sales_invoice', 'sales.sales_invoice'),
         ('sales_order', 'sales.sales_order'),
         ('sales_retur', 'sales.sales_return'),

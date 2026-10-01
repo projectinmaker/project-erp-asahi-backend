@@ -48,6 +48,9 @@ class BarangSimpleResponse(BaseSchema):
     harga_pokok: Decimal = Decimal("0")
     harga_jual: Decimal = Decimal("0")
     stok: int = 0
+    # Update #4 — dipakai barang-dropdown agar FE tahu metode valuasi barang
+    # (optional agar aman untuk pemakaian lain kelas ini)
+    metode_valuasi: str | None = None
 
 
 class PelangganSimpleResponse(BaseSchema):

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.transaksi.persediaan.penyesuaian_stok import PenyesuaianStok, TipePenyesuaian
 from app.models.transaksi.persediaan.pemindahan_barang import PemindahanBarang, ProsesPemindahan
 from app.models.transaksi.persediaan.permintaan_barang import PermintaanBarang, StatusPersediaan
+from app.models.transaksi.penjualan.sales_order import SalesOrder
 from app.models.master.barang import Barang
 from app.models.master.gudang import Gudang
 from app.models.transaksi.jurnal import RefModule
@@ -760,6 +761,20 @@ def cancel_pemindahan(db: Session, db_obj: PemindahanBarang, user_id: Optional[U
 # PERMINTAAN BARANG
 # ==========================================
 
+def _validate_sales_order(db: Session, sales_order_id: UUID | None) -> SalesOrder | None:
+    """Validasi Sales Order sumber (Update #4) — optional, tapi bila di-set
+    harus ada dan tidak berstatus DIBATALKAN."""
+    if sales_order_id is None:
+        return None
+    so = db.query(SalesOrder).filter(SalesOrder.id == sales_order_id).first()
+    if not so:
+        raise ValueError("Sales Order tidak ditemukan")
+    so_status = getattr(so.status, "value", so.status)
+    if so_status == "DIBATALKAN":
+        raise ValueError("Sales Order sudah dibatalkan")
+    return so
+
+
 def get_permintaan_list(
     db: Session,
     skip: int = 0,
@@ -774,6 +789,7 @@ def get_permintaan_list(
     query = db.query(PermintaanBarang).options(
         joinedload(PermintaanBarang.barang),
         joinedload(PermintaanBarang.creator),
+        joinedload(PermintaanBarang.sales_order),
     )
 
     if search:
@@ -805,6 +821,7 @@ def get_permintaan_by_id(db: Session, req_id: UUID) -> Optional[PermintaanBarang
             joinedload(PermintaanBarang.barang),
             joinedload(PermintaanBarang.creator),
             joinedload(PermintaanBarang.jurnal),
+            joinedload(PermintaanBarang.sales_order),
         )
         .filter(PermintaanBarang.id == req_id)
         .first()
@@ -819,17 +836,22 @@ def create_permintaan(
     qty: int,
     diajukan_oleh: str,
     keterangan: Optional[str] = None,
+    sales_order_id: UUID | None = None,
     created_by: Optional[UUID] = None,
 ) -> PermintaanBarang:
     """Buat PermintaanBarang baru.
     - Generate no_permintaan otomatis (REQ-YYYY-MM-NNN)
     - Tidak ada jurnal posting (permintaan hanya dokumen internal)
+    - Update #4: sales_order_id opsional — SO harus ada & belum dibatalkan
     """
     try:
         # Validasi barang
         barang = db.query(Barang).filter(Barang.id == barang_id).first()
         if not barang:
             raise ValueError(f"Barang dengan ID {barang_id} tidak ditemukan")
+
+        # Validasi Sales Order sumber (opsional)
+        _validate_sales_order(db, sales_order_id)
 
         # Generate nomor permintaan
         no_permintaan = get_nomor_dokumen(
@@ -844,6 +866,7 @@ def create_permintaan(
             qty=qty,
             diajukan_oleh=diajukan_oleh,
             keterangan=keterangan,
+            sales_order_id=sales_order_id,
             status=StatusPersediaan.DIAJUKAN,
             created_by=created_by,
         )
@@ -868,8 +891,9 @@ def update_permintaan(
     qty: Optional[int] = None,
     diajukan_oleh: Optional[str] = None,
     keterangan: Optional[str] = None,
+    sales_order_id: UUID | None = None,
 ) -> PermintaanBarang:
-    """Update data permintaan barang."""
+    """Update data permintaan barang (Update #4: + sales_order_id opsional)."""
     require_unposted(db_obj)
     if db_obj.status in (StatusPersediaan.SELESAI, StatusPersediaan.BATAL, StatusPersediaan.DITOLAK):
         raise ValueError(f"Permintaan Barang dengan status {db_obj.status.value} tidak bisa diupdate")
@@ -884,6 +908,9 @@ def update_permintaan(
         db_obj.diajukan_oleh = diajukan_oleh
     if keterangan is not None:
         db_obj.keterangan = keterangan
+    if sales_order_id is not None:
+        _validate_sales_order(db, sales_order_id)
+        db_obj.sales_order_id = sales_order_id
 
     db.add(db_obj)
     db.commit()
