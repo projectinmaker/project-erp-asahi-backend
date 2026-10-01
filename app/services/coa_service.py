@@ -343,11 +343,16 @@ def get_next_kode(db: Session, induk_id: UUID) -> str:
 # ============================================================
 
 def get_saldo_awal(db: Session) -> dict:
-    """Cek apakah saldo awal sudah pernah diset.
+    """Ambil saldo awal yang sudah diset (satu nilai per akun).
 
-    Jika sudah, return jurnal SALDO_AWAL yang ada (bisa di-edit ulang).
+    Jika sudah, return detail jurnal SALDO_AWAL yang aktif (bisa di-edit ulang).
     Jika belum, return list kosong dengan sudah_diset=False.
+
+    Baris jurnal akun penampung "Selisih Saldo Awal" DIKECUALIKAN dari items
+    (dikelola sistem); total_debit/total_kredit pun dihitung tanpa penampung
+    sehingga `selisih` = nilai yang diserap penampung.
     """
+    from app.services.coa_category import OPENING_BALANCE_DIFF_SYSTEM_TYPE
     from app.services.reporting_ledger import local_datetime
     existing = _active_opening_journals(db).order_by(JurnalUmum.created_at.desc(), JurnalUmum.id).first()
 
@@ -361,7 +366,7 @@ def get_saldo_awal(db: Session) -> dict:
             "selisih": Decimal("0"),
         }
 
-    # Ambil detail jurnal
+    # Ambil detail jurnal (tanpa akun penampung)
     details = (
         db.query(
             JurnalDetail.akun_perkiraan_id,
@@ -372,7 +377,13 @@ def get_saldo_awal(db: Session) -> dict:
             JurnalDetail.kredit,
         )
         .join(AkunPerkiraan, AkunPerkiraan.id == JurnalDetail.akun_perkiraan_id)
-        .filter(JurnalDetail.jurnal_umum_id == existing.id)
+        .filter(
+            JurnalDetail.jurnal_umum_id == existing.id,
+            or_(
+                AkunPerkiraan.system_account_type.is_(None),
+                AkunPerkiraan.system_account_type != OPENING_BALANCE_DIFF_SYSTEM_TYPE,
+            ),
+        )
         .order_by(AkunPerkiraan.kode)
         .all()
     )
@@ -381,16 +392,20 @@ def get_saldo_awal(db: Session) -> dict:
     total_debit = Decimal("0")
     total_kredit = Decimal("0")
     for d in details:
+        debit = Decimal(str(d.debit))
+        kredit = Decimal(str(d.kredit))
         items.append({
             "akun_perkiraan_id": d.akun_perkiraan_id,
             "kode_akun": d.kode,
             "nama_akun": d.nama,
             "saldo_normal": d.saldo_normal.value if hasattr(d.saldo_normal, "value") else str(d.saldo_normal),
-            "debit": Decimal(str(d.debit)),
-            "kredit": Decimal(str(d.kredit)),
+            "debit": debit,
+            "kredit": kredit,
+            # Satu nilai bersih (sisi mengikuti saldo normal akun)
+            "nilai": debit if debit > 0 else kredit,
         })
-        total_debit += Decimal(str(d.debit))
-        total_kredit += Decimal(str(d.kredit))
+        total_debit += debit
+        total_kredit += kredit
 
     return {
         "sudah_diset": True,
@@ -412,38 +427,77 @@ def _active_opening_journals(db):
         JurnalUmum.status == StatusJurnal.POSTED, ~JurnalUmum.id.in_(reversed_ids))
 
 
+def _get_or_create_penampung(db: Session) -> AkunPerkiraan:
+    """Akun penampung selisih saldo awal ("Selisih Saldo Awal", Modal).
+
+    Normalnya sudah dibuat oleh migrasi w5x6y7z8a9b0; fungsi ini fallback
+    get-or-create bila migrasi belum dijalankan di environment tertentu.
+    """
+    from app.services.coa_category import OPENING_BALANCE_DIFF_SYSTEM_TYPE
+    account = (
+        db.query(AkunPerkiraan)
+        .filter(AkunPerkiraan.system_account_type == OPENING_BALANCE_DIFF_SYSTEM_TYPE)
+        .first()
+    )
+    if account:
+        return account
+    induk = db.query(AkunPerkiraan).filter(AkunPerkiraan.kode == "300000").first()
+    # Cari kode 340000 yang masih bebas (fallback 340001, 340002, ...)
+    kode = "340000"
+    counter = 0
+    while db.query(AkunPerkiraan.id).filter(AkunPerkiraan.kode == kode).first():
+        counter += 1
+        kode = f"34000{counter}"
+    account = AkunPerkiraan(
+        kode=kode,
+        nama="Selisih Saldo Awal",
+        header=HeaderCOA.MODAL,
+        tingkat=TingkatAkun.DETAIL,
+        induk_id=induk.id if induk else None,
+        induk_kode=induk.kode if induk else None,
+        saldo_normal=SaldoNormal.KREDIT,
+        saldo=Decimal("0"),
+        status="AKTIF",
+        account_class="EQUITY",
+        financial_statement="NERACA",
+        report_group="EQUITY",
+        system_account_type=OPENING_BALANCE_DIFF_SYSTEM_TYPE,
+        allow_system_posting=True,
+        allow_manual_posting=False,
+        is_control_account=False,
+        reconciliation_required=False,
+        active=True,
+    )
+    db.add(account)
+    db.flush()
+    return account
+
+
 from app.services.accounting_control import atomic_accounting_write
 
 
 @atomic_accounting_write
-def _replace_opening(db, items, tanggal, user_id):
-    """Keep original journals; replace their effective balance atomically."""
-    from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal, reverse_journal, validate_entries
-    seen, entries = set(), []
-    for item in items:
-        identifier = item['akun_perkiraan_id']
-        if identifier in seen:
-            raise ValueError('Akun saldo awal tidak boleh berulang')
-        seen.add(identifier)
-        debit, credit = Decimal(str(item['debit'])), Decimal(str(item['kredit']))
-        if not debit.is_finite() or not credit.is_finite() or debit < 0 or credit < 0:
-            raise ValueError('Saldo awal harus angka valid dan tidak negatif')
-        if debit or credit:
-            entries.append(JurnalEntryItem(identifier, debit, credit, 'Saldo awal'))
+def _replace_opening(db, entries, tanggal, user_id):
+    """Keep original journals; replace their effective balance atomically.
+
+    entries: baris jurnal saldo awal LENGKAP (item + penampung) yang sudah
+    balance — bukan lagi pasangan akun lawan manual.
+    """
+    from app.services.posting_service import auto_posting_jurnal, reverse_journal, validate_entries
     if entries:
         validate_entries(db, entries)
     originals = _active_opening_journals(db).order_by(JurnalUmum.id).all()
     affected = {row.akun_perkiraan_id for journal in originals for row in journal.details}
     for journal in originals:
-        reverse_journal(db, journal.id, user_id, 'Penggantian saldo awal')
+        reverse_journal(db, journal.id, user_id, "Penggantian saldo awal")
     for identifier in affected:
         account = db.get(AkunPerkiraan, identifier)
-        account.saldo = Decimal('0')
+        account.saldo = Decimal("0")
         account.tanggal = tanggal
     journal = None
     if entries:
-        journal = auto_posting_jurnal(db, RefModule.SALDO_AWAL, 'SA-INIT', entries,
-            keterangan='Saldo Awal Perusahaan', tanggal=tanggal, created_by=user_id)
+        journal = auto_posting_jurnal(db, RefModule.SALDO_AWAL, "SA-INIT", entries,
+            keterangan="Saldo Awal Perusahaan", tanggal=tanggal, created_by=user_id)
         for entry in entries:
             account = db.get(AkunPerkiraan, entry.akun_perkiraan_id)
             account.saldo = (entry.debit-entry.kredit) * (1 if account.saldo_normal == SaldoNormal.DEBIT else -1)
@@ -452,7 +506,74 @@ def _replace_opening(db, items, tanggal, user_id):
 
 
 def save_saldo_awal(db: Session, items: list, tanggal_str: str, user_id: UUID) -> dict:
-    """Replace global opening balances using linked reversals, never deletion."""
+    """Replace global opening balances (satu nilai per akun).
+
+    Perubahan (catatan update):
+    - Setiap item cukup SATU nilai (`nilai`); sisi debit/kredit otomatis
+      mengikuti saldo normal akun (Kas dan Bank/Aset Lancar Lainnya/HPP/
+      Beban/Beban Lainnya = DEBIT; Kewajiban Lainnya/Modal/Pendapatan/
+      Pendapatan Lainnya = KREDIT).
+    - Hanya akun pada 9 kategori yang didukung (lihat coa_category.py).
+    - Jurnal di-balance otomatis oleh akun penampung "Selisih Saldo Awal"
+      di Modal — user tidak lagi memilih akun lawan.
+    """
+    from app.services.coa_category import (
+        OPENING_BALANCE_DIFF_SYSTEM_TYPE,
+        classify_account,
+        get_category_info,
+        is_saldo_awal_eligible,
+    )
+    from app.services.posting_service import JurnalEntryItem
     from app.services.reporting_ledger import local_datetime
-    _replace_opening(db, items, local_datetime(datetime.strptime(tanggal_str, '%Y-%m-%d')), user_id)
+
+    tanggal = local_datetime(datetime.strptime(tanggal_str, "%Y-%m-%d"))
+
+    seen = set()
+    entries: list = []
+    for item in items:
+        identifier = item["akun_perkiraan_id"]
+        if identifier in seen:
+            raise ValueError("Akun saldo awal tidak boleh berulang")
+        seen.add(identifier)
+        nilai = Decimal(str(item.get("nilai") or 0))
+        if not nilai.is_finite() or nilai < 0:
+            raise ValueError("Saldo awal harus angka valid dan tidak negatif")
+        if not nilai:
+            continue  # nilai nol = akun tanpa saldo awal (hapus bila pernah ada)
+        account = db.get(AkunPerkiraan, identifier)
+        if account is None:
+            raise ValueError("Akun perkiraan tidak ditemukan")
+        if account.system_account_type == OPENING_BALANCE_DIFF_SYSTEM_TYPE:
+            continue  # penampung dikelola sistem — abaikan dari input user
+        # === Validasi kelayakan kategori (9 kategori didukung) ===
+        if account.tingkat != TingkatAkun.DETAIL:
+            raise ValueError(
+                f"Akun {account.kode} ({account.nama}) bukan akun DETAIL — "
+                "tidak bisa diberi saldo awal."
+            )
+        category = classify_account(account)
+        if not is_saldo_awal_eligible(category):
+            info = get_category_info(category) or {}
+            hint = info.get("hint") or "Kategori akun ini tidak didukung saldo awal langsung."
+            raise ValueError(
+                f"Akun {account.kode} ({account.nama}) tidak didukung saldo awal: {hint}"
+            )
+        if account.saldo_normal == SaldoNormal.DEBIT:
+            entries.append(JurnalEntryItem(identifier, nilai, Decimal("0"), "Saldo awal"))
+        else:
+            entries.append(JurnalEntryItem(identifier, Decimal("0"), nilai, "Saldo awal"))
+
+    # === Auto-balance via akun penampung "Selisih Saldo Awal" (Modal) ===
+    if entries:
+        diff = sum(e.debit for e in entries) - sum(e.kredit for e in entries)
+        if diff != 0:
+            penampung = _get_or_create_penampung(db)
+            if diff > 0:
+                entries.append(JurnalEntryItem(
+                    penampung.id, Decimal("0"), diff, "Penampung selisih saldo awal"))
+            else:
+                entries.append(JurnalEntryItem(
+                    penampung.id, -diff, Decimal("0"), "Penampung selisih saldo awal"))
+
+    _replace_opening(db, entries, tanggal, user_id)
     return get_saldo_awal(db)

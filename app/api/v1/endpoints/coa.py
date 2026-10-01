@@ -225,8 +225,10 @@ def save_saldo_awal(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Set/overwrite saldo awal perusahaan.
+    """Set/overwrite saldo awal perusahaan (satu nilai per akun).
 
+    Sisi debit/kredit otomatis mengikuti saldo normal akun; selisih total
+    dipampangkan ke akun "Selisih Saldo Awal" (Modal) agar jurnal balance.
     Membuat jurnal SALDO_AWAL (POSTED). Jika sudah pernah diset,
     jurnal lama dibalik, kemudian jurnal baru dibuat dalam satu transaksi.
     """
@@ -239,11 +241,7 @@ def save_saldo_awal(
     items = [
         {
             "akun_perkiraan_id": i.akun_perkiraan_id,
-            "kode_akun": i.kode_akun,
-            "nama_akun": i.nama_akun,
-            "saldo_normal": i.saldo_normal,
-            "debit": i.debit,
-            "kredit": i.kredit,
+            "nilai": i.nilai,
         }
         for i in req.items
     ]

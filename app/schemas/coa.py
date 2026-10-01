@@ -227,11 +227,23 @@ class SaldoAwalItem(BaseSchema):
     saldo_normal: str  # "DEBIT" / "KREDIT"
     debit: Decimal = Decimal("0")
     kredit: Decimal = Decimal("0")
+    # Satu nilai bersih (sisi mengikuti saldo normal akun)
+    nilai: Decimal = Decimal("0")
+
+
+class SaldoAwalItemIn(BaseSchema):
+    """Input saldo awal: cukup SATU nilai per akun.
+
+    Sisi debit/kredit ditentukan otomatis dari saldo normal akun;
+    selisih total dipampangkan ke akun "Selisih Saldo Awal" (Modal).
+    """
+    akun_perkiraan_id: UUID
+    nilai: Decimal = Decimal("0")
 
 
 class SaldoAwalRequest(BaseSchema):
     tanggal: str  # YYYY-MM-DD
-    items: List[SaldoAwalItem]
+    items: List[SaldoAwalItemIn]
 
 
 class NextKodeResponse(BaseSchema):
