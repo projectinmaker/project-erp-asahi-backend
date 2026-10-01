@@ -42,3 +42,14 @@ class PurchaseInvoiceDetail(BaseModel, BaseMixin):
 
     # Three-way match bridge (Roadmap §20) — one invoice detail can match many receipt details
     match_entries = relationship("PurchaseInvoiceReceiptMatch", back_populates="purchase_invoice_detail", cascade="all, delete-orphan")
+
+    # Update #5 — nama satuan baris (kolom Satuan di cetakan FE): pakai satuan
+    # baris invoice (Phase D) bila ada, fallback ke satuan dasar barang.
+    @property
+    def satuan_nama(self) -> str | None:
+        if self.satuan is not None:
+            return self.satuan.nama
+        barang = self.barang
+        if barang is not None and barang.satuan is not None:
+            return barang.satuan.nama
+        return None

@@ -8,10 +8,14 @@ from typing import Optional, Dict, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
+from app.models.master.barang import Barang
+from app.models.master.gudang import Gudang
+from app.models.transaksi.stock_balance import StockBalance
 from app.schemas.base import PaginatedResponse
 from app.schemas.persediaan import (
     PenyesuaianStokCreate, PenyesuaianStokUpdate, PenyesuaianStokResponse,
@@ -21,10 +25,21 @@ from app.schemas.persediaan import (
 from app.services import persediaan_service as svc
 from app.services import workflow_service
 from app.services import dashboard_service
+from app.services import excel_service
 from app.services.hard_delete_service import hard_delete_document
 from app.schemas.workflow import HardDeleteRequest
 
 router = APIRouter()
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx_response(wb, filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        excel_service.workbook_to_stream(wb),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ==========================================
@@ -75,6 +90,55 @@ def get_inventory_valuation_summary(
         "inventory_value": inventory_value,
         "low_stock": low_stock,
     }
+
+
+# ==========================================
+# EXPORT STOK (Update #5)
+# ==========================================
+@router.get("/stok/export")
+def export_stok(
+    gudang_id: UUID | None = Query(None, description="Filter per gudang"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export saldo stok per (barang, gudang/lokasi) ke file .xlsx.
+
+    Baris per StockBalance — join Barang (kategori/satuan) + Gudang.
+    gudang_id NULL / location_key 'UNASSIGNED' → kolom Gudang '-'.
+    Urut kode barang, lalu nama gudang.
+    """
+    query = (
+        db.query(StockBalance, Barang, Gudang)
+        .join(Barang, StockBalance.barang_id == Barang.id)
+        .outerjoin(Gudang, StockBalance.gudang_id == Gudang.id)
+        .options(joinedload(Barang.kategori), joinedload(Barang.satuan))
+    )
+    if gudang_id:
+        query = query.filter(StockBalance.gudang_id == gudang_id)
+    rows = query.order_by(Barang.kode, Gudang.nama).all()
+
+    data = []
+    for sb, barang, gudang in rows:
+        if sb.gudang_id is None or sb.location_key == "UNASSIGNED":
+            nama_gudang = "-"
+        else:
+            nama_gudang = gudang.nama if gudang else "-"
+        data.append([
+            barang.kode, barang.nama,
+            barang.kategori.nama if barang.kategori else "",
+            barang.satuan.nama if barang.satuan else "",
+            nama_gudang,
+            sb.qty, sb.nilai,
+            barang.harga_pokok, barang.harga_jual, barang.stok_minimum,
+        ])
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode Barang", "Nama Barang", "Kategori", "Satuan", "Gudang",
+                 "Qty", "Nilai", "Harga Pokok", "Harga Jual", "Stok Minimum"],
+        rows=data, sheet="Data",
+        number_columns={5, 9},
+        decimal_columns={6, 7, 8},
+    )
+    return _xlsx_response(wb, f"stok-{date.today():%Y%m%d}.xlsx")
 
 
 

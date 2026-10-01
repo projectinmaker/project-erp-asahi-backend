@@ -2,15 +2,27 @@ from datetime import date
 from typing import Literal, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from app.api.deps import get_current_db, get_current_user
-from app.models import PenerimaanKas, PembayaranKas
+from app.models import PenerimaanKas, PembayaranKas, Pelanggan, Supplier
 from app.schemas.base import PaginatedResponse
 from app.schemas.settlement import SettlementCreate, AllocationUpdate, SettlementResponse, InvoiceBalanceResponse, SettlementHistoryResponse
 from app.services import settlement_service as svc
 from app.services import workflow_service
+from app.services import excel_service
 
 router = APIRouter()
 Jenis = Literal['piutang', 'hutang']
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx_response(wb, filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        excel_service.workbook_to_stream(wb),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def get_payment(db, jenis, payment_id):
@@ -35,6 +47,60 @@ def get_outstanding(jenis: Jenis, pihak_id: Optional[UUID] = Query(default=None,
     summaries = svc.balances(db, invoices, day)
     data = [summaries[obj.id] for obj in invoices if (summaries[obj.id]['status_pembayaran'] == status_pembayaran if status_pembayaran else summaries[obj.id]['sisa_tagihan'] > 0)]
     return {'data': data[skip:skip+limit], 'total': len(data), 'skip': skip, 'limit': limit}
+
+
+@router.get('/tagihan/{jenis}/export')
+def export_tagihan(jenis: Jenis,
+                   pihak_id: UUID | None = Query(default=None, alias='pihakId'),
+                   status_pembayaran: Literal['BELUM_DIBAYAR','PARSIAL','LUNAS','LEBIH_BAYAR'] | None = Query(default=None, alias='statusPembayaran'),
+                   as_of: date | None = Query(default=None, alias='asOf'),
+                   db=Depends(get_current_db), user=Depends(get_current_user)):
+    """Export daftar tagihan piutang/hutang ke .xlsx (Update #5).
+
+    Data sama seperti GET /tagihan/{jenis} — tanpa pagination (semua baris
+    yang cocok filter). Kolom Umur Hari = hari sejak jatuh tempo (0 bila
+    belum jatuh tempo), dihitung terhadap tanggal as-of.
+    """
+    model = svc.invoice_model(jenis)
+    day = as_of or svc.today()
+    query = db.query(model).filter(model.id.in_(svc.active_documents(db, model, day).scalar_subquery()))
+    if pihak_id:
+        query = query.filter((model.pelanggan_id if jenis == 'piutang' else model.supplier_id) == pihak_id)
+    invoices = query.order_by(model.tanggal, model.id).all()
+    summaries = svc.balances(db, invoices, day)
+    data = [summaries[obj.id] for obj in invoices
+            if (summaries[obj.id]['status_pembayaran'] == status_pembayaran if status_pembayaran else summaries[obj.id]['sisa_tagihan'] > 0)]
+
+    # Lookup nama pelanggan/supplier untuk kolom Pihak.
+    pihak_ids = {d['pihak_id'] for d in data if d['pihak_id']}
+    pihak_model = Pelanggan if jenis == 'piutang' else Supplier
+    pihak_names = {}
+    if pihak_ids:
+        pihak_names = {p.id: p.nama for p in db.query(pihak_model).filter(pihak_model.id.in_(pihak_ids)).all()}
+
+    rows = []
+    for d in data:
+        umur = (day - d['jatuh_tempo']).days if d['jatuh_tempo'] else 0
+        rows.append([
+            d['no_dokumen'],
+            pihak_names.get(d['pihak_id'], '-'),
+            d['tanggal'],
+            d['jatuh_tempo'],
+            d['nilai_tagihan'], d['total_bayar'], d['total_retur'],
+            d['sisa_tagihan'], d['kelebihan'],
+            d['status_pembayaran'],
+            max(0, umur),
+        ])
+    wb = excel_service.workbook_from_rows(
+        headers=["No Invoice", "Pihak", "Tanggal", "Jatuh Tempo", "Nilai Tagihan",
+                 "Total Bayar", "Total Retur", "Sisa Tagihan", "Kelebihan",
+                 "Status Bayar", "Umur Hari"],
+        rows=rows, sheet="Data",
+        number_columns={10},
+        decimal_columns={4, 5, 6, 7, 8},
+        date_columns={2, 3},
+    )
+    return _xlsx_response(wb, f"tagihan-{jenis}-{day:%Y%m%d}.xlsx")
 
 
 @router.get('/invoice/{jenis}/{invoice_id}', response_model=SettlementHistoryResponse)
@@ -62,7 +128,8 @@ def get_invoice_settlement(jenis: Jenis, invoice_id: UUID, as_of: Optional[date]
 def create_pelunasan(jenis: Jenis, data_in: SettlementCreate, db=Depends(get_current_db), user=Depends(get_current_user)):
     try:
         obj = svc.create_settlement(db, jenis, data_in.pihak_id, data_in.tanggal, data_in.kas_bank_id,
-                                    data_in.no_nukti, [r.model_dump() for r in data_in.alokasi], user.id, data_in.catatan)
+                                    data_in.no_nukti, [r.model_dump() for r in data_in.alokasi], user.id, data_in.catatan,
+                                    penalti=data_in.penalti, akun_penalti_id=data_in.akun_penalti_id)
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         kind = 'penerimaan_kas' if jenis == 'piutang' else 'pembayaran_kas'
         workflow_service.direct_complete(db, user, kind, obj.id)
@@ -81,7 +148,8 @@ def get_pelunasan(jenis: Jenis, payment_id: UUID, db=Depends(get_current_db), us
 def update_pelunasan(jenis: Jenis, payment_id: UUID, data_in: AllocationUpdate, db=Depends(get_current_db), user=Depends(get_current_user)):
     try:
         obj = svc.update_allocations(db, get_payment(db, jenis, payment_id), jenis, data_in.pihak_id,
-                                     [r.model_dump() for r in data_in.alokasi])
+                                     [r.model_dump() for r in data_in.alokasi],
+                                     penalti=data_in.penalti, akun_penalti_id=data_in.akun_penalti_id)
         return svc.payment_summary(obj)
     except ValueError as exc:
         raise HTTPException(400, str(exc))

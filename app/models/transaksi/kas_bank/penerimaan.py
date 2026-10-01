@@ -17,6 +17,9 @@ class PenerimaanKas(BaseModel, BaseMixin):
     pemberi = Column(String(255), nullable=True)
     catatan = Column(Text, nullable=True)
     total_nilai = Column(Numeric(18, 2), default=0, nullable=False)
+    # Update #5 — penalti pelunasan piutang (menambah total kas diterima)
+    penalti = Column(Numeric(18, 2), default=0, nullable=False)
+    akun_penalti_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=True)
     auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Phase F: deprecated
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
     status = Column(SQLEnum(StatusTransaksi), default=StatusTransaksi.DRAFT, nullable=False)
@@ -29,4 +32,5 @@ class PenerimaanKas(BaseModel, BaseMixin):
     kas_bank = relationship("KasBankAkun")
     jurnal = relationship("JurnalUmum")
     creator = relationship("Pengguna", foreign_keys=[created_by])
+    akun_penalti = relationship("AkunPerkiraan", foreign_keys=[akun_penalti_id])
     rincian = relationship("PenerimaanRincian", back_populates="penerimaan", cascade="all, delete-orphan")

@@ -89,6 +89,8 @@ class PembayaranKasResponse(PembayaranKasBase):
     id: UUID
     no_bukti: str
     total_nilai: Decimal
+    penalti: Decimal = Decimal("0")  # Update #5
+    akun_penalti_id: UUID | None = None  # Update #5
     status: str
     jurnal_umum_id: Optional[UUID] = None
     created_by: UUID
@@ -147,6 +149,8 @@ class PenerimaanKasResponse(PenerimaanKasBase):
     id: UUID
     no_bukti: str
     total_nilai: Decimal
+    penalti: Decimal = Decimal("0")  # Update #5
+    akun_penalti_id: UUID | None = None  # Update #5
     status: str
     jurnal_umum_id: Optional[UUID] = None
     created_by: UUID

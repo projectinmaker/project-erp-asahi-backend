@@ -76,7 +76,7 @@ ACTION_NAMES = {
     'view': 'Lihat', 'create': 'Tambah', 'edit': 'Ubah', 'delete': 'Hapus',
     'cancel': 'Batalkan', 'submit': 'Submit', 'approve': 'Approve',
     'execute': 'Eksekusi', 'post': 'Posting', 'reverse': 'Balik Jurnal',
-    'print': 'Cetak', 'export': 'Export', 'reconcile': 'Rekonsiliasi',
+    'print': 'Cetak', 'export': 'Export', 'import': 'Import', 'reconcile': 'Rekonsiliasi',
     'close': 'Tutup Periode', 'reopen': 'Buka Periode',
 }
 
@@ -104,9 +104,9 @@ REGISTRY: list = (
     + _res('system', 'audit', ['view'])
     + _res('system', 'organisation', ['view', 'edit'])
     # ── Master ────────────────────────────────────────────────────────────
-    + _res('master', 'pelanggan', ['view', 'create', 'edit', 'delete'])
-    + _res('master', 'supplier', ['view', 'create', 'edit', 'delete'])
-    + _res('master', 'barang', ['view', 'create', 'edit', 'delete'])
+    + _res('master', 'pelanggan', ['view', 'create', 'edit', 'delete', 'export', 'import'])
+    + _res('master', 'supplier', ['view', 'create', 'edit', 'delete', 'export', 'import'])
+    + _res('master', 'barang', ['view', 'create', 'edit', 'delete', 'export', 'import'])
     + _res('master', 'gudang', ['view', 'create', 'edit', 'delete'])
     + _res('master', 'satuan', ['view', 'create', 'edit', 'delete'])
     + _res('master', 'kategori_barang', ['view', 'create', 'edit', 'delete'])
@@ -278,6 +278,7 @@ ROLE_TEMPLATES = {
             'purchase.purchase_return.view', 'purchase.purchase_return.create', 'purchase.purchase_return.edit',
             'purchase.purchase_return.cancel', 'purchase.purchase_return.submit',
             'master.supplier.view', 'master.supplier.create', 'master.supplier.edit',
+            'master.supplier.export', 'master.supplier.import',
             'master.barang.view', 'master.gudang.view',
             'inventory.stock.view',
             'dashboard.operational.view',
@@ -303,6 +304,7 @@ ROLE_TEMPLATES = {
             'sales.sales_return.view', 'sales.sales_return.create', 'sales.sales_return.edit',
             'sales.sales_return.cancel', 'sales.sales_return.submit',
             'master.pelanggan.view', 'master.pelanggan.create', 'master.pelanggan.edit',
+            'master.pelanggan.export', 'master.pelanggan.import',
             'master.barang.view', 'master.gudang.view', 'master.satuan.view',
             'master.kategori_barang.view', 'master.syarat_bayar.view',
             'inventory.stock.view',
@@ -329,6 +331,7 @@ ROLE_TEMPLATES = {
             'sales.delivery.cancel', 'sales.delivery.submit', 'sales.delivery.execute',
             'master.gudang.view', 'master.gudang.create', 'master.gudang.edit',
             'master.barang.view', 'master.barang.create', 'master.barang.edit',
+            'master.barang.export', 'master.barang.import',
             'master.satuan.view', 'master.satuan.create', 'master.satuan.edit',
             'master.kategori_barang.view',
             'dashboard.operational.view',
@@ -447,6 +450,16 @@ _EXPLICIT = {
     'sync_kas_bank_akun': 'master.kasbank_akun.edit',
     'get_pelanggan_coa': 'master.pelanggan.view',
     'create_pelanggan_from_coa': 'master.pelanggan.create',
+    # master — export & import Excel (Update #5)
+    'export_barang': 'master.barang.export',
+    'barang_import_template': 'master.barang.view',
+    'import_barang': 'master.barang.import',
+    'export_pelanggan': 'master.pelanggan.export',
+    'pelanggan_import_template': 'master.pelanggan.view',
+    'import_pelanggan': 'master.pelanggan.import',
+    'export_supplier': 'master.supplier.export',
+    'supplier_import_template': 'master.supplier.view',
+    'import_supplier': 'master.supplier.import',
     # coa
     'get_saldo_awal': 'accounting.opening_balance.view',
     'save_saldo_awal': 'accounting.opening_balance.edit',
@@ -532,6 +545,9 @@ _EXPLICIT = {
     'create_pelunasan': None,
     'get_pelunasan': None,
     'update_pelunasan': None,
+    'export_tagihan': None,        # dinamis via path → .export (Update #5)
+    # persediaan — export stok (Update #5)
+    'export_stok': 'inventory.stock.export',
 }
 
 # Router yang permission-nya ditegakkan di SERVICE (bukan router gate).
@@ -576,6 +592,8 @@ def infer_permission(router_module: str, fn: str, method: str, path: str) -> Opt
         if fn in _EXPLICIT and _EXPLICIT[fn] is None:
             base = 'sales.ar_settlement' if 'piutang' in path else 'purchase.ap_settlement'
             act = 'view' if method == 'GET' else _action_for(method, fn)
+            if fn.startswith('export_'):
+                act = 'export'  # export tagihan piutang/hutang (Update #5)
             code = f"{base}.{act}"
             return code if code in REGISTRY_CODES else None
         if fn in _EXPLICIT:

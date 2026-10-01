@@ -1,8 +1,12 @@
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from typing import List, Optional
 from uuid import UUID
-from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
@@ -17,6 +21,7 @@ from app.models.master.setting_akun import SettingAkun
 from app.models.master.app_setting import AppSetting
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
+from app.models.master.barang import ItemTypeBarang
 from app.models.detail.barang_satuan import BarangSatuan
 from app.schemas.base import PaginatedResponse
 from app.schemas.master import (
@@ -35,10 +40,12 @@ from app.schemas.master import (
     SettingAkunUpdate, SettingAkunResponse,
     AppSettingUpdate, AppSettingResponse,
     COASimpleResponse,
+    ImportResult, ImportRowError,
 )
 
 # Simple schemas for dropdown
 from app.schemas.base import BaseSchema
+from app.services import excel_service
 
 
 class BarangSimpleResponse(BaseSchema):
@@ -73,6 +80,140 @@ from app.services.coa_linkage_service import (
 )
 
 router = APIRouter()
+
+
+# ==========================================
+# IMPORT & EXPORT EXCEL — HELPERS (Update #5)
+# ==========================================
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx_streaming_response(wb, filename: str):
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        excel_service.workbook_to_stream(wb),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _stamp() -> str:
+    """Timestamp filename YYYYMMDD-HHMM (waktu lokal server)."""
+    return datetime.now().strftime("%Y%m%d-%H%M")
+
+
+def _akun_label(akun) -> str:
+    """Label akun 'kode - nama' untuk kolom export; kosong bila tak ter-link."""
+    return f"{akun.kode} - {akun.nama}" if akun else ""
+
+
+def _norm_header(value) -> str:
+    """Normalisasi nama kolom header: trim, buang tanda wajib '*', lowercase."""
+    return str(value or "").strip().strip("*").strip().lower()
+
+
+def _cell_str(value):
+    """Nilai sel sebagai string trim; None/kosong → None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_decimal_text(text: str) -> Decimal:
+    """Parse teks angka toleran (Rp, pemisah ribuan '.',/',' , desimal ',')."""
+    cleaned = text.replace("Rp", "").replace(" ", "").strip()
+    if "." in cleaned and "," in cleaned:
+        # 1.234.567,89 → 1234567.89 ('.' ribuan, ',' desimal)
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "," in cleaned:
+        head, _, tail = cleaned.rpartition(",")
+        # 1.234,89 → 1.234.89 (desimal); 1,234 → 1234 (ribuan US)
+        cleaned = f"{head}.{tail}" if len(tail) in (1, 2) else cleaned.replace(",", "")
+    return Decimal(cleaned)
+
+
+def _cell_decimal(value, default=None):
+    """Sel → Decimal; None/kosong → default; format salah → ValueError (error baris)."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError("nilai harus angka")
+    if isinstance(value, int | float | Decimal):
+        return Decimal(str(value))
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        return _parse_decimal_text(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"'{value}' bukan angka yang valid") from exc
+
+
+def _cell_int(value, default=0):
+    """Sel → bilangan bulat; None/kosong → default; pecahan/format salah → ValueError."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError("nilai harus bilangan bulat")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not float(value).is_integer():
+            raise ValueError("nilai harus bilangan bulat")
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return default
+    number = _cell_decimal(text)
+    if number != number.to_integral_value():
+        raise ValueError("nilai harus bilangan bulat")
+    return int(number)
+
+
+def _load_import_sheet(content: bytes):
+    """Baca file xlsx upload → (header_map, data_rows).
+
+    - Sheet PERTAMA; baris pertama = header (dicocokkan berdasar NAMA kolom,
+      bukan posisi — toleran terhadap urutan; nama dinormalisasi: buang '*',
+      lowercase).
+    - File bukan xlsx / rusak → HTTPException 400.
+    """
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(BytesIO(content), data_only=True, read_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="File harus berupa Excel .xlsx yang valid") from exc
+    try:
+        if not wb.worksheets:
+            raise HTTPException(status_code=400, detail="File Excel tidak memiliki sheet data")
+        ws = wb.worksheets[0]
+        rows = [tuple(r) for r in ws.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+    if not rows:
+        return {}, []
+    header_map: dict[str, int] = {}
+    for idx, name in enumerate(rows[0]):
+        key = _norm_header(name)
+        if key and key not in header_map:
+            header_map[key] = idx
+    return header_map, rows[1:]
+
+
+def _get_col(raw: tuple, header_map: dict, key: str):
+    """Ambil nilai sel berdasar nama kolom normalisasi; None bila kolom tak ada."""
+    idx = header_map.get(key)
+    if idx is None or idx >= len(raw):
+        return None
+    return raw[idx]
+
+
+def _import_error(exc) -> str:
+    """Pesan ramah untuk error satu baris import."""
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return str(exc)
 
 
 # ==========================================
@@ -117,6 +258,123 @@ def create_pelanggan(
             db.commit()
             db.refresh(pelanggan)
     return pelanggan
+
+
+# ── Pelanggan: Export & Import Excel (Update #5) ──────────────────────────
+@router.get("/pelanggan/export")
+def export_pelanggan(
+    search: str | None = Query(None, description="Cari berdasarkan nama atau kode"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export seluruh pelanggan (urut kode) ke file .xlsx."""
+    query = db.query(Pelanggan)
+    if search:
+        query = query.filter(or_(Pelanggan.nama.ilike(f"%{search}%"), Pelanggan.kode.ilike(f"%{search}%")))
+    rows = (
+        query.options(joinedload(Pelanggan.akun_piutang), joinedload(Pelanggan.syarat_bayar))
+        .order_by(Pelanggan.kode)
+        .all()
+    )
+    data = [
+        [
+            p.kode, p.nama, p.alamat or "", p.telepon or "", p.email or "",
+            p.kontak_person or "", p.npwp or "", p.nitku or "", p.tax_status or "",
+            p.credit_limit, p.syarat_bayar.nama if p.syarat_bayar else "",
+            p.status, _akun_label(p.akun_piutang),
+        ]
+        for p in rows
+    ]
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode", "Nama", "Alamat", "Telepon", "Email", "Kontak Person", "NPWP", "NITKU",
+                 "Tax Status", "Credit Limit", "Syarat Bayar", "Status", "Akun Piutang"],
+        rows=data, sheet="Data",
+        decimal_columns={9},
+    )
+    return _xlsx_streaming_response(wb, f"pelanggan-{_stamp()}.xlsx")
+
+
+@router.get("/pelanggan/import-template")
+def pelanggan_import_template(
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Template import pelanggan (.xlsx): sheet Data (header saja) + Petunjuk."""
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode*", "Nama*", "Alamat", "Telepon", "Email", "Kontak Person",
+                 "NPWP", "NITKU", "Tax Status", "Credit Limit"],
+        rows=[], sheet="Data",
+    )
+    excel_service.add_instructions_sheet(wb, rows=[
+        ["Kolom", "Wajib", "Tipe Data", "Keterangan"],
+        ["Kode*", "Ya", "Teks (maks 20)", "Kode unik pelanggan. Contoh: PLG-001. Duplikat dengan pelanggan AKTIF existing ditolak per baris."],
+        ["Nama*", "Ya", "Teks (maks 200)", "Nama pelanggan. Contoh: PT Maju Jaya."],
+        ["Alamat", "Tidak", "Teks", "Alamat lengkap. Contoh: Jl. Sudirman No. 1, Jakarta."],
+        ["Telepon", "Tidak", "Teks", "Contoh: 021-555123."],
+        ["Email", "Tidak", "Teks", "Contoh: admin@majujaya.co.id."],
+        ["Kontak Person", "Tidak", "Teks", "Nama PIC. Contoh: Budi Santoso."],
+        ["NPWP", "Tidak", "Teks", "15 digit tanpa tanda baca. Contoh: 012345678901234."],
+        ["NITKU", "Tidak", "Teks", "NITKU e-Faktur (16 digit). Opsional."],
+        ["Tax Status", "Tidak", "Pilihan", "PKP / NON_PKP. Kosong diperbolehkan."],
+        ["Credit Limit", "Tidak", "Angka desimal", "Batas kredit, angka tanpa pemisah ribuan. Contoh: 5000000. Kosong = tanpa limit."],
+        ["Catatan", "", "", "Baris dengan Kode & Nama kosong dilewati. Urutan kolom bebas — pembacaan berdasar nama kolom. Error satu baris tidak menghentikan baris lain. Akun piutang 'Piutang - {Nama}' dibuat OTOMATIS untuk setiap pelanggan baru."],
+    ])
+    return _xlsx_streaming_response(wb, "template-import-pelanggan.xlsx")
+
+
+@router.post("/pelanggan/import", response_model=ImportResult)
+async def import_pelanggan(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Import pelanggan dari file .xlsx (jalur create sama dengan POST /pelanggan).
+
+    Error per baris tidak menghentikan baris lain — ringkasan dikembalikan 200.
+    File bukan .xlsx → 400.
+    """
+    content = await file.read()
+    header_map, rows = _load_import_sheet(content)
+    result = ImportResult(total_baris=0, sukses=0, gagal=0, errors=[])
+    for offset, raw in enumerate(rows):
+        excel_row = offset + 2  # baris 1 = header
+        kode = _cell_str(_get_col(raw, header_map, "kode"))
+        nama = _cell_str(_get_col(raw, header_map, "nama"))
+        if not kode and not nama:
+            continue  # baris kosong di-skip
+        result.total_baris += 1
+        try:
+            if not kode:
+                raise ValueError("Kode wajib diisi")
+            if not nama:
+                raise ValueError("Nama wajib diisi")
+            credit_limit = _cell_decimal(_get_col(raw, header_map, "credit limit"), None)
+            data_in = PelangganCreate(
+                kode=kode, nama=nama,
+                alamat=_cell_str(_get_col(raw, header_map, "alamat")),
+                telepon=_cell_str(_get_col(raw, header_map, "telepon")),
+                email=_cell_str(_get_col(raw, header_map, "email")),
+                kontak_person=_cell_str(_get_col(raw, header_map, "kontak person")),
+                npwp=_cell_str(_get_col(raw, header_map, "npwp")),
+                nitku=_cell_str(_get_col(raw, header_map, "nitku")),
+                tax_status=_cell_str(_get_col(raw, header_map, "tax status")),
+                credit_limit=credit_limit,
+            )
+            # JALUR CREATE YANG SAMA dengan POST /pelanggan (auto COA piutang ikut jalan)
+            pelanggan = master_service.create_master(db, Pelanggan, data_in)
+            if not pelanggan.akun_piutang_id:
+                piutang_coa_id = auto_create_piutang_coa(db, pelanggan)
+                if piutang_coa_id:
+                    pelanggan.akun_piutang_id = piutang_coa_id
+                    db.add(pelanggan)
+                    db.commit()
+                    db.refresh(pelanggan)
+            result.sukses += 1
+        except (HTTPException, ValueError, IntegrityError) as exc:
+            db.rollback()
+            result.gagal += 1
+            result.errors.append(ImportRowError(baris=excel_row, pesan=_import_error(exc)))
+    return result
+
 
 @router.get("/pelanggan/{pelanggan_id}", response_model=PelangganResponse)
 def get_pelanggan_detail(
@@ -323,6 +581,141 @@ def create_supplier(
             db.refresh(supplier)
     return supplier
 
+
+# ── Supplier: Export & Import Excel (Update #5) ───────────────────────────
+@router.get("/supplier/export")
+def export_supplier(
+    search: str | None = Query(None, description="Cari berdasarkan nama atau kode"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export seluruh supplier (urut kode) ke file .xlsx."""
+    query = db.query(Supplier)
+    if search:
+        query = query.filter(or_(Supplier.nama.ilike(f"%{search}%"), Supplier.kode.ilike(f"%{search}%")))
+    rows = (
+        query.options(joinedload(Supplier.akun_hutang))
+        .order_by(Supplier.kode)
+        .all()
+    )
+    data = [
+        [
+            s.kode, s.nama, s.alamat or "", s.telepon or "", s.email or "",
+            s.kontak_person or "", s.npwp or "", s.nitku or "", s.supplier_type or "",
+            s.city or "", s.province or "", s.country or "", s.postal_code or "",
+            s.currency or "", s.bank_name or "", s.bank_account_no or "",
+            s.bank_account_name or "", s.status, _akun_label(s.akun_hutang),
+        ]
+        for s in rows
+    ]
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode", "Nama", "Alamat", "Telepon", "Email", "Kontak Person", "NPWP", "NITKU",
+                 "Supplier Type", "City", "Province", "Country", "Postal Code", "Currency",
+                 "Bank Name", "Bank Account No", "Bank Account Name", "Status", "Akun Hutang"],
+        rows=data, sheet="Data",
+    )
+    return _xlsx_streaming_response(wb, f"supplier-{_stamp()}.xlsx")
+
+
+@router.get("/supplier/import-template")
+def supplier_import_template(
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Template import supplier (.xlsx): sheet Data (header saja) + Petunjuk."""
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode*", "Nama*", "Alamat", "Telepon", "Email", "Kontak Person",
+                 "NPWP", "NITKU", "Supplier Type", "City", "Province", "Country",
+                 "Postal Code", "Currency", "Bank Name", "Bank Account No", "Bank Account Name"],
+        rows=[], sheet="Data",
+    )
+    excel_service.add_instructions_sheet(wb, rows=[
+        ["Kolom", "Wajib", "Tipe Data", "Keterangan"],
+        ["Kode*", "Ya", "Teks (maks 20)", "Kode unik supplier. Contoh: SUP-001. Duplikat dengan supplier AKTIF existing ditolak per baris."],
+        ["Nama*", "Ya", "Teks (maks 200)", "Nama supplier. Contoh: CV Sumber Rejeki."],
+        ["Alamat", "Tidak", "Teks", "Alamat lengkap. Contoh: Jl. Industri No. 10, Bandung."],
+        ["Telepon", "Tidak", "Teks", "Contoh: 022-555987."],
+        ["Email", "Tidak", "Teks", "Contoh: sales@sumberrejeki.co.id."],
+        ["Kontak Person", "Tidak", "Teks", "Nama PIC. Contoh: Andi Wijaya."],
+        ["NPWP", "Tidak", "Teks", "15 digit tanpa tanda baca. Contoh: 012345678901234."],
+        ["NITKU", "Tidak", "Teks", "NITKU e-Faktur (16 digit). Opsional."],
+        ["Supplier Type", "Ya", "Pilihan", "Wajib diisi: COMPANY / INDIVIDUAL. Selain itu (termasuk kosong) → baris ditolak."],
+        ["City", "Tidak", "Teks", "Kota. Contoh: Bandung."],
+        ["Province", "Tidak", "Teks", "Provinsi. Contoh: Jawa Barat."],
+        ["Country", "Tidak", "Teks", "Negara. Contoh: Indonesia."],
+        ["Postal Code", "Tidak", "Teks", "Kode pos. Contoh: 40123."],
+        ["Currency", "Tidak", "Teks (3 huruf)", "Kode mata uang ISO 4217. Contoh: IDR (default)."],
+        ["Bank Name", "Tidak", "Teks", "Nama bank. Contoh: Bank BCA."],
+        ["Bank Account No", "Tidak", "Teks", "Nomor rekening. Contoh: 1234567890."],
+        ["Bank Account Name", "Tidak", "Teks", "Nama pemilik rekening. Contoh: CV Sumber Rejeki."],
+        ["Catatan", "", "", "Baris dengan Kode & Nama kosong dilewati. Urutan kolom bebas — pembacaan berdasar nama kolom. Error satu baris tidak menghentikan baris lain. Akun hutang 'Hutang - {Nama}' dibuat OTOMATIS untuk setiap supplier baru."],
+    ])
+    return _xlsx_streaming_response(wb, "template-import-supplier.xlsx")
+
+
+@router.post("/supplier/import", response_model=ImportResult)
+async def import_supplier(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Import supplier dari file .xlsx (jalur create sama dengan POST /supplier).
+
+    Error per baris tidak menghentikan baris lain — ringkasan dikembalikan 200.
+    File bukan .xlsx → 400.
+    """
+    content = await file.read()
+    header_map, rows = _load_import_sheet(content)
+    result = ImportResult(total_baris=0, sukses=0, gagal=0, errors=[])
+    for offset, raw in enumerate(rows):
+        excel_row = offset + 2  # baris 1 = header
+        kode = _cell_str(_get_col(raw, header_map, "kode"))
+        nama = _cell_str(_get_col(raw, header_map, "nama"))
+        if not kode and not nama:
+            continue  # baris kosong di-skip
+        result.total_baris += 1
+        try:
+            if not kode:
+                raise ValueError("Kode wajib diisi")
+            if not nama:
+                raise ValueError("Nama wajib diisi")
+            supplier_type = _cell_str(_get_col(raw, header_map, "supplier type"))
+            if not supplier_type or supplier_type.upper() not in ("COMPANY", "INDIVIDUAL"):
+                raise ValueError("Supplier Type wajib diisi: COMPANY / INDIVIDUAL")
+            currency = _cell_str(_get_col(raw, header_map, "currency"))
+            data_in = SupplierCreate(
+                kode=kode, nama=nama, supplier_type=supplier_type.upper(),
+                alamat=_cell_str(_get_col(raw, header_map, "alamat")),
+                telepon=_cell_str(_get_col(raw, header_map, "telepon")),
+                email=_cell_str(_get_col(raw, header_map, "email")),
+                kontak_person=_cell_str(_get_col(raw, header_map, "kontak person")),
+                npwp=_cell_str(_get_col(raw, header_map, "npwp")),
+                nitku=_cell_str(_get_col(raw, header_map, "nitku")),
+                city=_cell_str(_get_col(raw, header_map, "city")),
+                province=_cell_str(_get_col(raw, header_map, "province")),
+                country=_cell_str(_get_col(raw, header_map, "country")),
+                postal_code=_cell_str(_get_col(raw, header_map, "postal code")),
+                currency=currency or "IDR",
+                bank_name=_cell_str(_get_col(raw, header_map, "bank name")),
+                bank_account_no=_cell_str(_get_col(raw, header_map, "bank account no")),
+                bank_account_name=_cell_str(_get_col(raw, header_map, "bank account name")),
+            )
+            # JALUR CREATE YANG SAMA dengan POST /supplier (auto COA hutang ikut jalan)
+            supplier = master_service.create_master(db, Supplier, data_in)
+            if not supplier.akun_hutang_id:
+                hutang_coa_id = auto_create_hutang_coa(db, supplier)
+                if hutang_coa_id:
+                    supplier.akun_hutang_id = hutang_coa_id
+                    db.add(supplier)
+                    db.commit()
+                    db.refresh(supplier)
+            result.sukses += 1
+        except (HTTPException, ValueError, IntegrityError) as exc:
+            db.rollback()
+            result.gagal += 1
+            result.errors.append(ImportRowError(baris=excel_row, pesan=_import_error(exc)))
+    return result
+
+
 @router.get("/supplier/{supplier_id}", response_model=SupplierResponse)
 def get_supplier_detail(supplier_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, Supplier, supplier_id)
@@ -528,6 +921,157 @@ def create_barang(
     current_user: Pengguna = Depends(get_current_user)
 ):
     return master_service.create_master(db, Barang, data_in)
+
+
+# ── Barang: Export & Import Excel (Update #5) ─────────────────────────────
+@router.get("/barang/export")
+def export_barang(
+    search: str | None = Query(None, description="Cari berdasarkan nama atau kode"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export seluruh barang (urut kode) ke file .xlsx."""
+    query = db.query(Barang)
+    if search:
+        query = query.filter(or_(Barang.nama.ilike(f"%{search}%"), Barang.kode.ilike(f"%{search}%")))
+    rows = (
+        query.options(
+            joinedload(Barang.kategori), joinedload(Barang.satuan),
+            joinedload(Barang.akun_persediaan), joinedload(Barang.akun_hpp),
+            joinedload(Barang.akun_penjualan), joinedload(Barang.akun_retur_penjualan),
+            joinedload(Barang.akun_diskon_penjualan),
+        )
+        .order_by(Barang.kode)
+        .all()
+    )
+    data = [
+        [
+            b.kode, b.nama,
+            b.kategori.nama if b.kategori else "",
+            b.satuan.nama if b.satuan else "",
+            b.item_type.value if b.item_type else "",
+            b.metode_valuasi.value if b.metode_valuasi else "",
+            "Ya" if b.stock_item else "Tidak",
+            b.stok, b.stok_minimum, b.harga_pokok, b.harga_jual,
+            b.status,
+            _akun_label(b.akun_persediaan), _akun_label(b.akun_hpp),
+            _akun_label(b.akun_penjualan), _akun_label(b.akun_retur_penjualan),
+            _akun_label(b.akun_diskon_penjualan),
+        ]
+        for b in rows
+    ]
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode", "Nama", "Kategori", "Satuan", "Tipe Barang", "Metode Valuasi",
+                 "Stok Item", "Stok", "Stok Minimum", "Harga Pokok", "Harga Jual", "Status",
+                 "Akun Persediaan", "Akun HPP", "Akun Penjualan", "Akun Retur Penjualan",
+                 "Akun Diskon Penjualan"],
+        rows=data, sheet="Data",
+        number_columns={7, 8},
+        decimal_columns={9, 10},
+    )
+    return _xlsx_streaming_response(wb, f"barang-{_stamp()}.xlsx")
+
+
+@router.get("/barang/import-template")
+def barang_import_template(
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Template import barang (.xlsx): sheet Data (header saja) + Petunjuk."""
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode*", "Nama*", "Kategori*", "Satuan*", "Tipe Barang",
+                 "Stok Minimum", "Harga Pokok", "Harga Jual"],
+        rows=[], sheet="Data",
+    )
+    excel_service.add_instructions_sheet(wb, rows=[
+        ["Kolom", "Wajib", "Tipe Data", "Keterangan"],
+        ["Kode*", "Ya", "Teks (maks 20)", "Kode unik barang. Contoh: BRG-0101. Baris dengan Kode duplikat barang AKTIF existing ditolak."],
+        ["Nama*", "Ya", "Teks (maks 200)", "Nama barang. Contoh: Buku Tulis A5 38 Lembar."],
+        ["Kategori*", "Ya", "Teks", "NAMA kategori PERSIS seperti master kategori (huruf besar/kecil diabaikan). Contoh: Alat Tulis. Tidak ditemukan → baris ditolak."],
+        ["Satuan*", "Ya", "Teks", "NAMA satuan PERSIS seperti master satuan (huruf besar/kecil diabaikan). Contoh: PCS. Tidak ditemukan → baris ditolak."],
+        ["Tipe Barang", "Tidak", "Pilihan", "BARANG_DAGANG / BARANG_JADI / BARANG_BAKU / BARANG_BANTU / JASA. Kosong = BARANG_DAGANG. Nilai lain → baris ditolak."],
+        ["Stok Minimum", "Tidak", "Bilangan bulat", "Batas stok minimum. Contoh: 10. Kosong = 0."],
+        ["Harga Pokok", "Tidak", "Angka desimal", "Harga pokok per satuan, angka TANPA pemisah ribuan. Contoh: 25000. Kosong = 0."],
+        ["Harga Jual", "Tidak", "Angka desimal", "Harga jual per satuan, angka TANPA pemisah ribuan. Contoh: 35000. Kosong = 0."],
+        ["Catatan", "", "", "Baris dengan Kode & Nama kosong dilewati. Urutan kolom bebas — pembacaan berdasar nama kolom (bukan posisi). Error satu baris tidak menghentikan baris lain. Stok awal TIDAK di-set lewat import — gunakan Penyesuaian Stok setelah barang terbentuk."],
+    ])
+    return _xlsx_streaming_response(wb, "template-import-barang.xlsx")
+
+
+@router.post("/barang/import", response_model=ImportResult)
+async def import_barang(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Import barang dari file .xlsx (jalur create sama dengan POST /barang).
+
+    Mapping Kategori/Satuan berdasar NAMA (case-insensitive) terhadap tabel
+    master. Error per baris tidak menghentikan baris lain — ringkasan
+    dikembalikan 200. File bukan .xlsx → 400.
+    """
+    content = await file.read()
+    header_map, rows = _load_import_sheet(content)
+    kategori_map = {
+        k.nama.strip().lower(): k
+        for k in db.query(KategoriBarang).filter(KategoriBarang.status == "AKTIF").all()
+    }
+    satuan_map = {
+        s.nama.strip().lower(): s
+        for s in db.query(Satuan).filter(Satuan.status == "AKTIF").all()
+    }
+    result = ImportResult(total_baris=0, sukses=0, gagal=0, errors=[])
+    for offset, raw in enumerate(rows):
+        excel_row = offset + 2  # baris 1 = header
+        kode = _cell_str(_get_col(raw, header_map, "kode"))
+        nama = _cell_str(_get_col(raw, header_map, "nama"))
+        if not kode and not nama:
+            continue  # baris kosong di-skip
+        result.total_baris += 1
+        try:
+            if not kode:
+                raise ValueError("Kode wajib diisi")
+            if not nama:
+                raise ValueError("Nama wajib diisi")
+            kategori_nama = _cell_str(_get_col(raw, header_map, "kategori"))
+            if not kategori_nama:
+                raise ValueError("Kategori wajib diisi")
+            kategori = kategori_map.get(kategori_nama.strip().lower())
+            if kategori is None:
+                raise ValueError(f"Kategori '{kategori_nama}' tidak ditemukan di master kategori")
+            satuan_nama = _cell_str(_get_col(raw, header_map, "satuan"))
+            if not satuan_nama:
+                raise ValueError("Satuan wajib diisi")
+            satuan = satuan_map.get(satuan_nama.strip().lower())
+            if satuan is None:
+                raise ValueError(f"Satuan '{satuan_nama}' tidak ditemukan di master satuan")
+            tipe_text = _cell_str(_get_col(raw, header_map, "tipe barang"))
+            if tipe_text:
+                try:
+                    item_type = ItemTypeBarang(tipe_text.strip().upper())
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Tipe Barang '{tipe_text}' tidak valid "
+                        "(pilih BARANG_DAGANG / BARANG_JADI / BARANG_BAKU / BARANG_BANTU / JASA)"
+                    ) from exc
+            else:
+                item_type = ItemTypeBarang.BARANG_DAGANG  # default bila kosong
+            data_in = BarangCreate(
+                kode=kode, nama=nama,
+                kategori_id=kategori.id, satuan_id=satuan.id,
+                item_type=item_type,
+                stok_minimum=_cell_int(_get_col(raw, header_map, "stok minimum"), 0),
+                harga_pokok=_cell_decimal(_get_col(raw, header_map, "harga pokok"), Decimal("0")),
+                harga_jual=_cell_decimal(_get_col(raw, header_map, "harga jual"), Decimal("0")),
+            )
+            # JALUR CREATE YANG SAMA dengan POST /barang — policy item_type/akun
+            # divalidasi identik di master_service.create_master.
+            master_service.create_master(db, Barang, data_in)
+            result.sukses += 1
+        except (HTTPException, ValueError, IntegrityError) as exc:
+            db.rollback()
+            result.gagal += 1
+            result.errors.append(ImportRowError(baris=excel_row, pesan=_import_error(exc)))
+    return result
 
 
 @router.get("/barang/types")

@@ -66,11 +66,20 @@ def module_access(module: str):
             if key:
                 if len(key) > 128 or not key.strip():
                     raise HTTPException(400, 'Idempotency-Key harus berisi 1–128 karakter')
-                body = await request.body()
-                try:
-                    body = json.dumps(json.loads(body), sort_keys=True, separators=(',', ':')).encode() if body else b''
-                except (ValueError, UnicodeDecodeError):
-                    pass  # Normal request validation will report malformed JSON.
+                # Update #5: body hanya dibaca untuk request JSON. Request
+                # multipart (upload file, mis. import Excel) tidak boleh
+                # mengonsumsi stream di sini — stream-nya dibutuhkan parser
+                # UploadFile, dan memanggil request.body() lebih dulu
+                # memicu RuntimeError "Stream consumed" (500). Digest untuk
+                # multipart memakai body kosong.
+                if (request.headers.get('content-type') or '').startswith('application/json'):
+                    body = await request.body()
+                    try:
+                        body = json.dumps(json.loads(body), sort_keys=True, separators=(',', ':')).encode() if body else b''
+                    except (ValueError, UnicodeDecodeError):
+                        pass  # Normal request validation will report malformed JSON.
+                else:
+                    body = b''
                 digest = hashlib.sha256(request.method.encode() + request.url.path.encode() + b'\0' + request.url.query.encode() + b'\0' + body).hexdigest()
                 db.info['idempotency'] = (user.id, key, digest)
     return check

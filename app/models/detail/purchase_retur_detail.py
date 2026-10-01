@@ -41,3 +41,11 @@ class PurchaseReturDetail(BaseModel, BaseMixin):
     purchase_order_detail = relationship("PurchaseOrderDetail", foreign_keys=[purchase_order_detail_id])
     penerimaan_barang_detail = relationship("PenerimaanBarangDetail", foreign_keys=[penerimaan_barang_detail_id])
     purchase_invoice_detail = relationship("PurchaseInvoiceDetail", foreign_keys=[purchase_invoice_detail_id])
+
+    # Update #5 — nama satuan dasar barang untuk kolom Satuan di cetakan FE
+    @property
+    def satuan(self) -> str | None:
+        barang = self.barang
+        if barang is not None and barang.satuan is not None:
+            return barang.satuan.nama
+        return None

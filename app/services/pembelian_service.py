@@ -1,3 +1,4 @@
+from app.models.master.barang import Barang  # Update #5: eager-load satuan barang utk detail response
 from app.services import inventory_receipt_control as receipt_control
 _RECEIPT_LINK_UNSET = object()
 """
@@ -354,7 +355,8 @@ def get_purchase_invoice_list(
     query = db.query(PurchaseInvoice).options(
         joinedload(PurchaseInvoice.supplier),
         joinedload(PurchaseInvoice.creator),
-        joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.barang),
+        joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.barang).joinedload(Barang.satuan),
+        joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.satuan),
         joinedload(PurchaseInvoice.biaya_tambahan),
     )
 
@@ -387,7 +389,8 @@ def get_purchase_invoice_by_id(db: Session, inv_id: UUID) -> Optional[PurchaseIn
             joinedload(PurchaseInvoice.supplier),
             joinedload(PurchaseInvoice.creator),
             joinedload(PurchaseInvoice.jurnal),
-            joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.barang),
+            joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.barang).joinedload(Barang.satuan),
+            joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.satuan),
             joinedload(PurchaseInvoice.biaya_tambahan),
         )
         .filter(PurchaseInvoice.id == inv_id)
@@ -607,7 +610,7 @@ def get_purchase_retur_list(
         joinedload(PurchaseRetur.purchase_order),
         joinedload(PurchaseRetur.supplier),
         joinedload(PurchaseRetur.creator),
-        joinedload(PurchaseRetur.details).joinedload(PurchaseReturDetail.barang),
+        joinedload(PurchaseRetur.details).joinedload(PurchaseReturDetail.barang).joinedload(Barang.satuan),
     )
 
     if search:
@@ -639,7 +642,7 @@ def get_purchase_retur_by_id(db: Session, retur_id: UUID) -> Optional[PurchaseRe
             joinedload(PurchaseRetur.supplier),
             joinedload(PurchaseRetur.creator),
             joinedload(PurchaseRetur.jurnal),
-            joinedload(PurchaseRetur.details).joinedload(PurchaseReturDetail.barang),
+            joinedload(PurchaseRetur.details).joinedload(PurchaseReturDetail.barang).joinedload(Barang.satuan),
         )
         .filter(PurchaseRetur.id == retur_id)
         .first()

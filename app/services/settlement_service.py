@@ -5,12 +5,19 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 from app.models import SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PenerimaanKas, PembayaranKas, Pelanggan, Supplier, JurnalUmum
+from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.services.accounting_control import atomic_accounting_write, require_unposted
 
 ZERO = Decimal('0.00')
 JAKARTA = timezone(timedelta(hours=7))
+
+# Update #5 — akun penalti dilarang berupa kas/bank atau kontrol piutang/hutang
+# (subclass COA v2 / system account / subledger AR-AP auto-created per pihak).
+PENALTI_FORBIDDEN_SUBCLASSES = {'CASH_BANK', 'ACCOUNTS_RECEIVABLE', 'ACCOUNTS_PAYABLE'}
+PENALTI_FORBIDDEN_SYSTEM_TYPES = {'AR_CONTROL', 'AP_CONTROL', 'BANK_CLEARING'}
+PENALTI_FORBIDDEN_SUBLEDGERS = {'AR', 'AP'}
 
 
 def local_day(value):
@@ -120,6 +127,53 @@ def positive_money(value):
     return value
 
 
+def normalize_penalti(value):
+    """Update #5 — penalti boleh nol, tapi tidak boleh negatif/lebih dari 2 desimal."""
+    value = Decimal(str(value if value is not None else 0))
+    if not value.is_finite() or value < 0 or value != value.quantize(Decimal('.01')) or value >= Decimal('10000000000000000'):
+        raise ValueError('Penalti tidak boleh negatif, maksimal 2 desimal dan dalam batas nominal')
+    return value
+
+
+def validate_penalti_account(db, akun_penalti_id):
+    """Akun penalti wajib ADA, AKTIF, leaf (DETAIL tanpa anak), dan bukan
+    akun kas/bank maupun kontrol/subledger piutang-hutang. Untuk hutang
+    (pembayaran) penalti = beban; untuk piutang (penerimaan) = pendapatan —
+    validasi tipe pendapatan/beban sengaja longgar (cukup aktif + leaf +
+    bukan kas/AR/AP) supaya fleksibel mengikuti COA pelanggan."""
+    if not akun_penalti_id:
+        raise ValueError('Akun penalti wajib dipilih bila penalti lebih dari nol')
+    akun = db.get(AkunPerkiraan, akun_penalti_id)
+    if akun is None:
+        raise ValueError('Akun penalti tidak ditemukan')
+    if akun.status != 'AKTIF' or akun.active is not True:
+        raise ValueError('Akun penalti harus berstatus AKTIF')
+    has_child = db.query(AkunPerkiraan.id).filter(AkunPerkiraan.induk_id == akun.id).first() is not None
+    if has_child or akun.tingkat is None or akun.tingkat != TingkatAkun.DETAIL:
+        raise ValueError('Akun penalti harus akun leaf (DETAIL tanpa akun anak)')
+    subclass = (akun.account_subclass or '').upper()
+    system_type = (akun.system_account_type or '').upper()
+    subledger = (akun.subledger_type or '').upper()
+    if (subclass in PENALTI_FORBIDDEN_SUBCLASSES
+            or system_type in PENALTI_FORBIDDEN_SYSTEM_TYPES
+            or subledger in PENALTI_FORBIDDEN_SUBLEDGERS
+            or akun.is_subledger):
+        raise ValueError('Akun penalti tidak boleh akun kas/bank atau kontrol piutang/hutang')
+    return akun
+
+
+def resolve_penalti(db, penalti, akun_penalti_id, current_penalti=ZERO, current_akun=None):
+    """Normalisasi + validasi penalti pelunasan.
+
+    Nilai ``None`` (tidak dikirim) memakai nilai yang sudah tersimpan di
+    dokumen (dipakai jalur PUT draft); penalti > 0 wajib punya akun valid."""
+    nilai = normalize_penalti(penalti if penalti is not None else (current_penalti or ZERO))
+    akun_id = akun_penalti_id if akun_penalti_id is not None else current_akun
+    if nilai > 0:
+        validate_penalti_account(db, akun_id)
+    return nilai, akun_id
+
+
 def prepare(db, jenis, pihak_id, tanggal, allocation_data):
     model = invoice_model(jenis)
     party = db.get(Pelanggan if jenis == 'piutang' else Supplier, pihak_id)
@@ -165,20 +219,28 @@ def attach(payment, jenis, rows):
 
 
 @atomic_accounting_write
-def create_settlement(db, jenis, pihak_id, tanggal, kas_bank_id, no_nukti, allocation_data, created_by, catatan=None):
+def create_settlement(db, jenis, pihak_id, tanggal, kas_bank_id, no_nukti, allocation_data, created_by,
+                      catatan=None, penalti=None, akun_penalti_id=None):
     from app.services import kas_bank_service as cash
     rows, rincian = prepare(db, jenis, pihak_id, tanggal, allocation_data)
+    penalti, akun_penalti_id = resolve_penalti(db, penalti, akun_penalti_id)
+    if penalti > 0:
+        # Baris rincian akun penalti (di samping grup akun kontrol alokasi);
+        # total_nilai = Σ alokasi + penalti dihitung dari Σ rincian.
+        rincian = rincian + [{'akun_perkiraan_id': akun_penalti_id, 'nilai': penalti}]
     create = cash.create_penerimaan if jenis == 'piutang' else cash.create_pembayaran
     payment = create(db, no_nukti, tanggal, kas_bank_id, rincian, catatan=catatan,
                      auto_post_jurnal=False, created_by=created_by,
                      is_settlement=True)  # ← canonical: AR_SETTLEMENT / AP_SETTLEMENT
     setattr(payment, 'pelanggan_id' if jenis == 'piutang' else 'supplier_id', pihak_id)
+    payment.penalti = penalti
+    payment.akun_penalti_id = akun_penalti_id
     attach(payment, jenis, rows)
     return payment
 
 
 @atomic_accounting_write
-def update_allocations(db, db_obj, jenis, pihak_id, allocation_data):
+def update_allocations(db, db_obj, jenis, pihak_id, allocation_data, penalti=None, akun_penalti_id=None):
     require_unposted(db_obj)
     if type(db_obj) is not (PenerimaanKas if jenis == 'piutang' else PembayaranKas):
         raise ValueError('Jenis pembayaran tidak sesuai')
@@ -187,13 +249,21 @@ def update_allocations(db, db_obj, jenis, pihak_id, allocation_data):
     from app.models.detail.pembayaran_rincian import PembayaranRincian
     detail_model = PenerimaanRincian if jenis == 'piutang' else PembayaranRincian
     db_obj.alokasi.clear()
-    db_obj.rincian.clear()
+    db_obj.rincian.clear()  # Termasuk baris rincian penalti lama
     db.flush()  # Release old unique pairs before replacing allocations.
     attach(db_obj, jenis, rows)
     for data in rincian:
         db_obj.rincian.append(detail_model(**data))
+    # Update #5 — penalti: None (tidak dikirim) = pertahankan nilai tersimpan.
+    penalti, akun_penalti_id = resolve_penalti(
+        db, penalti, akun_penalti_id,
+        current_penalti=getattr(db_obj, 'penalti', None), current_akun=db_obj.akun_penalti_id)
+    db_obj.penalti = penalti
+    db_obj.akun_penalti_id = akun_penalti_id
+    if penalti > 0:
+        db_obj.rincian.append(detail_model(akun_perkiraan_id=akun_penalti_id, nilai=penalti))
     setattr(db_obj, 'pelanggan_id' if jenis == 'piutang' else 'supplier_id', pihak_id)
-    db_obj.total_nilai = sum((r['nilai'] for r in rows), ZERO)
+    db_obj.total_nilai = sum((r['nilai'] for r in rows), ZERO) + penalti
     return db_obj
 
 
@@ -204,6 +274,12 @@ def validate_payment(db, payment):
     party = payment.pelanggan_id if jenis == 'piutang' else payment.supplier_id
     rows, expected = prepare(db, jenis, party, payment.tanggal,
                              [{'invoice_id': r.invoice_id, 'nilai': r.nilai} for r in payment.alokasi])
+    # Update #5 — rincian boleh berisi grup akun alokasi + 1 baris akun penalti;
+    # total rincian harus = Σ alokasi + penalti = total_nilai.
+    penalti = normalize_penalti(getattr(payment, 'penalti', None))
+    if penalti > 0:
+        akun_penalti = validate_penalti_account(db, payment.akun_penalti_id)
+        expected = expected + [{'akun_perkiraan_id': akun_penalti.id, 'nilai': penalti}]
     actual = defaultdict(lambda: ZERO)
     for row in payment.rincian:
         actual[row.akun_perkiraan_id] += row.nilai
@@ -241,6 +317,8 @@ def require_no_settlements(db, invoice):
 def payment_summary(payment):
     return {'id': payment.id, 'jenis': 'piutang' if isinstance(payment, PenerimaanKas) else 'hutang',
         'no_bukti': payment.no_bukti, 'tanggal': payment.tanggal, 'total_nilai': payment.total_nilai,
+        'penalti': getattr(payment, 'penalti', None) or ZERO,
+        'akun_penalti_id': getattr(payment, 'akun_penalti_id', None),
         'status': getattr(payment.status, 'value', payment.status), 'jurnal_umum_id': payment.jurnal_umum_id,
         'pihak_id': payment.pelanggan_id if isinstance(payment, PenerimaanKas) else payment.supplier_id,
         'alokasi': [{'id': r.id, 'invoice_id': r.invoice_id, 'nilai': r.nilai,

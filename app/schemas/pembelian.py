@@ -187,6 +187,9 @@ class PurchaseInvoiceDetailResponse(PurchaseInvoiceDetailBase):
     id: UUID
     barang: Optional[BarangSimpleResponse] = None
     satuan: Optional[SatuanSimpleResponse] = None  # Phase D
+    # Update #5 — nama satuan baris sebagai string (kolom Satuan di cetakan FE);
+    # fallback ke satuan dasar barang bila satuan baris tidak diisi.
+    satuan_nama: str | None = None
 
 
 # ==========================================
@@ -280,6 +283,8 @@ class PurchaseReturDetailResponse(PurchaseReturDetailBase):
     purchase_invoice_detail_id: Optional[UUID] = None
     purchase_order_detail_id: Optional[UUID] = None
     barang: Optional[BarangSimpleResponse] = None
+    # Update #5 — nama satuan dasar barang (kolom Satuan di cetakan FE)
+    satuan: str | None = None
 
 
 # ==========================================

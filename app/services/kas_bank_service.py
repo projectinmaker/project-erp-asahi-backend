@@ -615,6 +615,12 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
     rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in pembayaran.rincian]
     no_bukti = pembayaran.no_bukti
     total_nilai = pembayaran.total_nilai
+    # Update #5 — penalti pelunasan hutang: baris rincian akun penalti
+    # otomatis menjadi Dr akun penalti (beban) di samping Dr akun kontrol
+    # hutang per alokasi; Kas/Bank dikredit sebesar total (Σ alokasi + penalti)
+    # sehingga total debit = total kredit tetap seimbang.
+    penalti = Decimal(str(getattr(pembayaran, "penalti", 0) or 0))
+    akun_penalti_id = getattr(pembayaran, "akun_penalti_id", None)
     entries = [
         # Kredit: Kas/Bank
         JurnalEntryItem(
@@ -623,12 +629,17 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
             keterangan=f"Pembayaran {no_bukti}",
         ),
     ]
-    # Debit: Akun-akun dari rincian
+    # Debit: Akun-akun dari rincian (grup akun kontrol alokasi + akun penalti)
     for r in rincian_data:
         entries.append(
             JurnalEntryItem(
                 akun_perkiraan_id=r["akun_perkiraan_id"],
                 debit=Decimal(str(r["nilai"])),
+                keterangan=(
+                    f"Penalti pelunasan {no_bukti}"
+                    if penalti > 0 and akun_penalti_id and r["akun_perkiraan_id"] == akun_penalti_id
+                    else None
+                ),
             )
         )
 
@@ -639,6 +650,8 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
         if is_settlement
         else f"Pembayaran Kas {no_bukti}"
     )
+    if penalti > 0:
+        keterangan += f" (termasuk penalti {penalti})"
 
     jurnal = auto_posting_jurnal(
         db=db,
@@ -678,6 +691,12 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
     rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in penerimaan.rincian]
     no_bukti = penerimaan.no_bukti
     total_nilai = penerimaan.total_nilai
+    # Update #5 — penalti pelunasan piutang: baris rincian akun penalti
+    # otomatis menjadi Cr akun penalti (pendapatan) di samping Cr akun kontrol
+    # piutang per alokasi; Kas/Bank didebit sebesar total (Σ alokasi + penalti)
+    # sehingga total debit = total kredit tetap seimbang.
+    penalti = Decimal(str(getattr(penerimaan, "penalti", 0) or 0))
+    akun_penalti_id = getattr(penerimaan, "akun_penalti_id", None)
     entries = [
         # Debit: Kas/Bank
         JurnalEntryItem(
@@ -686,12 +705,17 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
             keterangan=f"Penerimaan {no_bukti}",
         ),
     ]
-    # Kredit: Akun-akun dari rincian
+    # Kredit: Akun-akun dari rincian (grup akun kontrol alokasi + akun penalti)
     for r in rincian_data:
         entries.append(
             JurnalEntryItem(
                 akun_perkiraan_id=r["akun_perkiraan_id"],
                 kredit=Decimal(str(r["nilai"])),
+                keterangan=(
+                    f"Penalti pelunasan {no_bukti}"
+                    if penalti > 0 and akun_penalti_id and r["akun_perkiraan_id"] == akun_penalti_id
+                    else None
+                ),
             )
         )
 
@@ -702,6 +726,8 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
         if is_settlement
         else f"Penerimaan Kas {no_bukti}"
     )
+    if penalti > 0:
+        keterangan += f" (termasuk penalti {penalti})"
 
     jurnal = auto_posting_jurnal(
         db=db,

@@ -490,3 +490,22 @@ class AppSettingResponse(BaseSchema):
     key: str
     value: str
     updated_at: Optional[datetime] = None
+
+
+# ==========================================
+# IMPORT EXCEL (Update #5) — hasil ringkasan import master
+# ==========================================
+class ImportRowError(BaseSchema):
+    baris: int  # nomor baris di sheet Excel (baris 1 = header)
+    pesan: str
+
+class ImportResult(BaseSchema):
+    """Hasil import Excel master (barang/pelanggan/supplier).
+
+    Error per baris tidak menghentikan baris lain — seluruh baris valid
+    tetap diproses; ringkasan dikembalikan dengan 200.
+    """
+    total_baris: int
+    sukses: int
+    gagal: int
+    errors: list[ImportRowError] = []

@@ -199,6 +199,8 @@ class SalesInvoiceDetailCreate(SalesInvoiceDetailBase):
 class SalesInvoiceDetailResponse(SalesInvoiceDetailBase):
     id: UUID
     barang: Optional[BarangSimpleResponse] = None
+    # Update #5 — nama satuan dasar barang (kolom Satuan di cetakan FE)
+    satuan: str | None = None
 
 
 # ==========================================
@@ -295,6 +297,8 @@ class SalesReturDetailCreate(SalesReturDetailBase):
 class SalesReturDetailResponse(SalesReturDetailBase):
     id: UUID
     barang: Optional[BarangSimpleResponse] = None
+    # Update #5 — nama satuan dasar barang (kolom Satuan di cetakan FE)
+    satuan: str | None = None
 
 
 # ==========================================

@@ -30,6 +30,7 @@ python-multipart = "^0.0.20"
 # Utilities
 uuid6 = "^2024.7.10"
 httpx = "^0.28.1"
+openpyxl = "^3.1"
 
 # Logging
 loguru = "^0.7.3"

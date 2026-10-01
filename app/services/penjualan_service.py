@@ -30,6 +30,7 @@ from app.models.detail.sales_retur_detail import SalesReturDetail
 from app.models.detail.pengiriman_barang_detail import PengirimanBarangDetail
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
 from app.models.master.pelanggan import Pelanggan
+from app.models.master.barang import Barang  # Update #5: eager-load satuan barang utk detail response
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.stok_service import update_stok_barang
@@ -359,7 +360,7 @@ def get_sales_invoice_list(
         joinedload(SalesInvoice.syarat_bayar),
         joinedload(SalesInvoice.sales_order),
         joinedload(SalesInvoice.creator),
-        joinedload(SalesInvoice.details).joinedload(SalesInvoiceDetail.barang),
+        joinedload(SalesInvoice.details).joinedload(SalesInvoiceDetail.barang).joinedload(Barang.satuan),
         joinedload(SalesInvoice.biaya_tambahan),
     )
 
@@ -393,7 +394,7 @@ def get_sales_invoice_by_id(db: Session, inv_id: UUID) -> Optional[SalesInvoice]
             joinedload(SalesInvoice.sales_order),
             joinedload(SalesInvoice.creator),
             joinedload(SalesInvoice.jurnal),
-            joinedload(SalesInvoice.details).joinedload(SalesInvoiceDetail.barang),
+            joinedload(SalesInvoice.details).joinedload(SalesInvoiceDetail.barang).joinedload(Barang.satuan),
             joinedload(SalesInvoice.biaya_tambahan),
         )
         .filter(SalesInvoice.id == inv_id)
@@ -647,7 +648,7 @@ def get_sales_retur_list(
         joinedload(SalesRetur.sales_invoice),
         joinedload(SalesRetur.pelanggan),
         joinedload(SalesRetur.creator),
-        joinedload(SalesRetur.details).joinedload(SalesReturDetail.barang),
+        joinedload(SalesRetur.details).joinedload(SalesReturDetail.barang).joinedload(Barang.satuan),
     )
 
     if search:
@@ -679,7 +680,7 @@ def get_sales_retur_by_id(db: Session, retur_id: UUID) -> Optional[SalesRetur]:
             joinedload(SalesRetur.pelanggan),
             joinedload(SalesRetur.creator),
             joinedload(SalesRetur.jurnal),
-            joinedload(SalesRetur.details).joinedload(SalesReturDetail.barang),
+            joinedload(SalesRetur.details).joinedload(SalesReturDetail.barang).joinedload(Barang.satuan),
         )
         .filter(SalesRetur.id == retur_id)
         .first()

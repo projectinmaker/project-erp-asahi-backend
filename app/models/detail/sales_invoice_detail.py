@@ -35,3 +35,11 @@ class SalesInvoiceDetail(BaseModel, BaseMixin):
     # Source-line trace
     sales_order_detail = relationship("SalesOrderDetail", foreign_keys=[sales_order_detail_id])
     delivery_detail = relationship("PengirimanBarangDetail", foreign_keys=[delivery_detail_id])
+
+    # Update #5 — nama satuan dasar barang untuk kolom Satuan di cetakan FE
+    @property
+    def satuan(self) -> str | None:
+        barang = self.barang
+        if barang is not None and barang.satuan is not None:
+            return barang.satuan.nama
+        return None

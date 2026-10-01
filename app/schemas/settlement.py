@@ -14,6 +14,9 @@ class AllocationInput(BaseSchema):
 class AllocationUpdate(BaseSchema):
     pihak_id: UUID
     alokasi: List[AllocationInput] = Field(min_length=1, max_length=100)
+    # Update #5 — penalti pelunasan (opsional di PUT draft; None = tidak mengubah)
+    penalti: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    akun_penalti_id: UUID | None = None
 
 
 class SettlementCreate(AllocationUpdate):
@@ -21,6 +24,8 @@ class SettlementCreate(AllocationUpdate):
     kas_bank_id: UUID
     no_nukti: str = Field(min_length=1, max_length=50)
     catatan: Optional[str] = None
+    # Update #5 — penalti: menambah total kas yang dibayar/diterima di luar alokasi invoice
+    penalti: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
 
 
 class AllocationResponse(AllocationInput):
@@ -34,6 +39,8 @@ class SettlementResponse(BaseSchema):
     no_bukti: str
     tanggal: datetime
     total_nilai: Decimal
+    penalti: Decimal = Decimal("0")
+    akun_penalti_id: UUID | None = None
     status: str
     jurnal_umum_id: Optional[UUID] = None
     pihak_id: Optional[UUID] = None
