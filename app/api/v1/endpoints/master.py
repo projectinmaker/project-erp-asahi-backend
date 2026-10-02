@@ -1206,6 +1206,91 @@ def create_gudang(
 ):
     return master_service.create_master(db, Gudang, data_in)
 
+# ── Gudang: Export & Import Excel (Update #9) ───────────────────────────
+@router.get("/gudang/export")
+def export_gudang(
+    search: str | None = Query(None, description="Cari berdasarkan nama atau kode"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export seluruh gudang (urut kode) ke file .xlsx — kolom Status & Total Barang
+    hanya informasi (diabaikan saat import; pembacaan kolom berdasar nama)."""
+    query = db.query(Gudang)
+    if search:
+        query = query.filter(or_(Gudang.nama.ilike(f"%{search}%"), Gudang.kode.ilike(f"%{search}%")))
+    rows = query.order_by(Gudang.kode).all()
+    data = [
+        [g.kode, g.nama, g.alamat or "", g.status, g.total_barang or 0]
+        for g in rows
+    ]
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode", "Nama", "Alamat", "Status", "Total Barang"],
+        rows=data, sheet="Data",
+        number_columns={4},
+    )
+    return _xlsx_streaming_response(wb, f"gudang-{_stamp()}.xlsx")
+
+
+@router.get("/gudang/import-template")
+def gudang_import_template(
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Template import gudang (.xlsx): sheet Data (header saja) + Petunjuk."""
+    wb = excel_service.workbook_from_rows(
+        headers=["Kode*", "Nama*", "Alamat"],
+        rows=[], sheet="Data",
+    )
+    excel_service.add_instructions_sheet(wb, rows=[
+        ["Kolom", "Wajib", "Tipe Data", "Keterangan"],
+        ["Kode*", "Ya", "Teks (maks 20)", "Kode unik gudang. Contoh: GD-001. Duplikat dengan gudang AKTIF existing ditolak per baris; gudang NONAKTIF dengan kode sama otomatis diaktifkan kembali."],
+        ["Nama*", "Ya", "Teks (maks 100)", "Nama gudang. Contoh: Gudang Pusat."],
+        ["Alamat", "Tidak", "Teks", "Alamat lengkap gudang."],
+        ["Catatan", "", "", "Baris dengan Kode & Nama kosong dilewati. Urutan kolom bebas — pembacaan berdasar nama kolom. Error satu baris tidak menghentikan baris lain."],
+    ])
+    return _xlsx_streaming_response(wb, "template-import-gudang.xlsx")
+
+
+@router.post("/gudang/import", response_model=ImportResult)
+async def import_gudang(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Import gudang dari file .xlsx (jalur create sama dengan POST /gudang).
+
+    Error per baris tidak menghentikan baris lain — ringkasan dikembalikan 200.
+    File bukan .xlsx → 400.
+    """
+    content = await file.read()
+    header_map, rows = _load_import_sheet(content)
+    result = ImportResult(total_baris=0, sukses=0, gagal=0, errors=[])
+    for offset, raw in enumerate(rows):
+        excel_row = offset + 2  # baris 1 = header
+        kode = _cell_str(_get_col(raw, header_map, "kode"))
+        nama = _cell_str(_get_col(raw, header_map, "nama"))
+        if not kode and not nama:
+            continue  # baris kosong di-skip
+        result.total_baris += 1
+        try:
+            if not kode:
+                raise ValueError("Kode wajib diisi")
+            if not nama:
+                raise ValueError("Nama wajib diisi")
+            data_in = GudangCreate(
+                kode=kode, nama=nama,
+                alamat=_cell_str(_get_col(raw, header_map, "alamat")),
+            )
+            # JALUR CREATE YANG SAMA dengan POST /gudang
+            # (advisory lock + tolak duplikat AKTIF + reaktivasi NONAKTIF)
+            master_service.create_master(db, Gudang, data_in)
+            result.sukses += 1
+        except (HTTPException, ValueError, IntegrityError) as exc:
+            db.rollback()
+            result.gagal += 1
+            result.errors.append(ImportRowError(baris=excel_row, pesan=_import_error(exc)))
+    return result
+
+
 @router.get("/gudang/{gudang_id}", response_model=GudangResponse)
 def get_gudang_detail(gudang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, Gudang, gudang_id)
