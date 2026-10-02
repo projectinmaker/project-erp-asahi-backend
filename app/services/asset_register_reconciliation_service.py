@@ -219,10 +219,16 @@ def get_ringkasan_rekonsiliasi_aset(
         'asOf': full['asOf'],
         'summary': full['summary'],
         'reconciliationStatus': (
-            'MATCH' if all(
-                Decimal(p['selisihCost']) == 0 and Decimal(p['selisihAccum']) == 0
-                for p in full['perAkun']
-            ) and full['perAkun']
+            # DB tanpa aset/akun aset aktif (perAkun kosong) = tidak ada yang
+            # direkonsiliasi → MATCH, bukan MISMATCH (hindari false positive
+            # di instalasi baru sebelum aset pertama dicatat).
+            'MATCH' if (
+                not full['perAkun']
+                or all(
+                    Decimal(p['selisihCost']) == 0 and Decimal(p['selisihAccum']) == 0
+                    for p in full['perAkun']
+                )
+            )
             else 'MISMATCH'
         ),
         'akunCount': len(full['perAkun']),

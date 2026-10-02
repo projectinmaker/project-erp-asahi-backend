@@ -32,9 +32,29 @@ def get_payment(db, jenis, payment_id):
     return obj
 
 
+def _filter_tagihan(invoices, summaries, status_pembayaran):
+    """Update #7 (M-06): filter baris tagihan untuk GET /tagihan dan export.
+
+    - ``'SEMUA'`` (opsi "Semua" FE) → semua invoice AKTIF tanpa syarat
+      ``sisa_tagihan > 0`` — sebelumnya invoice LUNAS hilang dari tampilan
+      default karena filternya ``sisa_tagihan > 0``.
+    - ``None`` (default tanpa param) → perilaku lama: hanya tagihan berjalan
+      (``sisa_tagihan > 0``).
+    - nilai spesifik (BELUM_DIBAYAR/PARSIAL/LUNAS/LEBIH_BAYAR) → samakan
+      ``status_pembayaran``.
+    Baris non-aktif (jurnal belum POSTED / di-reverse / dibatalkan — lihat
+    ``settlement_service.balances`` kolom ``aktif``) selalu dikecualikan.
+    """
+    if status_pembayaran == 'SEMUA':
+        return [summaries[obj.id] for obj in invoices if summaries[obj.id]['aktif']]
+    if status_pembayaran is None:
+        return [summaries[obj.id] for obj in invoices if summaries[obj.id]['sisa_tagihan'] > 0]
+    return [summaries[obj.id] for obj in invoices if summaries[obj.id]['status_pembayaran'] == status_pembayaran]
+
+
 @router.get('/tagihan/{jenis}', response_model=PaginatedResponse[InvoiceBalanceResponse])
 def get_outstanding(jenis: Jenis, pihak_id: Optional[UUID] = Query(default=None, alias='pihakId'),
-                    status_pembayaran: Optional[Literal['BELUM_DIBAYAR','PARSIAL','LUNAS','LEBIH_BAYAR']] = Query(default=None, alias='statusPembayaran'),
+                    status_pembayaran: Optional[Literal['BELUM_DIBAYAR','PARSIAL','LUNAS','LEBIH_BAYAR','SEMUA']] = Query(default=None, alias='statusPembayaran'),
                     as_of: Optional[date] = Query(default=None, alias='asOf'),
                     skip: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=100),
                     db=Depends(get_current_db), user=Depends(get_current_user)):
@@ -45,14 +65,15 @@ def get_outstanding(jenis: Jenis, pihak_id: Optional[UUID] = Query(default=None,
         query = query.filter((model.pelanggan_id if jenis == 'piutang' else model.supplier_id) == pihak_id)
     invoices = query.order_by(model.tanggal, model.id).all()
     summaries = svc.balances(db, invoices, day)
-    data = [summaries[obj.id] for obj in invoices if (summaries[obj.id]['status_pembayaran'] == status_pembayaran if status_pembayaran else summaries[obj.id]['sisa_tagihan'] > 0)]
+    # Update #7 (M-06): SEMUA → tampilkan semua invoice aktif (termasuk LUNAS).
+    data = _filter_tagihan(invoices, summaries, status_pembayaran)
     return {'data': data[skip:skip+limit], 'total': len(data), 'skip': skip, 'limit': limit}
 
 
 @router.get('/tagihan/{jenis}/export')
 def export_tagihan(jenis: Jenis,
                    pihak_id: UUID | None = Query(default=None, alias='pihakId'),
-                   status_pembayaran: Literal['BELUM_DIBAYAR','PARSIAL','LUNAS','LEBIH_BAYAR'] | None = Query(default=None, alias='statusPembayaran'),
+                   status_pembayaran: Literal['BELUM_DIBAYAR','PARSIAL','LUNAS','LEBIH_BAYAR','SEMUA'] | None = Query(default=None, alias='statusPembayaran'),
                    as_of: date | None = Query(default=None, alias='asOf'),
                    db=Depends(get_current_db), user=Depends(get_current_user)):
     """Export daftar tagihan piutang/hutang ke .xlsx (Update #5).
@@ -68,8 +89,8 @@ def export_tagihan(jenis: Jenis,
         query = query.filter((model.pelanggan_id if jenis == 'piutang' else model.supplier_id) == pihak_id)
     invoices = query.order_by(model.tanggal, model.id).all()
     summaries = svc.balances(db, invoices, day)
-    data = [summaries[obj.id] for obj in invoices
-            if (summaries[obj.id]['status_pembayaran'] == status_pembayaran if status_pembayaran else summaries[obj.id]['sisa_tagihan'] > 0)]
+    # Update #7 (M-06): SEMUA → tampilkan semua invoice aktif (termasuk LUNAS).
+    data = _filter_tagihan(invoices, summaries, status_pembayaran)
 
     # Lookup nama pelanggan/supplier untuk kolom Pihak.
     pihak_ids = {d['pihak_id'] for d in data if d['pihak_id']}

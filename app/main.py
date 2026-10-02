@@ -55,6 +55,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:  # noqa: BLE001 — jangan blok startup bila seed gagal
         logger.warning(f"RBAC v2 seed dilewati: {exc}")
 
+    # M-03 — sync snapshot saldo kas/bank master dari GL (pengganti migrasi
+    # backfill; idempotent & self-healing tiap startup).
+    try:
+        from app.database import SessionLocal
+        from app.services.posting_service import sync_kas_bank_saldo
+        with SessionLocal() as db_sess:
+            n = sync_kas_bank_saldo(db_sess)
+            db_sess.commit()
+            logger.info(f"✓ Sync saldo kas/bank: {n} akun")
+    except Exception as exc:  # noqa: BLE001 — jangan blok startup bila sync gagal
+        logger.warning(f"Sync saldo kas/bank dilewati: {exc}")
+
     logger.info("Application startup complete")
     logger.info("=" * 60)
 

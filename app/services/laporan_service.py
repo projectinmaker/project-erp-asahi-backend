@@ -22,12 +22,41 @@ def _total_by_header(db, header, date_from, date_to=None):
 
 def get_laba_rugi(db, date_from, date_to):
     rows = gl.totals(db, date_from, date_to, performance=True)
-    groups = {name: gl.header_items(rows, header) for name, header in
-              (('pendapatan', gl.HeaderCOA.PENDAPATAN), ('hpp', gl.HeaderCOA.HPP), ('beban', gl.HeaderCOA.BEBAN))}
+    # M-02: klasifikasi per akun (level presentasi), bukan per header COA saja:
+    # - PENDAPATAN dengan report_group OTHER_INCOME (421xxx bunga/sewa/selisih kurs)
+    #   → grup "pendapatan_lain" (pendapatan lain-lain), bukan pendapatan usaha.
+    # - HPP dengan kode 52xxxx (Biaya Overhead Pabrik, mis. 521002 penyusutan pabrik)
+    #   → grup "beban" (beban operasional), bukan HPP — sesuai temuan audit E2E.
+    #   Data COA TIDAK diubah; reclass hanya di level penyajian laporan.
+    groups = {name: [] for name in ('pendapatan', 'pendapatan_lain', 'hpp', 'beban')}
+    for r in rows.values():
+        account, value = r['account'], gl.net(r)
+        if not value:  # lewati akun net 0 (sama seperti header_items)
+            continue
+        header = account.header
+        if header == gl.HeaderCOA.PENDAPATAN:
+            name = 'pendapatan_lain' if account.report_group == 'OTHER_INCOME' else 'pendapatan'
+        elif header == gl.HeaderCOA.HPP:
+            # Overhead pabrik (52xxxx) dipresentasikan sebagai beban operasional.
+            name = 'beban' if account.kode.startswith('52') else 'hpp'
+        elif header == gl.HeaderCOA.BEBAN:
+            name = 'beban'
+        else:
+            continue
+        sign = -1 if name in ('pendapatan', 'pendapatan_lain') else 1
+        groups[name].append({'kode_akun': account.kode, 'nama_akun': account.nama, 'total': sign * value})
     totals = {'total_'+name: sum((r['total'] for r in items), gl.ZERO) for name, items in groups.items()}
     gross = totals['total_pendapatan'] - totals['total_hpp']
+    # laba_usaha = pendapatan usaha − HPP − beban (beban kini memuat overhead pabrik 52xxxx).
+    operating = gross - totals['total_beban']
+    # laba_bersih TIDAK berubah oleh reclass (hanya pindah wadah):
+    #   laba_usaha + pendapatan_lain
+    #   = (pendapatan_usaha − hpp − beban) + pendapatan_lain
+    #   = (pendapatan_usaha + pendapatan_lain) − hpp − beban
+    #   = total PENDAPATAN (semua) − hpp − beban   ← rumus lama laba_bersih.
     return {'periode': gl.period(date_from, date_to), **groups, **totals,
-            'laba_kotor': gross, 'laba_bersih': gross-totals['total_beban']}
+            'laba_kotor': gross, 'laba_usaha': operating,
+            'laba_bersih': operating + totals['total_pendapatan_lain']}
 
 
 def get_neraca_saldo(db, date_from, date_to):
@@ -108,15 +137,20 @@ def get_buku_besar(db, akun_id, date_from, date_to):
     sign = 1 if account.saldo_normal == 'DEBIT' else -1
     opening = sign * gl.net(gl.totals(db, before=date_from).get(akun_id))
     q = db.query(gl.Line, gl.Journal).join(gl.Journal, gl.Journal.id == gl.Line.jurnal_umum_id).filter(gl.Line.akun_perkiraan_id == akun_id)
-    rows = gl.posted(db, q, date_from, date_to).order_by(gl.Journal.tanggal, gl.Journal.no_jurnal, gl.Line.id).all()
+    # m-10: urutkan tanggal ASC lalu kronologi posting (created_at/id) ASC supaya
+    # baris terakhir adalah transaksi terakhir periode (saldo berjalan konsisten).
+    rows = gl.posted(db, q, date_from, date_to).order_by(
+        gl.Journal.tanggal, gl.Journal.created_at, gl.Journal.id, gl.Line.id).all()
     balance, debit, credit, items = opening, gl.ZERO, gl.ZERO, []
     for line, journal in rows:
         balance += sign * (line.debit-line.kredit)
         debit += line.debit
         credit += line.kredit
+        # Kunci urut internal (dipakai get_mutasi_kas_bank; di-drop response schema).
         items.append({'tanggal': gl.local_datetime(journal.tanggal).date().isoformat(), 'no_jurnal': journal.no_jurnal,
                       'deskripsi': line.keterangan or journal.keterangan or '', 'debit': line.debit,
-                      'kredit': line.kredit, 'saldo': balance})
+                      'kredit': line.kredit, 'saldo': balance,
+                      '_created_at': journal.created_at, '_journal_id': journal.id, '_line_id': line.id})
     return {'akun': {'kode': account.kode, 'nama': account.nama}, 'periode': gl.period(date_from, date_to),
             'saldo_awal': opening, 'transaksi': items, 'total_debit': debit, 'total_kredit': credit, 'saldo_akhir': balance}
 
@@ -137,7 +171,10 @@ def get_mutasi_kas_bank(db, date_from, date_to, jenis=None):
     for key in _cash_mappings(db, jenis):
         report = get_buku_besar(db, key, date_from, date_to)
         items.extend(dict(row, akun=report['akun']['nama']) for row in report['transaksi'])
-    items.sort(key=lambda r: (r['tanggal'], r['no_jurnal'], r['akun']))
+    # m-10: urut tanggal ASC lalu kronologi posting (created_at/id) ASC — sebelumnya
+    # pembanding kedua no_jurnal sehingga jurnal back-date muncul di urutan yang salah
+    # dan baris terakhir belum tentu transaksi/saldo terakhir.
+    items.sort(key=lambda r: (r['tanggal'], r['_created_at'], r['_journal_id'], r['_line_id']))
     return {'periode': gl.period(date_from, date_to), 'transaksi': items}
 
 
@@ -172,7 +209,12 @@ def get_dashboard_cashflow(db, bulan, tahun):
 
 
 def get_dashboard_beban_biaya(db, bulan, tahun):
-    rows = _saldo_per_akun_list(db, gl.HeaderCOA.BEBAN, *gl.month_bounds(tahun, bulan))
+    # M-02: samakan klasifikasi dengan get_laba_rugi — overhead pabrik (52xxxx,
+    # header HPP) dipresentasikan sebagai beban operasional di widget ini juga.
+    bounds = gl.month_bounds(tahun, bulan)
+    rows = _saldo_per_akun_list(db, gl.HeaderCOA.BEBAN, *bounds)
+    rows += [r for r in _saldo_per_akun_list(db, gl.HeaderCOA.HPP, *bounds)
+             if r['kode_akun'].startswith('52')]
     return {'items': [{'nama_beban': r['nama_akun'], 'jumlah': r['total']} for r in sorted(rows, key=lambda r: r['total'], reverse=True)]}
 
 

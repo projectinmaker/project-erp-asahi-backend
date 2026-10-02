@@ -52,7 +52,10 @@ def _saldo_akun_persediaan_di_buku_besar(db: Session, akun_id: UUID, as_of: Opti
         JurnalUmum.status == StatusJurnal.POSTED,
     )
     if as_of is not None:
-        q = q.filter(JurnalUmum.tanggal <= local_datetime(as_of))
+        # B-04: inclusive end-of-day Jakarta bound — jurnal dokumen tersimpan sebagai
+        # instant 00:00 UTC (= 07:00 WIB) tanggal transaksi, jadi bound tengah malam
+        # memotong jurnal yang bertanggal hari as_of (lihat reporting_ledger.posted).
+        q = q.filter(JurnalUmum.tanggal <= day_end(as_of))
 
     debit, kredit = q.one()
     return (Decimal(str(debit or 0)) - Decimal(str(kredit or 0))).quantize(Decimal("0.01"))

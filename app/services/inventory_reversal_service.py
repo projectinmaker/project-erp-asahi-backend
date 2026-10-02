@@ -580,6 +580,17 @@ def reverse_delivery(
     db.add(pengiriman)
     db.flush()
 
+    # === 4. Refresh fulfillment_status SO (M-05) setelah delivery dibatalkan ===
+    # Reverse delivery mengembalikan qty terkirim → status SO (OPEN/PARTIAL/FULFILLED)
+    # harus dihitung ulang agar tidak "mentok" di FULFILLED.
+    try:
+        from app.services.penjualan_service import _refresh_fulfillment_status
+        _refresh_fulfillment_status(db, pengiriman.sales_order_id)
+    except Exception as exc:  # noqa: BLE001 — jangan gagalkan reversal karena refresh status
+        logger.warning(
+            f"Gagal refresh fulfillment_status SO {pengiriman.sales_order_id}: {exc}"
+        )
+
     logger.info(
         f"PengirimanBarang {pengiriman.no_surat_jalan} reversed: "
         f"{len(mutasi_list)} mutasi stok di-reverse, HPP journal di-reverse, "

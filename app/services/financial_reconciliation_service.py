@@ -45,12 +45,17 @@ def get_grni_reconciliation(
 ) -> Dict:
     """Rekonsiliasi Open GRNI vs GRNI GL account balance.
 
-    Logic:
-    - Open GRNI = sum of PenerimaanBarangDetail.qty * harga_perolehan
-      for PenerimaanBarang with status SELESAI and no linked PurchaseInvoice
-      (received but not yet invoiced)
+    Logic (M-01 — per RECEIPT DETAIL via bridge table, bukan receipt.purchase_invoice_id):
+    - Open GRNI = sum(PenerimaanBarangDetail.harga_perolehan * qty) HANYA untuk
+      detail penerimaan (header status SELESAI) yang TIDAK punya baris aktif di
+      ``purchase_invoice_receipt_match``. Satu detail dianggap "invoiced" bila
+      EXISTS baris match yang parent invoice-nya aktif (status DIPROSES/SELESAI,
+      join PurchaseInvoiceReceiptMatch -> PurchaseInvoiceDetail -> PurchaseInvoice).
+      (Kolom PenerimaanBarang.purchase_invoice_id tidak pernah diisi oleh flow
+      three-way match — path lama adalah dead code yang menyebabkan false
+      MISMATCH: penerimaan yang sudah di-invoice tetap dihitung "open".)
     - GRNI GL = sum(debit - kredit) of PENERIMAAN_DALAM_PROSES account
-      (from POSTED journals up to as_of)
+      (from POSTED journals up to as_of, inclusive end-of-day Jakarta — B-04)
 
     Sesuai Roadmap §26:
         "Open GRNI = GRNI GL" (Difference = 0)
@@ -69,9 +74,17 @@ def get_grni_reconciliation(
             "catatan": "..."
         }
     """
+    from sqlalchemy.orm import selectinload
     from app.models.transaksi.pembelian.penerimaan_barang import PenerimaanBarang
-    from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
+    from app.models.detail.purchase_invoice_receipt_match import PurchaseInvoiceReceiptMatch
+    from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
+    from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
     from app.models.transaksi.penjualan.sales_order import StatusPenjualan
+
+    # B-04: normalisasi as_of sekali ke akhir hari Jakarta agar bound jurnal
+    # (dan bound tanggal penerimaan) inclusive terhadap dokumen hari as_of.
+    if as_of is not None:
+        as_of = gl.day_end(gl.local_datetime(as_of))
 
     # Get GRNI account from settings
     grni_account_id = sa_cfg.get_akun_id(db, sa_cfg.KEY_PENERIMAAN_DALAM_PROSES)
@@ -94,12 +107,13 @@ def get_grni_reconciliation(
 
     grni_account = db.get(AkunPerkiraan, grni_account_id)
 
-    # === 1. Hitung Open GRNI dari PenerimaanBarang ===
-    # Open GRNI = PenerimaanBarang yang status SELESAI (received)
-    # dan belum di-link ke PurchaseInvoice (purchase_invoice_id IS NULL)
-    # ATAU linked ke invoice yang belum POSTED
+    # === 1. Hitung Open GRNI dari PenerimaanBarang (per detail) ===
+    # Open GRNI = detail penerimaan berstatus SELESAI yang belum di-invoice,
+    # dihitung per RECEIPT DETAIL lewat bridge table purchase_invoice_receipt_match
+    # (M-01; receipt.purchase_invoice_id tidak pernah diisi = dead path).
     open_receipts_query = (
         db.query(PenerimaanBarang)
+        .options(selectinload(PenerimaanBarang.details))
         .filter(PenerimaanBarang.status == StatusPenjualan.SELESAI)
     )
     if as_of is not None:
@@ -107,26 +121,34 @@ def get_grni_reconciliation(
 
     open_receipts = open_receipts_query.all()
 
+    # Satu query aggregate: detail penerimaan yang SUDAH di-invoice via match
+    # aktif (invoice DIPROSES/SELESAI) — hindari N+1 per receipt.
+    invoiced_detail_ids = {
+        row[0]
+        for row in (
+            db.query(PurchaseInvoiceReceiptMatch.penerimaan_barang_detail_id)
+            .join(
+                PurchaseInvoiceDetail,
+                PurchaseInvoiceDetail.id == PurchaseInvoiceReceiptMatch.purchase_invoice_detail_id,
+            )
+            .join(PurchaseInvoice, PurchaseInvoice.id == PurchaseInvoiceDetail.purchase_invoice_id)
+            .filter(PurchaseInvoice.status.in_((StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI)))
+            .distinct()
+            .all()
+        )
+    }
+
     open_grni_value = Decimal("0")
     open_count = 0
     for receipt in open_receipts:
-        # Cek apakah sudah ada PurchaseInvoice POSTED yang memakai receipt ini
-        has_posted_invoice = False
-        if receipt.purchase_invoice_id:
-            inv = db.query(PurchaseInvoice).filter_by(
-                id=receipt.purchase_invoice_id
-            ).first() if False else None  # avoid circular import — use simpler check
-            # Simplified: cek via purchase_invoice_id field
-            from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
-            inv = db.get(PurchaseInvoice, receipt.purchase_invoice_id)
-            if inv and inv.status in (StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI):
-                has_posted_invoice = True
-
-        if not has_posted_invoice:
-            # This receipt is "open" — belum di-invoice atau invoice belum posted
-            for detail in receipt.details:
-                harga = Decimal(str(detail.harga_perolehan or 0))
-                open_grni_value += harga * detail.qty
+        receipt_has_open_detail = False
+        for detail in receipt.details:
+            if detail.id in invoiced_detail_ids:
+                continue  # detail sudah di-invoice (match aktif) -> bukan GRNI open
+            harga = Decimal(str(detail.harga_perolehan or 0))
+            open_grni_value += harga * detail.qty
+            receipt_has_open_detail = True
+        if receipt_has_open_detail:
             open_count += 1
 
     # === 2. Hitung GRNI GL Balance ===
@@ -165,11 +187,13 @@ def get_grni_reconciliation(
         "match": match,
         "openReceiptsCount": open_count,
         "catatan": (
-            "Open GRNI = penerimaan barang SELESAI yang belum di-invoice "
-            "(atau invoice belum POSTED). GRNI GL = saldo akun PENERIMAAN_DALAM_PROSES. "
+            "Open GRNI = detail penerimaan barang SELESAI yang belum di-match ke "
+            "invoice aktif (via purchase_invoice_receipt_match). "
+            "GRNI GL = saldo akun PENERIMAAN_DALAM_PROSES. "
             "Selisih dapat terjadi jika: (1) penerimaan tanpa GRNI account configured, "
-            "(2) jurnal manual langsung ke akun GRNI, (3) invoice posted tapi receipt "
-            "belum di-link. Tidak ada koreksi otomatis."
+            "(2) jurnal manual langsung ke akun GRNI, (3) nilai invoice berbeda dengan "
+            "nilai perolehan penerimaan (partial match / selisih harga). "
+            "Tidak ada koreksi otomatis."
         ),
     }
 

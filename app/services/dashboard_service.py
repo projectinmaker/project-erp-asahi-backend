@@ -231,13 +231,17 @@ def get_balance_sheet_kpi_widget(
     """
     try:
         from app.services.laporan_service import get_neraca
-        from app.services.reporting_ledger import local_datetime
+        from app.services.reporting_ledger import local_datetime, day_end, JAKARTA
         from app.models.transaksi.jurnal import JurnalUmum, StatusJurnal
         from app.models.detail.jurnal_detail import JurnalDetail
         from app.models.master.kas_bank_akun import KasBankAkun
 
         if as_of is None:
-            as_of = local_datetime(datetime.utcnow())
+            # B-04: default "sekarang" Jakarta (bukan local_datetime(utcnow())).
+            as_of = datetime.now(JAKARTA)
+        # B-04: normalisasi ke akhir hari Jakarta supaya bound GL inclusive
+        # terhadap jurnal yang bertanggal hari as_of (instant 00:00 UTC).
+        as_of = day_end(local_datetime(as_of))
 
         # === 1. AR outstanding (from aging) ===
         try:

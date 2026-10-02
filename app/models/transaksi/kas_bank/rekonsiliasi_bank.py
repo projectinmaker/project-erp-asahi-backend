@@ -1,33 +1,54 @@
 import enum
-from sqlalchemy import (Column, String, Text, Numeric, ForeignKey, DateTime,
-    UniqueConstraint)
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
+
 from app.database import BaseModel
 from app.models.base import BaseMixin
 
 
-class StatusRekonsiliasi(str, enum.Enum):
+class StatusRekonsiliasi(enum.StrEnum):
     DRAFT = "DRAFT"
     SELESAI = "SELESAI"
     BATAL = "BATAL"
 
 
-class TipeRekonsiliasiDetail(str, enum.Enum):
+class TipeRekonsiliasiDetail(enum.StrEnum):
     MEMO = "MEMO"                # Info only, no journal (outstanding cek, deposit in transit)
     PENYESUAIAN = "PENYESUAIAN"  # Will be journalized (bank charges, interest)
 
 
-class SisiPenyesuaian(str, enum.Enum):
+class SisiPenyesuaian(enum.StrEnum):
     DEBIT = "DEBIT"
     KREDIT = "KREDIT"
 
 
 class RekonsiliasiBank(BaseModel, BaseMixin):
     __tablename__ = "rekonsiliasi_bank"
+    # B-01 (Update #7): partial unique index — hanya baris status aktif
+    # (DRAFT/SELESAI) yang unik per (kas_bank_akun_id, tanggal_akhir).
+    # Baris BATAL (hasil void) tidak memblokir periode, sehingga periode yang
+    # rekonsiliasinya dibatalkan bisa dibuat ulang. Dibentuk oleh migrasi
+    # d7e8f9g0h1i2 sebagai pengganti UniqueConstraint
+    # uq_rekonsiliasi_bank_kas_tanggal (yang berlaku untuk semua status).
     __table_args__ = (
-        UniqueConstraint("kas_bank_akun_id", "tanggal_akhir",
-                         name="uq_rekonsiliasi_bank_kas_tanggal"),
+        Index(
+            "uq_rekonsiliasi_bank_kas_tanggal_active",
+            "kas_bank_akun_id",
+            "tanggal_akhir",
+            unique=True,
+            postgresql_where=text("status <> 'BATAL'"),
+        ),
     )
 
     kas_bank_akun_id = Column(UUID(as_uuid=True), ForeignKey("kas_bank_akun.id"), nullable=False)

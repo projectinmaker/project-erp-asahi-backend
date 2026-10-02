@@ -73,12 +73,17 @@ class PerubahanModalResponse(BaseSchema):
 class LabaRugiResponse(BaseSchema):
     periode: Periode
     pendapatan: List[AkunItem] = []
+    # M-02: PENDAPATAN dengan report_group OTHER_INCOME (421xxx) — pendapatan lain-lain.
+    pendapatan_lain: list[AkunItem] = []
     hpp: List[AkunItem] = []
     beban: List[AkunItem] = []
     total_pendapatan: Decimal = Decimal("0")
+    total_pendapatan_lain: Decimal = Decimal("0")
     total_hpp: Decimal = Decimal("0")
     total_beban: Decimal = Decimal("0")
     laba_kotor: Decimal = Decimal("0")
+    # M-02: laba_usaha = laba_kotor − total_beban (beban memuat overhead pabrik 52xxxx).
+    laba_usaha: Decimal = Decimal("0")
     laba_bersih: Decimal = Decimal("0")
 
 

@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
@@ -106,6 +107,8 @@ def get_sales_order_list(
         joinedload(SalesOrder.syarat_bayar),
         joinedload(SalesOrder.creator),
         joinedload(SalesOrder.details).joinedload(SalesOrderDetail.barang),
+        # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
+        joinedload(SalesOrder.details).joinedload(SalesOrderDetail.satuan),
         joinedload(SalesOrder.biaya_tambahan),
     )
 
@@ -139,6 +142,8 @@ def get_sales_order_by_id(db: Session, so_id: UUID) -> Optional[SalesOrder]:
             joinedload(SalesOrder.creator),
             joinedload(SalesOrder.jurnal),
             joinedload(SalesOrder.details).joinedload(SalesOrderDetail.barang),
+            # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
+            joinedload(SalesOrder.details).joinedload(SalesOrderDetail.satuan),
             joinedload(SalesOrder.biaya_tambahan),
         )
         .filter(SalesOrder.id == so_id)
@@ -241,6 +246,10 @@ def create_sales_order(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
+                # Update #7 (B-05): persist satuan per baris (schema Phase B sudah
+                # punya field; sebelumnya diabaikan → kolom DB selalu NULL dan FE
+                # menampilkan dialog warning "satuan belum tersimpan").
+                satuan_id=d.get("satuan_id"),
             )
             db.add(detail)
 
@@ -1061,6 +1070,76 @@ def update_pengiriman(
     return db_obj
 
 
+def _refresh_fulfillment_status(db: Session, sales_order_id: UUID) -> None:
+    """Update #7 (M-05): hitung ulang ``SalesOrder.fulfillment_status``.
+
+    Kolom ini sebelumnya tidak pernah ditulis oleh kode mana pun (field mati)
+    sehingga SO yang sudah 100% dikirim tetap tampil "-" di UI.
+
+    Aturan (Catatan Sales Order §8):
+    - ``OPEN``      — belum ada baris SO yang terkirim (semua delivered 0)
+    - ``PARTIAL``   — sebagian baris/qty terkirim (ada 0 < delivered < qty,
+                      atau sebagian baris penuh & sisanya belum)
+    - ``FULFILLED`` — semua baris SO terkirim penuh (delivered >= qty)
+    (``CLOSED`` tidak pernah diset otomatis — butuh keputusan manual.)
+
+    Sumber pengiriman dihitung HANYA dari PengirimanBarang berstatus SELESAI
+    (pengiriman DIPROSES belum mengurangi stok; DIBATALKAN tidak berlaku).
+    Satu query agregat ``GROUP BY sales_order_detail_id`` untuk semua baris
+    (menghindari N+1 per detail).
+    """
+    if sales_order_id is None:
+        return
+
+    detail_rows = (
+        db.query(SalesOrderDetail.id, SalesOrderDetail.qty)
+        .filter(SalesOrderDetail.sales_order_id == sales_order_id)
+        .all()
+    )
+    if not detail_rows:
+        return
+
+    delivered = dict(
+        db.query(
+            PengirimanBarangDetail.sales_order_detail_id,
+            func.coalesce(func.sum(PengirimanBarangDetail.qty), 0),
+        )
+        .join(PengirimanBarang, PengirimanBarangDetail.pengiriman_id == PengirimanBarang.id)
+        .filter(
+            PengirimanBarang.sales_order_id == sales_order_id,
+            PengirimanBarang.status == StatusPenjualan.SELESAI,
+            PengirimanBarangDetail.sales_order_detail_id.in_(
+                [row.id for row in detail_rows]
+            ),
+        )
+        .group_by(PengirimanBarangDetail.sales_order_detail_id)
+        .all()
+    )
+
+    fully = partly = 0
+    for sod_id, qty in detail_rows:
+        delivered_qty = int(delivered.get(sod_id, 0) or 0)
+        if delivered_qty <= 0:
+            continue
+        if delivered_qty < qty:
+            partly += 1
+        else:
+            fully += 1
+
+    if fully == len(detail_rows):
+        new_status = "FULFILLED"
+    elif fully or partly:
+        new_status = "PARTIAL"
+    else:
+        new_status = "OPEN"
+
+    so = db.get(SalesOrder, sales_order_id)
+    # Set hanya bila nilainya berubah — hindari flush dirty yang tidak perlu.
+    if so is not None and so.fulfillment_status != new_status:
+        so.fulfillment_status = new_status
+        db.add(so)
+
+
 @atomic_accounting_write
 def cancel_pengiriman(db: Session, db_obj: PengirimanBarang, user_id: Optional[UUID] = None) -> PengirimanBarang:
     """Batalkan pengiriman."""
@@ -1070,6 +1149,9 @@ def cancel_pengiriman(db: Session, db_obj: PengirimanBarang, user_id: Optional[U
     if getattr(db_obj, "jurnal_umum_id", None):
         reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusPenjualan.DIBATALKAN
+    # Update #7 (M-05): pengiriman yang dibatalkan tidak lagi menghitung ke
+    # delivered SO — refresh supaya fulfillment_status mundur (PARTIAL/OPEN).
+    _refresh_fulfillment_status(db, db_obj.sales_order_id)
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
@@ -1164,6 +1246,11 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
                 created_by=db_obj.created_by,
             )
             db_obj.jurnal_umum_id = jurnal.id
+
+        # Update #7 (M-05): setelah stok + jurnal HPP sukses (sebelum commit),
+        # hitung ulang fulfillment_status SO (OPEN/PARTIAL/FULFILLED) — kolom
+        # ini sebelumnya tidak pernah ditulis siapa pun (field mati).
+        _refresh_fulfillment_status(db, db_obj.sales_order_id)
 
         db.add(db_obj)
         db.commit()

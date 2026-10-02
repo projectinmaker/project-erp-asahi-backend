@@ -261,6 +261,9 @@ def create_purchase_invoice(
             keterangan=data_in.keterangan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
+            # Update #7 (B-06): teruskan link PO sumber — sebelumnya field schema
+            # ini diabaikan sehingga purchase_invoice.purchase_order_id selalu NULL.
+            purchase_order_id=data_in.purchase_order_id,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         workflow_service.direct_complete(db, current_user, 'purchase_invoice', obj.id)
@@ -292,8 +295,10 @@ def update_purchase_invoice(
 ):
     """Update data Purchase Invoice (header only).
 
-    Field schema yang tidak didukung service (purchase_order_id/invoice_type)
-    diabaikan agar tidak memicu HTTP 500 — update bersifat header-only.
+    Field schema yang tidak didukung service (invoice_type) diabaikan agar
+    tidak memicu HTTP 500 — update bersifat header-only.
+    Update #7 (B-06): `purchase_order_id` kini didukung service dan ikut
+    diteruskan oleh _service_kwargs bila dikirim (link/ubah PO sumber).
     """
     item = svc.get_purchase_invoice_by_id(db, inv_id)
     if not item:

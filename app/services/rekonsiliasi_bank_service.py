@@ -1,23 +1,32 @@
-from app.services.accounting_control import atomic_accounting_write
-from app.services.posting_service import reverse_journal
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
 
-from app.models.transaksi.kas_bank.rekonsiliasi_bank import (
-    RekonsiliasiBank, RekonsiliasiBankDetail,
-    StatusRekonsiliasi, TipeRekonsiliasiDetail, SisiPenyesuaian,
-)
-from app.models.transaksi.jurnal import JurnalUmum, StatusJurnal, RefModule
+from app.models.akun_perkiraan import AkunPerkiraan, SaldoNormal
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.models.master.kas_bank_akun import KasBankAkun
-from app.models.akun_perkiraan import AkunPerkiraan, SaldoNormal
-from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal
+from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
+from app.models.transaksi.kas_bank.rekonsiliasi_bank import (
+    RekonsiliasiBank,
+    RekonsiliasiBankDetail,
+    SisiPenyesuaian,
+    StatusRekonsiliasi,
+    TipeRekonsiliasiDetail,
+)
+from app.services.accounting_control import atomic_accounting_write
+from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal, reverse_journal
+
+# ============================================================
+# HELPER: Format nilai uang (format ribuan Indonesia)
+# ============================================================
+
+def _format_rupiah(nilai: Decimal) -> str:
+    """Format nilai uang untuk pesan validasi, mis. 25000.0 → "Rp 25.000" (m-01)."""
+    return f"Rp {nilai:,.0f}".replace(",", ".")
 
 
 # ============================================================
@@ -72,11 +81,11 @@ def compute_saldo_buku(db: Session, kas_bank_akun_id: UUID, tanggal_akhir: datet
 
 def get_rekonsiliasi_list(
     db: Session,
-    kas_bank_akun_id: Optional[UUID] = None,
-    status: Optional[str] = None,
+    kas_bank_akun_id: UUID | None = None,
+    status: str | None = None,
     skip: int = 0,
     limit: int = 100,
-) -> Tuple[List[RekonsiliasiBank], int]:
+) -> tuple[list[RekonsiliasiBank], int]:
     """Ambil daftar rekonsiliasi bank dengan filter & pagination."""
     query = db.query(RekonsiliasiBank).options(
         joinedload(RekonsiliasiBank.kas_bank),
@@ -100,7 +109,7 @@ def get_rekonsiliasi_list(
 # GET BY ID
 # ============================================================
 
-def get_rekonsiliasi_by_id(db: Session, rekonsiliasi_id: UUID) -> Optional[RekonsiliasiBank]:
+def get_rekonsiliasi_by_id(db: Session, rekonsiliasi_id: UUID) -> RekonsiliasiBank | None:
     """Ambil 1 rekonsiliasi berdasarkan ID dengan semua detail."""
     return (
         db.query(RekonsiliasiBank)
@@ -126,13 +135,13 @@ def create_rekonsiliasi(
     tanggal_akhir: datetime,
     saldo_bank: Decimal,
     user_id: UUID,
-    keterangan: Optional[str] = None,
+    keterangan: str | None = None,
 ) -> RekonsiliasiBank:
     """Buat rekonsiliasi bank baru (status DRAFT).
 
     1. Validasi kas_bank exists dan aktif
-    2. Cek belum ada rekonsiliasi SELESAI untuk kas_bank + tanggal yang sama
-       (duplikat check)
+    2. Cek belum ada rekonsiliasi AKTIF (DRAFT/SELESAI) untuk kas_bank +
+       tanggal yang sama (duplikat check; baris BATAL tidak memblokir — B-01)
     3. Cek cutoff lock: tidak ada rekonsiliasi SELESAI setelah tanggal_akhir
        (Roadmap §23: "Reconciled cutoff lock")
     4. Compute saldo_buku dari jurnal
@@ -141,7 +150,8 @@ def create_rekonsiliasi(
     """
     # === Phase 6: pakai helper validate_active_kas_bank ===
     from app.services.cash_bank_validation import (
-        validate_active_kas_bank, validate_reconciliation_cutoff_lock,
+        validate_active_kas_bank,
+        validate_reconciliation_cutoff_lock,
     )
     try:
         kb = validate_active_kas_bank(db, kas_bank_akun_id, "Rekonsiliasi Bank")
@@ -152,21 +162,33 @@ def create_rekonsiliasi(
             KasBankAkun.status == "AKTIF",
         ).first()
         if not kb:
-            raise ValueError(f"Kas/Bank tidak ditemukan atau tidak aktif")
+            raise ValueError("Kas/Bank tidak ditemukan atau tidak aktif") from None
 
-    # Cek duplikat: tidak boleh ada rekonsiliasi SELESAI untuk periode yang sama
+    # Cek duplikat: tidak boleh ada rekonsiliasi AKTIF (DRAFT/SELESAI) untuk
+    # periode yang sama (B-01). Baris BATAL tidak dianggap duplikat — sesuai
+    # partial unique index uq_rekonsiliasi_bank_kas_tanggal_active
+    # (WHERE status <> 'BATAL'), periode yang rekonsiliasinya di-void
+    # bisa dipakai ulang.
     existing = (
         db.query(RekonsiliasiBank)
         .filter(
             RekonsiliasiBank.kas_bank_akun_id == kas_bank_akun_id,
             RekonsiliasiBank.tanggal_akhir == tanggal_akhir,
-            RekonsiliasiBank.status == StatusRekonsiliasi.SELESAI.value,
+            RekonsiliasiBank.status.in_(
+                [StatusRekonsiliasi.DRAFT.value, StatusRekonsiliasi.SELESAI.value]
+            ),
         )
         .first()
     )
     if existing:
+        tanggal_str = tanggal_akhir.strftime("%d/%m/%Y")
+        if existing.status == StatusRekonsiliasi.SELESAI.value:
+            raise ValueError(
+                f"Sudah ada rekonsiliasi SELESAI untuk {kb.nama} per {tanggal_str}"
+            )
         raise ValueError(
-            f"Sudah ada rekonsiliasi SELESAI untuk {kb.nama} per {tanggal_akhir.strftime('%d/%m/%Y')}"
+            f"Sudah ada rekonsiliasi DRAFT untuk {kb.nama} per {tanggal_str} — "
+            f"selesaikan atau batalkan rekonsiliasi tersebut terlebih dahulu"
         )
 
     # === Phase 6: Cek cutoff lock ===
@@ -178,7 +200,7 @@ def create_rekonsiliasi(
             context=f"Rekonsiliasi {kb.nama} per {tanggal_akhir.strftime('%d/%m/%Y')}",
         )
     except ValueError as e:
-        raise ValueError(str(e))
+        raise ValueError(str(e)) from e
 
     # Compute saldo buku
     saldo_buku = compute_saldo_buku(db, kas_bank_akun_id, tanggal_akhir)
@@ -212,8 +234,8 @@ def create_rekonsiliasi(
 def update_rekonsiliasi(
     db: Session,
     db_obj: RekonsiliasiBank,
-    saldo_bank: Optional[Decimal] = None,
-    keterangan: Optional[str] = None,
+    saldo_bank: Decimal | None = None,
+    keterangan: str | None = None,
 ) -> RekonsiliasiBank:
     """Update header rekonsiliasi (hanya saldo_bank & keterangan).
 
@@ -250,7 +272,7 @@ def add_detail(
     keterangan: str,
     jumlah: Decimal,
     sisi: str,
-    akun_perkiraan_id: Optional[UUID] = None,
+    akun_perkiraan_id: UUID | None = None,
 ) -> RekonsiliasiBankDetail:
     """Tambah detail line ke rekonsiliasi (hanya DRAFT)."""
     rek = db.query(RekonsiliasiBank).filter(RekonsiliasiBank.id == rekonsiliasi_id).first()
@@ -293,10 +315,10 @@ def add_detail(
 def update_detail(
     db: Session,
     detail_id: UUID,
-    keterangan: Optional[str] = None,
-    jumlah: Optional[Decimal] = None,
-    sisi: Optional[str] = None,
-    akun_perkiraan_id: Optional[UUID] = None,
+    keterangan: str | None = None,
+    jumlah: Decimal | None = None,
+    sisi: str | None = None,
+    akun_perkiraan_id: UUID | None = None,
 ) -> RekonsiliasiBankDetail:
     """Update detail line (hanya DRAFT)."""
     detail = db.query(RekonsiliasiBankDetail).filter(RekonsiliasiBankDetail.id == detail_id).first()
@@ -386,14 +408,11 @@ def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> 
     # Compute nets from details
     penyesuaian_net = Decimal("0")
     memo_net = Decimal("0")
-    penyesuaian_items: List[RekonsiliasiBankDetail] = []
+    penyesuaian_items: list[RekonsiliasiBankDetail] = []
 
     for d in rek.details:
         amount = Decimal(str(d.jumlah))
-        if d.sisi == SisiPenyesuaian.DEBIT.value:
-            signed = amount
-        else:
-            signed = -amount
+        signed = amount if d.sisi == SisiPenyesuaian.DEBIT.value else -amount
 
         if d.tipe == TipeRekonsiliasiDetail.PENYESUAIAN.value:
             penyesuaian_net += signed
@@ -409,8 +428,9 @@ def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> 
     if diff > Decimal("0.01"):  # Tolerance 1 cent
         raise ValueError(
             f"Rekonsiliasi tidak balance. "
-            f"Adjusted Buku: {adjusted_buku}, Adjusted Bank: {adjusted_bank}, "
-            f"Selisih: {diff}. Tambahkan detail untuk menyeimbangkan."
+            f"Adjusted Buku: {_format_rupiah(adjusted_buku)}, "
+            f"Adjusted Bank: {_format_rupiah(adjusted_bank)}, "
+            f"Selisih: {_format_rupiah(diff)}. Tambahkan detail untuk menyeimbangkan."
         )
 
     # Jurnal penyesuaian wajib berhasil sebelum rekonsiliasi diselesaikan.
@@ -440,9 +460,9 @@ def complete_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID) -> 
 def _create_adjustment_journal(
     db: Session,
     rek: RekonsiliasiBank,
-    items: List[RekonsiliasiBankDetail],
+    items: list[RekonsiliasiBankDetail],
     user_id: UUID,
-) -> Optional[UUID]:
+) -> UUID | None:
     """Buat jurnal penyesuaian untuk PENYESUAIAN items.
 
     DEBIT item: D-KasBank, K-akun_perkiraan (e.g., bank interest)
@@ -454,7 +474,7 @@ def _create_adjustment_journal(
         return None
 
     kas_bank_akun_id = rek.kas_bank.akun_perkiraan_id
-    entries: List[JurnalEntryItem] = []
+    entries: list[JurnalEntryItem] = []
 
     for item in items:
         if not item.akun_perkiraan_id:
@@ -508,7 +528,7 @@ def _create_adjustment_journal(
 # ============================================================
 
 @atomic_accounting_write
-def void_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: Optional[UUID] = None) -> RekonsiliasiBank:
+def void_rekonsiliasi(db: Session, rekonsiliasi_id: UUID, user_id: UUID | None = None) -> RekonsiliasiBank:
     """Batalkan rekonsiliasi (SELESAI/DRAFT → BATAL).
 
     Catatan: Jurnal penyesuaian TIDAK dihapus (audit trail).

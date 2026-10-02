@@ -347,13 +347,22 @@ def post_existing(db, obj, actor_id):
         'pembayaran_kas': cash.post_pembayaran, 'penerimaan_kas': cash.post_penerimaan, 'transfer_bank': cash.post_transfer,
     }
     if obj.__tablename__ == 'jurnal_umum':
-        from app.services.posting_service import validate_entries, JurnalEntryItem
+        from loguru import logger
+        from app.services.posting_service import validate_entries, JurnalEntryItem, sync_kas_bank_saldo
         from app.models.transaksi.jurnal import StatusJurnal
         entries = [JurnalEntryItem(r.akun_perkiraan_id, r.debit, r.kredit) for r in obj.details]
         debit, kredit = validate_entries(db, entries, is_manual=True)
         if debit != obj.total_debit or kredit != obj.total_kredit:
             raise ValueError('Total jurnal draft tidak sesuai detail')
         obj.status = StatusJurnal.POSTED
+        # M-03: flush status POSTED dulu — SessionLocal memakai autoflush=False,
+        # tanpa flush eksplisit agregat sync_kas_bank_saldo tidak melihat jurnal
+        # yang baru saja diposting (saldo master tertinggal sebesar jurnal ini).
+        db.flush()
+        try:
+            sync_kas_bank_saldo(db, {r.akun_perkiraan_id for r in obj.details})
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan posting
+            logger.warning(f"Sync saldo kas/bank dilewati (post jurnal manual {obj.no_jurnal}): {sync_exc}")
     elif obj.__tablename__ in ('pembayaran_kas', 'penerimaan_kas'):
         # Deteksi settlement: kalau punya allocation (relasi `alokasi`), pass is_settlement=True
         # supaya RefModule canonical (AR_SETTLEMENT / AP_SETTLEMENT) dipakai.

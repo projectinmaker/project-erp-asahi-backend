@@ -131,6 +131,8 @@ def get_purchase_order_list(
         joinedload(PurchaseOrder.supplier),
         joinedload(PurchaseOrder.creator),
         joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.barang),
+        # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
+        joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.satuan),
         joinedload(PurchaseOrder.biaya_tambahan),
     )
 
@@ -163,6 +165,8 @@ def get_purchase_order_by_id(db: Session, po_id: UUID) -> Optional[PurchaseOrder
             joinedload(PurchaseOrder.creator),
             joinedload(PurchaseOrder.jurnal),
             joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.barang),
+            # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
+            joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.satuan),
             joinedload(PurchaseOrder.biaya_tambahan),
         )
         .filter(PurchaseOrder.id == po_id)
@@ -247,6 +251,10 @@ def create_purchase_order(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
+                # Update #7 (B-05): persist satuan per baris (schema Phase B sudah
+                # punya field; sebelumnya diabaikan → kolom DB selalu NULL dan FE
+                # menampilkan dialog warning "satuan belum tersimpan").
+                satuan_id=d.get("satuan_id"),
             )
             db.add(detail)
 
@@ -354,6 +362,8 @@ def get_purchase_invoice_list(
     """Ambil daftar purchase invoice dengan filter & pagination."""
     query = db.query(PurchaseInvoice).options(
         joinedload(PurchaseInvoice.supplier),
+        # Update #7 (B-06): eager-load PO sumber — kolom "PO" di UI & form retur
+        joinedload(PurchaseInvoice.purchase_order),
         joinedload(PurchaseInvoice.creator),
         joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.barang).joinedload(Barang.satuan),
         joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.satuan),
@@ -387,6 +397,8 @@ def get_purchase_invoice_by_id(db: Session, inv_id: UUID) -> Optional[PurchaseIn
         db.query(PurchaseInvoice)
         .options(
             joinedload(PurchaseInvoice.supplier),
+            # Update #7 (B-06): eager-load PO sumber — kolom "PO" di UI & form retur
+            joinedload(PurchaseInvoice.purchase_order),
             joinedload(PurchaseInvoice.creator),
             joinedload(PurchaseInvoice.jurnal),
             joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.barang).joinedload(Barang.satuan),
@@ -414,6 +426,8 @@ def create_purchase_invoice(
     created_by: Optional[UUID] = None,
     tanggal_jatuh_tempo=None,
     syarat_bayar_id=None,
+    # Update #7 (B-06): link invoice ke Purchase Order sumber (opsional).
+    purchase_order_id: UUID | None = None,
 ) -> PurchaseInvoice:
     """Buat PurchaseInvoice baru beserta detail + biaya tambahan."""
     try:
@@ -456,6 +470,11 @@ def create_purchase_invoice(
             status=StatusPenjualan.DRAFT,
             keterangan=keterangan,
             created_by=created_by,
+            # Update #7 (B-06): persist link ke PO sumber — sebelumnya field
+            # schema PurchaseInvoiceBase.purchase_order_id tidak pernah
+            # diteruskan ke sini sehingga kolom DB selalu NULL ("-" di UI
+            # dan form retur tidak auto-terisi).
+            purchase_order_id=purchase_order_id,
         )
         db.add(inv)
         db.flush()
@@ -518,6 +537,8 @@ def update_purchase_invoice(
     tanggal_jatuh_tempo=None,
     syarat_bayar_id=None,
     details: list | None = None,
+    # Update #7 (B-06): link/ubah PO sumber saat invoice masih draft.
+    purchase_order_id: UUID | None = None,
 ) -> PurchaseInvoice:
     """Update data purchase invoice (field header + opsional replace detail)."""
     require_unposted(db_obj)
@@ -540,6 +561,10 @@ def update_purchase_invoice(
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+    # Update #7 (B-06): set link PO bila dikirim (semua pemanggil lama tanpa
+    # field ini tidak terpengaruh — default None berarti tidak diubah).
+    if purchase_order_id is not None:
+        db_obj.purchase_order_id = purchase_order_id
 
     # Update #3 — penggantian baris detail (persist link source-line
     # purchase_order_detail_id / penerimaan_barang_detail_id + satuan_id)

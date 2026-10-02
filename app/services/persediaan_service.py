@@ -44,9 +44,15 @@ _UNSET = object()
 def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
     """Tentukan COA Persediaan untuk barang.
 
-    Algoritma (Tahap 2):
+    Algoritma (Update #7 / M-08):
     1. Jika `barang.akun_persediaan_id` diisi -> pakai mapping tersebut.
-    2. Jika tidak, fallback ke mapping kategori/default (Tahap 1 behavior):
+    2. Fallback berdasarkan `barang.item_type` (konsisten dengan auto-map UI
+       master barang — inventory_account_candidates):
+       - BARANG_DAGANG / BARANG_JADI -> PERSEDIAAN_BARANG_JADI
+       - BARANG_BAKU                 -> PERSEDIAAN_BAHAN_BAKU
+       - BARANG_BANTU                -> PERSEDIAAN_BAHAN_PEMBANTU
+       - JASA / None / tidak dikenal -> lanjut langkah 3.
+    3. Fallback mapping kategori/default (Tahap 1 behavior):
        - 'Bahan Baku' / 'BAKU'      -> PERSEDIAAN_BAHAN_BAKU
        - 'WIP' / 'Dalam Proses'      -> PERSEDIAAN_WIP
        - 'Barang Jadi' / 'JADI'      -> PERSEDIAAN_BARANG_JADI
@@ -55,7 +61,7 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
 
     Catatan:
     - Mapping per-barang (Tahap 1) bersifat opsional; barang lama yang belum
-      dipetakan akan tetap menggunakan mapping kategori/default. Ini menjaga
+      dipetakan akan tetap menggunakan fallback item_type/kategori. Ini menjaga
       kompatibilitas dengan transaksi yang sudah ada.
     - Akun NONAKTIF yang sudah dipetakan tetap dipakai (mapping historis);
     - Jika mapping barang mengarah ke akun yang tidak valid secara struktural,
@@ -68,6 +74,29 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
     """
     if getattr(barang, "akun_persediaan_id", None):
         return barang.akun_persediaan_id
+
+    # 2. Fallback item_type (M-08) — konsisten dengan auto-map UI master barang:
+    # BARANG_DAGANG/BARANG_JADI -> INVENTORY_FINISHED (Persediaan Barang Jadi),
+    # bukan lagi jatuh ke PERSEDIAAN_BAHAN_BAKU saat kategori tidak dikenali.
+    from app.models.master.barang import ItemTypeBarang
+
+    item_type = getattr(barang, "item_type", None)
+    if item_type in (ItemTypeBarang.BARANG_DAGANG, ItemTypeBarang.BARANG_JADI):
+        return sa_cfg.get_akun_id_or_raise(
+            db, sa_cfg.KEY_PERSEDIAAN_BARANG_JADI,
+            f"Barang {barang.kode} (item_type={getattr(item_type, 'value', item_type)})",
+        )
+    if item_type == ItemTypeBarang.BARANG_BAKU:
+        return sa_cfg.get_akun_id_or_raise(
+            db, sa_cfg.KEY_PERSEDIAAN_BAHAN_BAKU,
+            f"Barang {barang.kode} (item_type={getattr(item_type, 'value', item_type)})",
+        )
+    if item_type == ItemTypeBarang.BARANG_BANTU:
+        return sa_cfg.get_akun_id_or_raise(
+            db, sa_cfg.KEY_PERSEDIAAN_BAHAN_PEMBANTU,
+            f"Barang {barang.kode} (item_type={getattr(item_type, 'value', item_type)})",
+        )
+    # item_type None / JASA / tidak dikenal -> lanjut fallback kategori-nama.
 
     if not barang.kategori:
         raise ValueError(

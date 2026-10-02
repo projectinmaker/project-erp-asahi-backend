@@ -50,7 +50,11 @@ def posted(db, query, start=None, end=None, before=None, performance=False):
     if start is not None:
         query = query.filter(Journal.tanggal >= local_datetime(start))
     if end is not None:
-        query = query.filter(Journal.tanggal <= local_datetime(end))
+        # B-04: document journals are stored as 00:00 UTC (= 07:00 WIB) of the business
+        # date, while local_datetime(end) is midnight Jakarta (= 17:00 UTC the day before),
+        # so an inclusive bound at midnight would cut off every journal dated on `end`.
+        # Bound inclusively at end-of-day Jakarta so day-H transactions are included.
+        query = query.filter(Journal.tanggal <= day_end(end))
     if before is not None:
         query = query.filter(Journal.tanggal < local_datetime(before))
     if performance:

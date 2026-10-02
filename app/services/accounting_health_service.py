@@ -74,8 +74,13 @@ def get_accounting_health(
         }
     """
     if as_of is None:
-        from app.services.reporting_ledger import local_datetime
-        as_of = local_datetime(datetime.utcnow())
+        # B-04: default ke "sekarang" Jakarta. Jangan pakai local_datetime(utcnow()):
+        # utcnow() bukan jam Jakarta, sehingga tanggalnya bisa melenceng satu hari.
+        as_of = datetime.now(gl.JAKARTA)
+    # B-04: normalisasi sekali ke akhir hari Jakarta agar SEMUA bound turunan
+    # (neraca saldo / neraca / aging / saldo GL / GRNI) bersifat inclusive —
+    # jurnal dokumen bertanggal hari as_of (instant 00:00 UTC) ikut terhitung.
+    as_of = gl.day_end(gl.local_datetime(as_of))
 
     # Untuk periode-based reconciliation (cash flow, equity), pakai awal tahun sampai as_of
     year = as_of.year

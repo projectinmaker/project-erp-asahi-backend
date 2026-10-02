@@ -12,7 +12,7 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import func, text
 from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
@@ -196,6 +196,17 @@ def auto_posting_jurnal(
         db.flush()
         db.refresh(jurnal)
 
+        # M-03: jaga snapshot saldo master kas/bank tetap sinkron dengan GL.
+        # Cukup akun yang tersentung jurnal ini; kegagalan sync tidak boleh
+        # menggagalkan posting bisnis (log warning saja, tanpa rollback
+        # supaya transaksi pending tidak dirusak).
+        try:
+            synced = sync_kas_bank_saldo(db, {e.akun_perkiraan_id for e in entries})
+            if synced:
+                logger.debug(f"Sync saldo kas/bank: {synced} akun diperbarui ({jurnal.no_jurnal})")
+        except Exception as sync_exc:  # noqa: BLE001
+            logger.warning(f"Sync saldo kas/bank dilewati ({jurnal.no_jurnal}): {sync_exc}")
+
         logger.info(
             f"Jurnal prepared: {jurnal.no_jurnal} | ref={ref_no} | "
             f"D={total_debit} K={total_kredit} | {len(entries)} details"
@@ -207,6 +218,64 @@ def auto_posting_jurnal(
         # Hanya log error dan re-raise agar caller bisa memutuskan.
         logger.error(f"Error auto-posting jurnal: {e}")
         raise
+
+
+def sync_kas_bank_saldo(db: Session, akun_perkiraan_ids=None) -> int:
+    """M-03: sinkronkan KasBankAkun.saldo (snapshot master) dengan saldo GL.
+
+    Saldo GL per akun = sum(debit) - sum(kredit) dari JurnalDetail JOIN JurnalUmum
+    yang berstatus POSTED (satu query agregat, group by akun).
+
+    Parameter:
+        db: SQLAlchemy Session
+        akun_perkiraan_ids: bila None -> sinkronkan SEMUA baris KasBankAkun;
+            bila diberikan -> hanya kas_bank_akun yang akun_perkiraan_id-nya
+            termasuk dalam koleksi itu (dipakai hook auto_posting_jurnal agar
+            murah — hanya akun kas/bank yang benar-benar tersentung jurnal).
+
+    Return: jumlah baris kas_bank_akun yang saldonya berubah.
+
+    Fungsi ini TIDAK commit (mengikuti pola auto_posting_jurnal yang flush
+    tanpa commit); caller bertanggung jawab atas commit/rollback transaksi.
+    """
+    from app.models.master.kas_bank_akun import KasBankAkun
+
+    query = db.query(KasBankAkun)
+    if akun_perkiraan_ids is not None:
+        ids = list({a for a in akun_perkiraan_ids if a is not None})
+        if not ids:
+            return 0
+        query = query.filter(KasBankAkun.akun_perkiraan_id.in_(ids))
+    rows = query.all()
+    if not rows:
+        return 0
+
+    # Satu query agregat untuk semua akun yang relevan (hindari N+1).
+    balances = dict(
+        db.query(
+            JurnalDetail.akun_perkiraan_id,
+            func.coalesce(func.sum(JurnalDetail.debit), 0) - func.coalesce(func.sum(JurnalDetail.kredit), 0),
+        )
+        .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id.in_([r.akun_perkiraan_id for r in rows]),
+            JurnalUmum.status == StatusJurnal.POSTED,
+        )
+        .group_by(JurnalDetail.akun_perkiraan_id)
+        .all()
+    )
+
+    updated = 0
+    for row in rows:
+        gl_saldo = Decimal(str(balances.get(row.akun_perkiraan_id) or 0)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP)
+        current = Decimal(str(row.saldo or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if gl_saldo != current:  # hanya tulis bila berubah (idempotent)
+            row.saldo = gl_saldo
+            updated += 1
+    if updated:
+        db.flush()
+    return updated
 
 
 def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = "Pembatalan") -> JurnalUmum:
