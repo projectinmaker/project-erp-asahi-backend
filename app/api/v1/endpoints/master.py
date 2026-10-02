@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import List, Optional
@@ -23,6 +23,9 @@ from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
 from app.models.master.barang import ItemTypeBarang
 from app.models.detail.barang_satuan import BarangSatuan
+from app.models.transaksi.stock_balance import StockBalance
+from app.models.transaksi.stok_mutasi import StokMutasi
+from app.models.transaksi.persediaan.penyesuaian_stok import StatusPersediaan
 from app.schemas.base import PaginatedResponse
 from app.schemas.master import (
     PelangganCreate, PelangganUpdate, PelangganResponse,
@@ -73,7 +76,9 @@ class SupplierSimpleResponse(BaseSchema):
 
 
 from app.services import master_service
+from app.services import persediaan_service
 from app.services import setting_akun_service
+from app.services import workflow_service
 from app.services.coa_linkage_service import (
     auto_create_piutang_coa, auto_create_hutang_coa,
     find_piutang_root_coa, find_hutang_root_coa, get_coa_detail_ids_under,
@@ -976,10 +981,14 @@ def export_barang(
 def barang_import_template(
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Template import barang (.xlsx): sheet Data (header saja) + Petunjuk."""
+    """Template import barang (.xlsx): sheet Data (header saja) + Petunjuk.
+
+    Update #12: kolom "Gudang" + "Stok" — stok awal kini bisa di-set langsung
+    lewat import (diterapkan lewat dokumen Penyesuaian Stok otomatis).
+    """
     wb = excel_service.workbook_from_rows(
         headers=["Kode*", "Nama*", "Kategori*", "Satuan*", "Tipe Barang",
-                 "Stok Minimum", "Harga Pokok", "Harga Jual"],
+                 "Gudang", "Stok", "Stok Minimum", "Harga Pokok", "Harga Jual"],
         rows=[], sheet="Data",
     )
     excel_service.add_instructions_sheet(wb, rows=[
@@ -989,10 +998,12 @@ def barang_import_template(
         ["Kategori*", "Ya", "Teks", "NAMA kategori PERSIS seperti master kategori (huruf besar/kecil diabaikan). Contoh: Alat Tulis. Tidak ditemukan → baris ditolak."],
         ["Satuan*", "Ya", "Teks", "NAMA satuan PERSIS seperti master satuan (huruf besar/kecil diabaikan). Contoh: PCS. Tidak ditemukan → baris ditolak."],
         ["Tipe Barang", "Tidak", "Pilihan", "BARANG_DAGANG / BARANG_JADI / BARANG_BAKU / BARANG_BANTU / JASA. Kosong = BARANG_DAGANG. Nilai lain → baris ditolak."],
+        ["Gudang", "Wajib bila Stok > 0", "Teks", "NAMA atau KODE gudang PERSIS seperti master gudang (huruf besar/kecil diabaikan). Contoh: Gudang Utama. Bila Stok > 0 dan kolom kosong: otomatis dipakai bila hanya ada 1 gudang aktif; bila lebih dari 1 → baris ditolak."],
+        ["Stok", "Tidak", "Bilangan bulat ≥ 0", "Stok awal barang di gudang. Contoh: 100. Kosong / 0 = tidak dibuat penyesuaian. Stok diterapkan lewat dokumen Penyesuaian Stok (TAMBAH) otomatis: import oleh Administrator langsung disetujui (stok + jurnal tercatat); oleh role lain menjadi DIAJUKAN dan menunggu persetujuan. Tipe JASA tidak boleh mengisi Stok. Nilai stok memakai Harga Pokok sebagai biaya satuan."],
         ["Stok Minimum", "Tidak", "Bilangan bulat", "Batas stok minimum. Contoh: 10. Kosong = 0."],
-        ["Harga Pokok", "Tidak", "Angka desimal", "Harga pokok per satuan, angka TANPA pemisah ribuan. Contoh: 25000. Kosong = 0."],
+        ["Harga Pokok", "Tidak", "Angka desimal", "Harga pokok per satuan, angka TANPA pemisah ribuan. Contoh: 25000. Kosong = 0. Dipakai juga sebagai biaya satuan stok awal (jurnal otomatis bila stok > 0 dan nilai > 0)."],
         ["Harga Jual", "Tidak", "Angka desimal", "Harga jual per satuan, angka TANPA pemisah ribuan. Contoh: 35000. Kosong = 0."],
-        ["Catatan", "", "", "Baris dengan Kode & Nama kosong dilewati. Urutan kolom bebas — pembacaan berdasar nama kolom (bukan posisi). Error satu baris tidak menghentikan baris lain. Stok awal TIDAK di-set lewat import — gunakan Penyesuaian Stok setelah barang terbentuk."],
+        ["Catatan", "", "", "Baris dengan Kode & Nama kosong dilewati. Urutan kolom bebas — pembacaan berdasar nama kolom (bukan posisi). Error satu baris tidak menghentikan baris lain. Metode valuasi FEFO: stok awal TIDAK bisa diimport (butuh tanggal kedaluwarsa) — kosongkan Stok lalu tambahkan lewat menu Penyesuaian Stok. Barang NONAKTIF yang diaktifkan kembali tetap mempertahankan stok lamanya — kosongkan Stok untuk baris seperti ini."],
     ])
     return _xlsx_streaming_response(wb, "template-import-barang.xlsx")
 
@@ -1008,6 +1019,16 @@ async def import_barang(
     Mapping Kategori/Satuan berdasar NAMA (case-insensitive) terhadap tabel
     master. Error per baris tidak menghentikan baris lain — ringkasan
     dikembalikan 200. File bukan .xlsx → 400.
+
+    Update #12 — kolom "Stok" (opsional): stok awal diterapkan lewat dokumen
+    Penyesuaian Stok TAMBAH + finalisasi workflow (direct_complete) — jalur
+    yang SAMA dengan menu Penyesuaian Stok manual, sehingga saldo gudang,
+    kartu stok/mutasi, dan jurnal (D Persediaan, K Selisih Persediaan bila
+    nilai > 0) tetap tercatat. Administrator: dokumen langsung DISETUJUI
+    (stok + jurnal diterapkan); role lain: tetap DIAJUKAN (menunggu
+    persetujuan) dan baris dilaporkan gagal dengan pesan penjelas.
+    Kolom "Gudang" (nama/kode) menentukan lokasi stok awal; bila kosong
+    dipakai satu-satunya gudang aktif (bila ada).
     """
     content = await file.read()
     header_map, rows = _load_import_sheet(content)
@@ -1019,6 +1040,18 @@ async def import_barang(
         s.nama.strip().lower(): s
         for s in db.query(Satuan).filter(Satuan.status == "AKTIF").all()
     }
+    # Gudang aktif: dipetakan berdasar NAMA dan KODE (case-insensitive).
+    gudang_aktif = (
+        db.query(Gudang).filter(Gudang.status == "AKTIF").order_by(Gudang.kode).all()
+    )
+    gudang_map: dict = {}
+    for g in gudang_aktif:
+        gudang_map.setdefault(g.nama.strip().lower(), g)
+        gudang_map.setdefault(g.kode.strip().lower(), g)
+    satu_gudang = gudang_aktif[0] if len(gudang_aktif) == 1 else None
+    from app.services import app_setting_service
+    metode_valuasi_global = app_setting_service.get_metode_valuasi(db)
+
     result = ImportResult(total_baris=0, sukses=0, gagal=0, errors=[])
     for offset, raw in enumerate(rows):
         excel_row = offset + 2  # baris 1 = header
@@ -1055,17 +1088,115 @@ async def import_barang(
                     ) from exc
             else:
                 item_type = ItemTypeBarang.BARANG_DAGANG  # default bila kosong
+
+            # ── Update #12: stok awal + gudang (divalidasi SEBELUM create
+            #    supaya barang tidak tertinggal setengah jalan bila stok
+            #    ditolak) ─────────────────────────────────────────────────
+            stok_awal = _cell_int(_get_col(raw, header_map, "stok"), 0)
+            if stok_awal < 0:
+                raise ValueError("Stok tidak boleh negatif")
+            if item_type == ItemTypeBarang.JASA and stok_awal > 0:
+                raise ValueError("Tipe JASA tidak menyimpan stok — kosongkan kolom Stok")
+            gudang_tujuan = None
+            if stok_awal > 0:
+                if metode_valuasi_global == "FEFO":
+                    raise ValueError(
+                        "Metode valuasi FEFO aktif — stok awal tidak bisa diimport karena "
+                        "butuh tanggal kedaluwarsa. Kosongkan Stok, lalu tambahkan lewat "
+                        "menu Penyesuaian Stok."
+                    )
+                gudang_text = _cell_str(_get_col(raw, header_map, "gudang"))
+                if gudang_text:
+                    gudang_tujuan = gudang_map.get(gudang_text.strip().lower())
+                    if gudang_tujuan is None:
+                        raise ValueError(
+                            f"Gudang '{gudang_text}' tidak ditemukan di master gudang (aktif)"
+                        )
+                elif satu_gudang is not None:
+                    gudang_tujuan = satu_gudang
+                elif not gudang_aktif:
+                    raise ValueError(
+                        "Belum ada gudang aktif — buat master Gudang dulu sebelum import stok"
+                    )
+                else:
+                    raise ValueError(
+                        "Ada lebih dari satu gudang aktif — isi kolom Gudang "
+                        "(nama/kode) untuk menentukan lokasi stok awal"
+                    )
+                # Reaktivasi NONAKTIF dengan riwayat stok: create_master
+                # mempertahankan stok lama — menimpa dengan penyesuaian baru
+                # akan menggandakan stok, jadi tolak sejak awal.
+                lama = (
+                    db.query(Barang)
+                    .filter(Barang.kode == kode, Barang.status == "NONAKTIF")
+                    .order_by(Barang.created_at.desc(), Barang.id.desc())
+                    .first()
+                )
+                if lama is not None and (
+                    db.query(StockBalance).filter_by(barang_id=lama.id).first() is not None
+                    or db.query(StokMutasi).filter_by(barang_id=lama.id).first() is not None
+                ):
+                    raise ValueError(
+                        f"Kode '{kode}' adalah barang NONAKTIF dengan riwayat stok "
+                        "(stok lama dipertahankan sistem) — kosongkan kolom Stok, "
+                        "atur stok lewat menu Penyesuaian Stok"
+                    )
+
+            harga_pokok = _cell_decimal(_get_col(raw, header_map, "harga pokok"), Decimal("0"))
             data_in = BarangCreate(
                 kode=kode, nama=nama,
                 kategori_id=kategori.id, satuan_id=satuan.id,
                 item_type=item_type,
                 stok_minimum=_cell_int(_get_col(raw, header_map, "stok minimum"), 0),
-                harga_pokok=_cell_decimal(_get_col(raw, header_map, "harga pokok"), Decimal("0")),
+                harga_pokok=harga_pokok,
                 harga_jual=_cell_decimal(_get_col(raw, header_map, "harga jual"), Decimal("0")),
             )
             # JALUR CREATE YANG SAMA dengan POST /barang — policy item_type/akun
             # divalidasi identik di master_service.create_master.
-            master_service.create_master(db, Barang, data_in)
+            item = master_service.create_master(db, Barang, data_in)
+
+            # ── Update #12: terapkan stok awal lewat jalur Penyesuaian Stok
+            #    (sama dengan endpoint POST /persediaan/penyesuaian-stok:
+            #    create + direct_complete admin) ───────────────────────────
+            if stok_awal > 0 and gudang_tujuan is not None:
+                try:
+                    adj = persediaan_service.create_penyesuaian(
+                        db=db,
+                        tanggal=datetime.now(timezone.utc),
+                        barang_id=item.id,
+                        tipe="TAMBAH",
+                        qty=stok_awal,
+                        biaya_satuan=harga_pokok,
+                        alasan=f"Stok awal import barang {kode}",
+                        auto_post_jurnal=True,
+                        created_by=current_user.id,
+                        gudang_id=gudang_tujuan.id,
+                    )
+                    workflow_service.direct_complete(
+                        db, current_user, "penyesuaian_stok", adj.id
+                    )
+                    db.refresh(adj)
+                    # Status sukses penyesuaian = DISETUJUI (stok + jurnal
+                    # sudah diterapkan approve_penyesuaian). DIAJUKAN berarti
+                    # import oleh non-admin → menunggu persetujuan manual.
+                    if adj.status == StatusPersediaan.DIAJUKAN:
+                        raise ValueError(
+                            f"Barang tersimpan, tetapi penyesuaian stok awal {adj.no_adj} "
+                            "menunggu persetujuan — setujui di menu Persediaan ▸ "
+                            "Penyesuaian Stok agar stok masuk"
+                        )
+                    if adj.status != StatusPersediaan.DISETUJUI:
+                        raise ValueError(
+                            f"Penyesuaian stok awal {adj.no_adj} berakhir dengan status "
+                            f"{adj.status.value} — periksa dokumen di menu Penyesuaian Stok"
+                        )
+                except HTTPException:
+                    raise
+                except (ValueError, IntegrityError) as exc:
+                    raise ValueError(
+                        f"Barang '{kode}' tersimpan, tetapi penyesuaian stok awal gagal: "
+                        f"{_import_error(exc)}. Atur stok manual lewat menu Penyesuaian Stok."
+                    ) from exc
             result.sukses += 1
         except (HTTPException, ValueError, IntegrityError) as exc:
             db.rollback()

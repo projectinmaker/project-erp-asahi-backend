@@ -17,9 +17,14 @@ menyentuh:
   - Pengguna + password + RBAC (roles, permissions, override)
   - Organisasi + Klasifikasi Arus Kas
 
+Gunakan --reset-master bila master data tertentu juga ingin dikosongkan
+(Pelanggan, Supplier, Gudang, Kategori Barang, Satuan, Karyawan — lihat
+detail di opsi di bawah).
+
 Semua penghapusan berjalan dalam SATU TRANSAKSI database. Jumlah baris
-semua tabel master dihitung sebelum & sesudah; kalau ada yang berubah,
-seluruh operasi di-ROLLBACK otomatis (tidak ada setengah-reset).
+semua tabel master yang dipertahankan dihitung sebelum & sesudah; kalau
+ada yang berubah, seluruh operasi di-ROLLBACK otomatis (tidak ada
+setengah-reset).
 
 Usage:
     cd project-erp-asahi-backend
@@ -27,6 +32,14 @@ Usage:
     python3 scripts/reset_transaksi.py              # interaktif (ketik RESET)
     python3 scripts/reset_transaksi.py --yes        # tanpa konfirmasi
     python3 scripts/reset_transaksi.py --list       # lihat klasifikasi tabel
+
+    # Reset transaksi + master data (Pelanggan, Supplier, Gudang, Kategori
+    # Barang, Satuan, Karyawan — konfirmasi interaktif: ketik RESET MASTER):
+    python3 scripts/reset_transaksi.py --reset-master --dry-run
+    python3 scripts/reset_transaksi.py --reset-master --yes
+
+    # Reset master data tertentu saja (dipisah koma):
+    python3 scripts/reset_transaksi.py --reset-master=pelanggan,supplier
 
     # Windows (PowerShell):
     python scripts\\reset_transaksi.py --dry-run
@@ -48,6 +61,23 @@ Opsi:
     --reset-saldo-awal    Selain menghapus jurnal saldo awal, snapshot
                           akun_perkiraan.saldo juga dinol-kan.
     --reset-kas-saldo     Nol-kan snapshot saldo kas/bank (kas_bank_akun.saldo).
+    --reset-master [LIST] Kosongkan master data juga. Tanpa nilai / 'all' =
+                          keenam master: pelanggan, supplier, gudang,
+                          kategori (kategori_barang), satuan, karyawan.
+                          Subset: --reset-master=pelanggan,supplier (dipisah
+                          koma; alias 'kategori_barang' juga diterima).
+                          Bonus: pilihan 'barang' untuk reset stok master
+                          barang saja.
+                          DEPENDENSI OTOMATIS: reset kategori/satuan/barang
+                          ikut menghapus barang + barang_satuan (konversi
+                          satuan) karena barang.kategori_id & barang.satuan_id
+                          NOT NULL — data barang tidak boleh menggantung.
+                          TIDAK BISA digabung --keep-stok bila gudang atau
+                          barang ikut direset (data persediaan menunjuk
+                          keduanya dengan FK NOT NULL).
+                          Master lain TETAP dipertahankan: Kas/Bank Akun,
+                          Kategori Aset, Syarat Bayar, Biaya Tambahan,
+                          COA, Pengguna/RBAC, Organisasi.
     --list                Tampilkan klasifikasi tabel KEEP/WIPE lalu keluar.
 
 Efek setelah reset (yang diharapkan):
@@ -60,8 +90,18 @@ Efek setelah reset (yang diharapkan):
     - Idempotency-Key lama bisa dipakai ulang (cache idempotent_operation
       dikosongkan).
     - Login user / password / role tidak berubah sama sekali.
+    - Dengan --reset-master: master terpilih kosong total (hard delete,
+      termasuk yang ber-status NONAKTIF) — input ulang lewat menu
+      Pengaturan. Akun COA yang tadinya ter-link ke pelanggan/supplier/
+      karyawan tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-10-02  + --reset-master (update #11): kosongkan master data
+                Pelanggan, Supplier, Gudang, Kategori Barang, Satuan,
+                Karyawan (semua / subset). Reset kategori/satuan/barang
+                otomatis menghapus barang + barang_satuan (FK NOT NULL).
+                Ditolak bila digabung --keep-stok + reset gudang/barang.
+                Konfirmasi interaktif meminta kata 'RESET MASTER'.
     2026-10-01  Selaras dengan update #3–#5:
                 + WIPE : penawaran, penawaran_detail (update #3),
                          tukar_faktur, tukar_faktur_detail (update #4)
@@ -230,21 +270,98 @@ KEEP_GROUPS = [
     ("Organisasi", ["organization_unit", "cash_flow_classification"]),
 ]
 
+# ============================================================
+# RESET MASTER DATA (--reset-master)
+# ============================================================
+
+# Nama pilihan CLI -> tabel (alias dinormalisasi, huruf kecil)
+MASTER_RESET_CHOICES: dict[str, str] = {
+    "pelanggan": "pelanggan",
+    "supplier": "supplier",
+    "gudang": "gudang",
+    "kategori": "kategori_barang",
+    "kategori_barang": "kategori_barang",
+    "satuan": "satuan",
+    "karyawan": "karyawan",
+    "barang": "barang",  # ekstra: reset master barang saja
+}
+
+# Default saat --reset-master tanpa nilai / 'all' / 'semua'
+# (keenam master yang diminta user — update #11)
+MASTER_RESET_ALL = ("pelanggan", "supplier", "gudang", "kategori", "satuan", "karyawan")
+
+# Label tampilan (urutan rapi untuk output konsol)
+MASTER_RESET_LABELS = [
+    ("Pelanggan", "pelanggan"),
+    ("Supplier", "supplier"),
+    ("Gudang", "gudang"),
+    ("Kategori Barang", "kategori_barang"),
+    ("Satuan", "satuan"),
+    ("Karyawan", "karyawan"),
+    ("Barang", "barang"),
+    ("Konversi Satuan", "barang_satuan"),
+]
+
 
 class SafetyAbort(Exception):
     """Dilempar ketika verifikasi keamanan gagal -> seluruh transaksi di-rollback."""
 
 
+def _parse_master_reset(value: str) -> tuple[frozenset[str], list[str]]:
+    """Parse nilai --reset-master menjadi (set tabel, daftar tabel auto-ikut).
+
+    Dependensi FK NOT NULL di-expand otomatis:
+      - kategori_barang / satuan direset -> barang ikut (barang.kategori_id
+        & barang.satuan_id NOT NULL)
+      - barang direset -> barang_satuan ikut (barang_satuan.barang_id
+        NOT NULL)
+    SystemExit dengan pesan jelas untuk pilihan tak dikenal.
+    """
+    value = (value or "").strip().lower()
+    if not value or value in ("all", "semua"):
+        picks = list(MASTER_RESET_ALL)
+    else:
+        picks = [p.strip().lower() for p in value.split(",") if p.strip()]
+
+    tables: set[str] = set()
+    for p in picks:
+        t = MASTER_RESET_CHOICES.get(p)
+        if t is None:
+            known = ", ".join(MASTER_RESET_ALL) + " (+ barang)"
+            raise SystemExit(
+                f"[ERROR] Pilihan --reset-master tak dikenal: '{p}'\n"
+                f"        Yang tersedia: {known}\n"
+                "        Atau pakai tanpa nilai / 'all' untuk keenam master sekaligus."
+            )
+        tables.add(t)
+
+    auto: list[str] = []
+    if (tables & {"kategori_barang", "satuan"}) and "barang" not in tables:
+        tables.add("barang")
+        auto.append("barang")
+    if "barang" in tables and "barang_satuan" not in tables:
+        tables.add("barang_satuan")
+        auto.append("barang_satuan")
+    return frozenset(tables), auto
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="reset_transaksi.py",
-        description="Reset data transaksi Asahi Books ERP (master & pengaturan tetap utuh).",
+        description=(
+            "Reset data transaksi Asahi Books ERP (master & pengaturan tetap utuh). "
+            "Opsi --reset-master juga mengosongkan master data tertentu "
+            "(Pelanggan, Supplier, Gudang, Kategori Barang, Satuan, Karyawan)."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Contoh:\n"
             "  python3 scripts/reset_transaksi.py --dry-run\n"
             "  python3 scripts/reset_transaksi.py --yes\n"
             "  python3 scripts/reset_transaksi.py --keep-stok --yes\n"
+            "  python3 scripts/reset_transaksi.py --reset-master --dry-run\n"
+            "  python3 scripts/reset_transaksi.py --reset-master --yes\n"
+            "  python3 scripts/reset_transaksi.py --reset-master=pelanggan,supplier --yes\n"
             "  python3 scripts/reset_transaksi.py --db postgresql://user:pass@host:5432/dbname\n"
         ),
     )
@@ -265,6 +382,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reset-kas-saldo", action="store_true",
         help="Nol-kan snapshot saldo kas/bank (kas_bank_akun.saldo)",
+    )
+    parser.add_argument(
+        "--reset-master", nargs="?", const="all", default=None, metavar="LIST",
+        help=(
+            "Kosongkan master data juga. Tanpa nilai / 'all' = keenam master: "
+            "pelanggan, supplier, gudang, kategori, satuan, karyawan. "
+            "Subset dipisah koma, mis. --reset-master=pelanggan,supplier. "
+            "Reset kategori/satuan/barang otomatis ikut menghapus barang + "
+            "barang_satuan (FK NOT NULL). Tidak kompatibel dengan --keep-stok "
+            "bila gudang/barang ikut direset."
+        ),
     )
     parser.add_argument("--list", action="store_true", help="Tampilkan klasifikasi tabel KEEP/WIPE lalu keluar")
     return parser.parse_args()
@@ -365,11 +493,18 @@ def _print_plan(
     null_fks: list[tuple[str, str]],
     sequences: list[str],
     delete_order: list[str],
+    master_tables: frozenset[str] = frozenset(),
+    master_auto: list[str] | None = None,
 ) -> None:
-    _print_header("ASAHI BOOKS ERP — RESET DATA TRANSAKSI")
+    master_auto = master_auto or []
+    _print_header(
+        "ASAHI BOOKS ERP — RESET DATA TRANSAKSI"
+        + (" + MASTER DATA" if master_tables else "")
+    )
     print(f"  Database : {masked_url}")
     print(f"  Mode     : {'KEEP-STOK (persediaan dipertahankan)' if args.keep_stok else 'RESET PENUH (stok juga direset)'}")
-    print(f"  Wipe     : {len(wipe)} tabel transaksi")
+    print(f"  Wipe     : {len(wipe)} tabel transaksi"
+          + (f" + {len(master_tables)} tabel master (--reset-master)" if master_tables else ""))
     print(f"  Keep     : {len(keep)} tabel master/pengaturan")
 
     print("\n  YANG AKAN DIHAPUS (data transaksi):")
@@ -386,10 +521,20 @@ def _print_plan(
             print(f"{line}(semua sudah kosong)")
         if empty_n and not shown:
             pass
-    total_rows = sum(wipe_counts.values())
-    nonempty = len([t for t, c in wipe_counts.items() if c > 0])
-    print(f"\n    TOTAL: {total_rows} baris di {nonempty} tabel berisi data "
-          f"({len(wipe) - nonempty} tabel sudah kosong)")
+    total_rows = sum(wipe_counts[t] for t in wipe if t not in master_tables)
+    nonempty = len([t for t, c in wipe_counts.items() if c > 0 and t not in master_tables])
+    print(f"\n    TOTAL transaksi: {total_rows} baris di {nonempty} tabel berisi data "
+          f"({len(wipe) - len(master_tables) - nonempty} tabel sudah kosong)")
+
+    if master_tables:
+        master_rows = sum(wipe_counts[t] for t in master_tables)
+        print("\n  MASTER DATA YANG IKUT DIHAPUS (--reset-master):")
+        for label, t in MASTER_RESET_LABELS:
+            if t in master_tables:
+                tag = "  [otomatis — FK NOT NULL]" if t in master_auto else ""
+                print(f"    {label:<34}{t} ({wipe_counts[t]}){tag}")
+        print(f"    TOTAL master: {master_rows} baris di {len(master_tables)} tabel "
+              "(hard delete, termasuk status NONAKTIF)")
 
     print("\n  YANG DIPERTAHANKAN (tidak disentuh):")
     for group_name, tables in KEEP_GROUPS:
@@ -428,16 +573,25 @@ def _print_plan(
         print(f"\n  Urutan hapus (child dulu): {' > '.join(delete_order[:8])}"
               + (" > ..." if len(delete_order) > 8 else ""))
 
+    if master_tables:
+        print()
+        print("  " + "!" * 60)
+        print("  !!! PERHATIAN: --reset-master AKTIF")
+        print("  !!! Master data di atas akan DIHAPUS PERMANEN (tidak bisa")
+        print("  !!! di-undo) bersama seluruh data transaksi!")
+        print("  " + "!" * 60)
 
-def _confirm(args: argparse.Namespace) -> bool:
+
+def _confirm(args: argparse.Namespace, master_reset: bool = False) -> bool:
     if args.yes:
         return True
+    kata = "RESET MASTER" if master_reset else "RESET"
     try:
-        jawab = input("\n  Ketik RESET (huruf besar) untuk melanjutkan, Enter/Ctrl+C untuk batal: ")
+        jawab = input(f"\n  Ketik {kata} (huruf besar) untuk melanjutkan, Enter/Ctrl+C untuk batal: ")
     except (EOFError, KeyboardInterrupt):
         print()
         return False
-    return jawab.strip() == "RESET"
+    return jawab.strip() == kata
 
 
 def main() -> int:
@@ -486,6 +640,35 @@ def main() -> int:
         keep = keep | STOK_TABLES
         wipe = wipe - STOK_TABLES
 
+    # ---------- --reset-master : pindahkan master terpilih KEEP -> WIPE ----------
+    master_tables: frozenset[str] = frozenset()
+    master_auto: list[str] = []
+    if args.reset_master is not None:
+        master_tables, master_auto = _parse_master_reset(args.reset_master)
+        # Guard konflik --keep-stok: data persediaan menunjuk gudang & barang
+        # dengan FK NOT NULL (pemindahan_barang.ke_gudang_id, penyesuaian_stok
+        # .barang_id, stock_balance.barang_id, dll.) sehingga tidak boleh
+        # dipertahankan bila gudang/barang dihapus.
+        if args.keep_stok and (master_tables & {"gudang", "barang"}):
+            penyebab = (
+                "gudang" if "gudang" in master_tables
+                else "barang (diperlukan reset kategori/satuan)"
+            )
+            print(
+                "[ERROR] --keep-stok tidak bisa digabung dengan reset "
+                f"{penyebab}: data persediaan yang dipertahankan menunjuk "
+                "gudang/barang dengan FK NOT NULL sehingga akan menggantung.\n"
+                "        Hilangkan --keep-stok, atau batasi --reset-master ke "
+                "pelanggan,supplier,karyawan."
+            )
+            return 2
+        tidak_ada = master_tables - set(metadata_tables)
+        if tidak_ada:
+            print(f"[ERROR] Tabel master tidak ada di schema: {', '.join(sorted(tidak_ada))}")
+            return 2
+        keep = keep - master_tables
+        wipe = wipe | master_tables
+
     if args.list:
         _print_header("KLASIFIKASI TABEL")
         print(f"  KEEP ({len(keep)}):")
@@ -500,6 +683,12 @@ def main() -> int:
             tables = [t for t in tables if t in wipe]
             if tables:
                 print(f"    {g:<34}{', '.join(tables)}")
+        print("\n  MASTER RESET (--reset-master, dipindah KEEP -> WIPE):")
+        print(f"    {'Tanpa nilai / all':<34}{', '.join(MASTER_RESET_ALL)}")
+        print(f"    {'Subset (dipisah koma)':<34}--reset-master=pelanggan,supplier")
+        print("    Keterangan: reset kategori/satuan/barang otomatis ikut")
+        print("    menghapus barang + barang_satuan (FK NOT NULL); tidak")
+        print("    kompatibel dengan --keep-stok bila gudang/barang ikut.")
         return 0
 
     # ---------- Siapkan engine ----------
@@ -521,13 +710,17 @@ def main() -> int:
         print(f"        Target: {masked_url}")
         return 2
 
-    _print_plan(args, masked_url, wipe, keep, wipe_counts, keep_counts, null_fks, sequences, delete_order)
+    # Jumlah baris master sebelum dihapus (untuk ringkasan akhir)
+    master_before = {t: wipe_counts.get(t, 0) for t in master_tables}
+
+    _print_plan(args, masked_url, wipe, keep, wipe_counts, keep_counts, null_fks, sequences, delete_order,
+                master_tables=master_tables, master_auto=master_auto)
 
     if args.dry_run:
         print("\n  [DRY-RUN] Tidak ada yang dihapus. Jalankan tanpa --dry-run untuk eksekusi.")
         return 0
 
-    if not _confirm(args):
+    if not _confirm(args, master_reset=bool(master_tables)):
         print("  Dibatalkan — database tidak diubah.")
         return 1
 
@@ -595,6 +788,9 @@ def main() -> int:
     # ---------- Ringkasan hasil ----------
     _print_header("RESET SELESAI")
     print(f"  [OK] {deleted_rows} baris dihapus dari {touched_tables} tabel")
+    if master_tables:
+        shown = ", ".join(f"{t} ({master_before[t]} baris)" for t in sorted(master_tables))
+        print(f"  [OK] Master data direset ({len(master_tables)} tabel): {shown}")
     print(f"  [OK] {len(keep)} tabel master/pengaturan terverifikasi tidak berubah")
     if sequences:
         print(f"  [OK] {len(sequences)} sequence ID transaksi restart dari 1")
@@ -606,6 +802,9 @@ def main() -> int:
     print("   - Login tetap pakai user & password yang sama (tidak berubah).")
     print("   - Nomor dokumen otomatis mulai dari -001 lagi.")
     print("   - Halaman Saldo Awal akan tampak 'belum di-set' — input ulang kapan saja.")
+    if master_tables:
+        print("   - Master yang direset kini kosong — input ulang lewat menu Pengaturan.")
+        print("     (Kas/Bank Akun, Kategori Aset, Syarat Bayar, Biaya Tambahan tetap ada.)")
     print("   - Kalau tampilan laporan masih memuat data lama, refresh / restart backend")
     print("     untuk membersihkan cache memori.")
     print()

@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.config import get_settings
 from app.database import check_database_connection
@@ -112,6 +112,9 @@ def create_application() -> FastAPI:
         lifespan=lifespan,
         docs_url="/docs" if settings.is_development else None,
         redoc_url="/redoc" if settings.is_development else None,
+        # openapi.json juga WAJIB digated — tanpa ini schema API lengkap
+        # tetap terekspos di /openapi.json walau /docs & /redoc dimatikan.
+        openapi_url="/openapi.json" if settings.is_development else None,
     )
 
     # ==========================================
@@ -119,13 +122,27 @@ def create_application() -> FastAPI:
     # ==========================================
 
     # CORS Middleware - penting untuk Next.js frontend
+    # expose_headers: tanpa ini browser MENYEMBUNYIKAN header Content-Disposition
+    # dari JavaScript cross-origin → nama file unduhan Excel (export & template
+    # import, mis. "template-import-barang.xlsx") tidak terbaca dan frontend
+    # jatuh ke nama fallback generik (Update #12).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
     )
+
+    # Anti-index mesin pencari: X-Robots-Tag di SEMUA response (API, docs,
+    # aset statis, error page) — berlaku walau backend dipublikasikan di
+    # domain/host berbeda dari frontend. Dipatuhi Google, Bing, dll.
+    @app.middleware("http")
+    async def add_noindex_header(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+        return response
 
     # ==========================================
     # Exception Handlers
@@ -170,6 +187,14 @@ def create_application() -> FastAPI:
             "version": "0.1.0",
             "docs": "/docs" if settings.is_development else None,
         }
+
+    # robots.txt — larang seluruh situs dirayapi (defence-in-depth bila
+    # backend di-serve langsung di domain sendiri, mis. api.domain.com).
+    # Dipadukan dengan header X-Robots-Tag di atas.
+    @app.get("/robots.txt", response_class=PlainTextResponse, include_in_schema=False, tags=["Root"])
+    async def robots_txt() -> str:
+        """robots.txt — Dilarang dirayapi mesin pencari"""
+        return "User-agent: *\nDisallow: /\n"
 
     # API v1 Router (akan diisi di phase selanjutnya)
     from app.api.v1.router import api_router
