@@ -45,7 +45,7 @@ from app.services.setting_akun_service import (
     KEY_RETUR_PEMBELIAN,
     KEY_BEBAN_ANGKUT_PEMBELIAN,
 )
-from app.utils.nomor_dokumen import get_nomor_dokumen
+from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
 # ==========================================
@@ -213,7 +213,9 @@ def create_purchase_order(
         )
 
         # Generate nomor pesanan
-        no_pesanan = get_nomor_dokumen(
+        # Update ASAHI: format baru "PO ASI/YYYY/NNN" — reset tahunan,
+        # sequence terpisah dari SO (jawaban user, catatan update cetak SO/PO).
+        no_pesanan = get_nomor_dokumen_tahunan(
             db, PurchaseOrder, prefix="PO",
             no_column="no_pesanan", tanggal=tanggal.date()
         )

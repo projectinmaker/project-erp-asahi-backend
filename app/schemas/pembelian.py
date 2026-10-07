@@ -20,6 +20,10 @@ class SupplierSimpleResponse(BaseSchema):
     id: UUID
     kode: str
     nama: str
+    # Update ASAHI (cetak PO): Kontak Person & Telepon supplier ditampilkan
+    # di bawah "Nama Pemasok" pada print/PDF Purchase Order.
+    kontak_person: Optional[str] = None
+    telepon: Optional[str] = None
 
 
 class PenggunaSimpleResponse(BaseSchema):

@@ -44,7 +44,7 @@ from app.services.setting_akun_service import (
     KEY_PENDAPATAN_ANGKUT,
     KEY_PERSEDIAAN_BARANG_JADI,
 )
-from app.utils.nomor_dokumen import get_nomor_dokumen
+from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
 # ==========================================
@@ -204,7 +204,9 @@ def create_sales_order(
         )
 
         # Generate nomor pesanan
-        no_pesanan = get_nomor_dokumen(
+        # Update ASAHI: format baru "SO ASI/YYYY/NNN" — reset tahunan,
+        # sequence terpisah dari PO (jawaban user, catatan update cetak SO/PO).
+        no_pesanan = get_nomor_dokumen_tahunan(
             db, SalesOrder, prefix="SO",
             no_column="no_pesanan", tanggal=tanggal.date()
         )
