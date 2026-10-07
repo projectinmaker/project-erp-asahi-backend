@@ -512,6 +512,34 @@ class ImportResult(BaseSchema):
 
 
 # ==========================================
+# REKENING BANK (cetak Invoice Penjualan) — update ASAHI #6
+# Didefinisikan sebelum CompanyProfileResponse karena di-embed ke sana.
+# ==========================================
+class RekeningBankBase(BaseSchema):
+    nama_bank: str = Field(min_length=1, max_length=200)
+    no_rekening: str = Field(min_length=1, max_length=100)
+    # Kode mata uang (IDR/USD/...), divalidasi ke master mata uang.
+    mata_uang: str = Field(default="IDR", min_length=2, max_length=8)
+    is_aktif: bool = True
+
+
+class RekeningBankCreate(RekeningBankBase):
+    pass
+
+
+class RekeningBankUpdate(BaseSchema):
+    nama_bank: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    no_rekening: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    mata_uang: Optional[str] = Field(default=None, min_length=2, max_length=8)
+    is_aktif: Optional[bool] = None
+
+
+class RekeningBankResponse(RekeningBankBase):
+    id: UUID
+    updated_at: Optional[datetime] = None
+
+
+# ==========================================
 # PROFIL PERUSAHAAN (header cetak/PDF) — update ASAHI
 # ==========================================
 class CompanyProfileResponse(BaseSchema):
@@ -524,6 +552,11 @@ class CompanyProfileResponse(BaseSchema):
     # Logo sebagai data URL (data:image/...;base64,...) — langsung dipakai
     # <img> di template cetak.
     logo: Optional[str] = None
+    # Update ASAHI #6: slogan tampil khusus di header cetak Invoice Penjualan.
+    slogan: Optional[str] = None
+    # Update ASAHI #6: rekening bank AKTIF — tampil di bawah Keterangan pada
+    # cetak Invoice Penjualan (di-embed agar frontend cukup satu fetch).
+    rekening_bank: List[RekeningBankResponse] = []
     updated_at: Optional[datetime] = None
 
 
@@ -533,6 +566,8 @@ class CompanyProfileUpdate(BaseSchema):
     telepon: Optional[str] = Field(default=None, max_length=50)
     email: Optional[str] = Field(default=None, max_length=100)
     logo: Optional[str] = None
+    # Update ASAHI #6: slogan opsional (kosong/null = tidak tampil di invoice).
+    slogan: Optional[str] = None
 
 
 # ==========================================

@@ -22,6 +22,7 @@ from app.models.master.app_setting import AppSetting
 from app.models.master.company_profile import CompanyProfile
 from app.models.master.mata_uang import MataUang
 from app.models.master.alamat_pengiriman import AlamatPengiriman
+from app.models.master.rekening_bank import RekeningBank
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
 from app.models.master.barang import ItemTypeBarang
@@ -48,6 +49,7 @@ from app.schemas.master import (
     CompanyProfileResponse, CompanyProfileUpdate,
     MataUangCreate, MataUangUpdate, MataUangResponse,
     AlamatPengirimanCreate, AlamatPengirimanUpdate, AlamatPengirimanResponse,
+    RekeningBankCreate, RekeningBankUpdate, RekeningBankResponse,
     COASimpleResponse,
     ImportResult, ImportRowError,
 )
@@ -2060,13 +2062,34 @@ def sync_kas_bank_akun(
 # Batas panjang data URL logo (±1.5 MB gambar setelah base64).
 MAX_LOGO_DATA_URL = 2_000_000
 
+# Update ASAHI #6: slogan default (dipakai saat profil belum di-setup /
+# kolom masih kosong) — tampil khusus di header cetak Invoice Penjualan.
+SLOGAN_DEFAULT = (
+    "Machining, precision, part Jig & fixture Fabrication "
+    "Mechanical & electrical Industrial supplies"
+)
+
+
+def _active_rekening_bank(db: Session) -> List[RekeningBank]:
+    """Rekening bank AKTIF untuk di-embed ke response profil (cetak invoice)."""
+    return (
+        db.query(RekeningBank)
+        .filter(RekeningBank.is_aktif.is_(True))
+        .order_by(RekeningBank.created_at, RekeningBank.id)
+        .all()
+    )
+
 
 @router.get("/company-profile", response_model=CompanyProfileResponse)
 def get_company_profile(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Ambil profil perusahaan untuk header cetak/PDF."""
+    """Ambil profil perusahaan untuk header cetak/PDF.
+
+    Update ASAHI #6: menyertakan slogan + daftar rekening bank AKTIF
+    (dipakai template cetak Invoice Penjualan).
+    """
     row = db.query(CompanyProfile).order_by(CompanyProfile.created_at, CompanyProfile.id).first()
     if row is None:
         # Fallback defensif bila migrasi/seed belum jalan — kembalikan nilai
@@ -2080,8 +2103,23 @@ def get_company_profile(
                 "Jalan Simpangan No.18, RT.03/RW.06, Jatireja,\n"
                 "Kec. Cikarang Tim., Kabupaten Bekasi, Jawa Barat 17530"
             ),
+            slogan=SLOGAN_DEFAULT,
+            rekening_bank=[],
         )
-    return row
+    return CompanyProfileResponse(
+        id=row.id,
+        nama_perusahaan=row.nama_perusahaan,
+        alamat=row.alamat,
+        telepon=row.telepon,
+        email=row.email,
+        logo=row.logo,
+        # Update ASAHI #6: slogan apa adanya — nilai default di-seed lewat
+        # migrasi; kalau user sengaja mengosongkan, invoice tampil tanpa
+        # slogan (tidak dipaksa kembali ke default).
+        slogan=row.slogan,
+        rekening_bank=_active_rekening_bank(db),
+        updated_at=row.updated_at,
+    )
 
 
 @router.put("/company-profile", response_model=CompanyProfileResponse)
@@ -2090,7 +2128,7 @@ def update_company_profile(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Simpan profil perusahaan (nama, alamat, kontak, logo) untuk cetak/PDF."""
+    """Simpan profil perusahaan (nama, alamat, kontak, logo, slogan) untuk cetak/PDF."""
     payload = data_in.model_dump()
 
     logo = payload.get("logo")
@@ -2099,6 +2137,11 @@ def update_company_profile(
             raise HTTPException(400, "Logo harus berupa data URL gambar (data:image/...)")
         if len(logo) > MAX_LOGO_DATA_URL:
             raise HTTPException(400, "Ukuran logo terlalu besar (maksimal ±1.5 MB). Kompres/kecilkan gambar lalu unggah ulang.")
+
+    # Update ASAHI #6: slogan kosong/disengaja dikosongkan → NULL (invoice
+    # tampil tanpa slogan), bukan string kosong.
+    if "slogan" in payload and payload["slogan"] is not None and not payload["slogan"].strip():
+        payload["slogan"] = None
 
     row = db.query(CompanyProfile).order_by(CompanyProfile.created_at, CompanyProfile.id).first()
     if row is None:
@@ -2110,7 +2153,19 @@ def update_company_profile(
 
     db.commit()
     db.refresh(row)
-    return row
+    # Update ASAHI #6: response build manual — embed rekening bank aktif agar
+    # store frontend cukup satu fetch (sama seperti GET).
+    return CompanyProfileResponse(
+        id=row.id,
+        nama_perusahaan=row.nama_perusahaan,
+        alamat=row.alamat,
+        telepon=row.telepon,
+        email=row.email,
+        logo=row.logo,
+        slogan=row.slogan,
+        rekening_bank=_active_rekening_bank(db),
+        updated_at=row.updated_at,
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -2280,3 +2335,91 @@ def delete_alamat_pengiriman(
     db.delete(row)
     db.commit()
     return {"ok": True, "message": "Alamat pengiriman dihapus"}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Rekening Bank — tampil di bawah Keterangan pada cetak Invoice Penjualan
+# (update ASAHI #6). Dikelola di Pengaturan → Profil Perusahaan.
+# ═════════════════════════════════════════════════════════════════════════
+
+def _validate_rekening_mata_uang(db: Session, kode: str) -> str:
+    """Validasi kode mata uang rekening ke master mata uang (bila ada isinya)."""
+    kode = (kode or "").strip().upper() or "IDR"
+    if db.query(MataUang).count() > 0 and not db.query(MataUang).filter(MataUang.kode == kode).first():
+        raise HTTPException(400, f"Mata uang {kode} tidak ada di daftar mata uang — tambahkan dulu di bagian Mata Uang")
+    return kode
+
+
+@router.get("/rekening-bank", response_model=List[RekeningBankResponse])
+def list_rekening_bank(
+    aktif_only: bool = Query(False, description="True = hanya yang aktif (untuk cetak invoice)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar rekening bank perusahaan (untuk cetak Invoice Penjualan)."""
+    query = db.query(RekeningBank)
+    if aktif_only:
+        query = query.filter(RekeningBank.is_aktif.is_(True))
+    return query.order_by(RekeningBank.created_at, RekeningBank.id).all()
+
+
+@router.post("/rekening-bank", response_model=RekeningBankResponse, status_code=status.HTTP_201_CREATED)
+def create_rekening_bank(
+    data_in: RekeningBankCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Tambah rekening bank (contoh: Bank BNI KCP Jababeka — 12345678910 — IDR)."""
+    row = RekeningBank(
+        nama_bank=data_in.nama_bank.strip(),
+        no_rekening=data_in.no_rekening.strip(),
+        mata_uang=_validate_rekening_mata_uang(db, data_in.mata_uang),
+        is_aktif=data_in.is_aktif,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.put("/rekening-bank/{rekening_id}", response_model=RekeningBankResponse)
+def update_rekening_bank(
+    rekening_id: UUID,
+    data_in: RekeningBankUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Edit rekening bank (nama bank / nomor / mata uang / status aktif)."""
+    row = db.query(RekeningBank).filter(RekeningBank.id == rekening_id).first()
+    if not row:
+        raise HTTPException(404, "Rekening bank tidak ditemukan")
+
+    payload = data_in.model_dump(exclude_unset=True)
+    if "nama_bank" in payload and payload["nama_bank"] is not None:
+        payload["nama_bank"] = payload["nama_bank"].strip()
+    if "no_rekening" in payload and payload["no_rekening"] is not None:
+        payload["no_rekening"] = payload["no_rekening"].strip()
+    if "mata_uang" in payload and payload["mata_uang"] is not None:
+        payload["mata_uang"] = _validate_rekening_mata_uang(db, payload["mata_uang"])
+
+    for key, value in payload.items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/rekening-bank/{rekening_id}", status_code=status.HTTP_200_OK)
+def delete_rekening_bank(
+    rekening_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Hapus rekening bank. Nonaktifkan (jangan hapus) bila hanya ingin
+    menahan dari cetakan sambil menyimpan datanya."""
+    row = db.query(RekeningBank).filter(RekeningBank.id == rekening_id).first()
+    if not row:
+        raise HTTPException(404, "Rekening bank tidak ditemukan")
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "message": f"Rekening {row.nama_bank} dihapus"}

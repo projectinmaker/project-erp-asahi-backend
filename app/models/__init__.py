@@ -21,6 +21,7 @@ from app.models.master.app_setting import AppSetting, AppSettingKey
 from app.models.master.company_profile import CompanyProfile
 from app.models.master.mata_uang import MataUang
 from app.models.master.alamat_pengiriman import AlamatPengiriman
+from app.models.master.rekening_bank import RekeningBank
 
 # RBAC v2 — Role & Permission (revisi role user)
 from app.models.master.access import (

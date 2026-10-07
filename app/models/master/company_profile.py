@@ -22,3 +22,6 @@ class CompanyProfile(BaseModel, BaseMixin):
     telepon = Column(String(50), nullable=True)
     email = Column(String(100), nullable=True)
     logo = Column(Text, nullable=True)
+    # Update ASAHI #6: slogan/tagline — tampil khusus di header cetak
+    # Invoice Penjualan (di bawah nama perusahaan). Kosong = tidak tampil.
+    slogan = Column(Text, nullable=True)
