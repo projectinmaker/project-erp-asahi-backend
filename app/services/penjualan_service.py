@@ -471,7 +471,8 @@ def create_sales_invoice(
         )
 
         # Generate nomor invoice
-        no_invoice = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "INV ASI/YYYY/NNN" (reset tahunan).
+        no_invoice = get_nomor_dokumen_tahunan(
             db, SalesInvoice, prefix="INV",
             no_column="no_invoice", tanggal=tanggal.date()
         )
@@ -738,7 +739,8 @@ def create_sales_retur(
         )
 
         # Generate nomor retur
-        no_retur = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "RET-J ASI/YYYY/NNN" (reset tahunan).
+        no_retur = get_nomor_dokumen_tahunan(
             db, SalesRetur, prefix="RET-J",
             no_column="no_retur", tanggal=tanggal.date()
         )
@@ -957,7 +959,8 @@ def create_pengiriman(
             raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
 
         # Generate nomor surat jalan
-        no_surat_jalan = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "KB ASI/YYYY/NNN" (reset tahunan).
+        no_surat_jalan = get_nomor_dokumen_tahunan(
             db, PengirimanBarang, prefix="KB",
             no_column="no_surat_jalan", tanggal=tanggal.date()
         )

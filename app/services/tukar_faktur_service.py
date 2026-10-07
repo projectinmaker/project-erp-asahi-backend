@@ -27,7 +27,7 @@ from app.models.master.pelanggan import Pelanggan
 from app.models.transaksi.penjualan.sales_invoice import SalesInvoice
 from app.models.transaksi.penjualan.tukar_faktur import TukarFaktur
 from app.services.accounting_control import atomic_accounting_write
-from app.utils.nomor_dokumen import get_nomor_dokumen
+from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
 def _load_invoice(db: Session, sales_invoice_id: UUID) -> SalesInvoice | None:
@@ -157,7 +157,8 @@ def create_tukar_faktur(
         no_po_customer = getattr(so, "customer_po_number", None) if so is not None else None
 
         # Generate nomor tukar faktur
-        no_tukar_faktur = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "TF ASI/YYYY/NNN" (reset tahunan).
+        no_tukar_faktur = get_nomor_dokumen_tahunan(
             db, TukarFaktur, prefix="TF",
             no_column="no_tukar_faktur", tanggal=tanggal.date(),
         )

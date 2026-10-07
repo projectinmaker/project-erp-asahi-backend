@@ -509,3 +509,27 @@ class ImportResult(BaseSchema):
     sukses: int
     gagal: int
     errors: list[ImportRowError] = []
+
+
+# ==========================================
+# PROFIL PERUSAHAAN (header cetak/PDF) — update ASAHI
+# ==========================================
+class CompanyProfileResponse(BaseSchema):
+    """Profil perusahaan untuk header cetak/PDF (tabel satu baris)."""
+    id: UUID
+    nama_perusahaan: str
+    alamat: str
+    telepon: Optional[str] = None
+    email: Optional[str] = None
+    # Logo sebagai data URL (data:image/...;base64,...) — langsung dipakai
+    # <img> di template cetak.
+    logo: Optional[str] = None
+    updated_at: Optional[datetime] = None
+
+
+class CompanyProfileUpdate(BaseSchema):
+    nama_perusahaan: str = Field(min_length=1, max_length=200)
+    alamat: str = Field(min_length=1)
+    telepon: Optional[str] = Field(default=None, max_length=50)
+    email: Optional[str] = Field(default=None, max_length=100)
+    logo: Optional[str] = None

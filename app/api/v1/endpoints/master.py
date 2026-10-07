@@ -19,6 +19,7 @@ from app.models.master.kategori_aset import KategoriAset
 from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
 from app.models.master.setting_akun import SettingAkun
 from app.models.master.app_setting import AppSetting
+from app.models.master.company_profile import CompanyProfile
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
 from app.models.master.barang import ItemTypeBarang
@@ -42,6 +43,7 @@ from app.schemas.master import (
     KasBankAkunCreate, KasBankAkunUpdate, KasBankAkunResponse,
     SettingAkunUpdate, SettingAkunResponse,
     AppSettingUpdate, AppSettingResponse,
+    CompanyProfileResponse, CompanyProfileUpdate,
     COASimpleResponse,
     ImportResult, ImportRowError,
 )
@@ -2025,3 +2027,61 @@ def sync_kas_bank_akun(
         "skipped": len(already_linked_ids),
         "detail": created_detail,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Profil Perusahaan — identitas untuk header cetak/PDF (update ASAHI)
+# Satu baris data; dipakai semua template cetak (logo + nama perusahaan
+# menggantikan nama sistem "ASAHI Books" yang dulu hardcoded frontend).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Batas panjang data URL logo (±1.5 MB gambar setelah base64).
+MAX_LOGO_DATA_URL = 2_000_000
+
+
+@router.get("/company-profile", response_model=CompanyProfileResponse)
+def get_company_profile(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil profil perusahaan untuk header cetak/PDF."""
+    row = db.query(CompanyProfile).order_by(CompanyProfile.created_at, CompanyProfile.id).first()
+    if row is None:
+        # Fallback defensif bila migrasi/seed belum jalan — kembalikan nilai
+        # default lama (identik dengan COMPANY_INFO yang dulu hardcoded FE).
+        from uuid import uuid4
+        return CompanyProfileResponse(
+            id=uuid4(),
+            nama_perusahaan="ASAHI Books",
+            alamat="Jalan Simpangan No.18, RT.03/RW.06, Jatireja, Kec. Cikarang Tim., Kabupaten Bekasi, Jawa Barat 17530",
+        )
+    return row
+
+
+@router.put("/company-profile", response_model=CompanyProfileResponse)
+def update_company_profile(
+    data_in: CompanyProfileUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Simpan profil perusahaan (nama, alamat, kontak, logo) untuk cetak/PDF."""
+    payload = data_in.model_dump()
+
+    logo = payload.get("logo")
+    if logo is not None:
+        if not logo.startswith("data:image/"):
+            raise HTTPException(400, "Logo harus berupa data URL gambar (data:image/...)")
+        if len(logo) > MAX_LOGO_DATA_URL:
+            raise HTTPException(400, "Ukuran logo terlalu besar (maksimal ±1.5 MB). Kompres/kecilkan gambar lalu unggah ulang.")
+
+    row = db.query(CompanyProfile).order_by(CompanyProfile.created_at, CompanyProfile.id).first()
+    if row is None:
+        row = CompanyProfile(**payload)
+        db.add(row)
+    else:
+        for key, value in payload.items():
+            setattr(row, key, value)
+
+    db.commit()
+    db.refresh(row)
+    return row

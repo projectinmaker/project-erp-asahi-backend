@@ -448,8 +448,9 @@ def create_purchase_invoice(
             sub_total, total_diskon, ppn, total_biaya_tambahan
         )
 
-        # Generate nomor form
-        no_form = get_nomor_dokumen(
+        # Generate nomor form (invoice pembelian)
+        # Update ASAHI: pola penomoran seragam "PINV ASI/YYYY/NNN" (reset tahunan).
+        no_form = get_nomor_dokumen_tahunan(
             db, PurchaseInvoice, prefix="PINV",
             no_column="no_form", tanggal=tanggal.date()
         )
@@ -708,7 +709,8 @@ def create_purchase_retur(
         )
 
         # Generate nomor retur
-        no_retur = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "RET-B ASI/YYYY/NNN" (reset tahunan).
+        no_retur = get_nomor_dokumen_tahunan(
             db, PurchaseRetur, prefix="RET-B",
             no_column="no_retur", tanggal=tanggal.date()
         )
@@ -925,7 +927,8 @@ def create_penerimaan(
         receipt_control.validate_link(db, purchase_invoice_id, supplier_id, tanggal)
 
         # Generate nomor form penerimaan
-        no_form = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "PB ASI/YYYY/NNN" (reset tahunan).
+        no_form = get_nomor_dokumen_tahunan(
             db, PenerimaanBarang, prefix="PB",
             no_column="no_form", tanggal=tanggal.date()
         )

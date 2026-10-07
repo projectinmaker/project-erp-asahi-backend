@@ -43,6 +43,7 @@ RESOURCE_NAMES = {
     'gudang': 'Gudang', 'satuan': 'Satuan', 'kategori_barang': 'Kategori Barang',
     'kategori_aset': 'Kategori Aset', 'syarat_bayar': 'Syarat Pembayaran',
     'kasbank_akun': 'Akun Kas & Bank', 'setting_akun': 'Setting Akun', 'karyawan': 'Karyawan',
+    'company_profile': 'Profil Perusahaan',
     # sales
     'sales_order': 'Pesanan Penjualan', 'delivery': 'Pengiriman', 'sales_invoice': 'Invoice Penjualan',
     'sales_return': 'Retur Penjualan', 'ar_settlement': 'Pelunasan Piutang',
@@ -115,6 +116,7 @@ REGISTRY: list = (
     + _res('master', 'kasbank_akun', ['view', 'create', 'edit', 'delete'], sensitive_extra=('create', 'edit', 'delete'))
     + _res('master', 'setting_akun', ['view', 'edit'], sensitive_extra=('edit',))
     + _res('master', 'karyawan', ['view', 'create', 'edit', 'delete'])
+    + _res('master', 'company_profile', ['view', 'edit'], sensitive_extra=('edit',))  # update ASAHI: identitas cetak/PDF
     # ── Sales ─────────────────────────────────────────────────────────────
     + _res('sales', 'sales_order', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'print', 'export'])
     + _res('sales', 'penawaran', ['view', 'create', 'edit', 'cancel', 'print'])
@@ -202,6 +204,7 @@ ROLE_TEMPLATES = {
         'permissions': _expand([
             'system.users.*', 'system.roles.*', 'system.access.*', 'system.audit.view',
             'system.organisation.*', 'dashboard.operational.view',
+            'master.company_profile.view', 'master.company_profile.edit',
         ]),
     },
     'HR_ADMIN': {
@@ -211,7 +214,7 @@ ROLE_TEMPLATES = {
         'super': False,
         'permissions': _expand([
             'master.karyawan.*', 'system.users.view', 'system.users.create', 'system.users.edit',
-            'dashboard.operational.view',
+            'dashboard.operational.view', 'master.company_profile.view',
         ]),
     },
     'FINANCE_MANAGER': {
@@ -257,7 +260,7 @@ ROLE_TEMPLATES = {
             'inventory.stock.view', 'inventory.valuation.view', 'inventory.transfer.view',
             'inventory.adjustment.view', 'inventory.stock_request.view',
             'asset.category.view', 'asset.register.view', 'asset.transaction.view', 'asset.reconciliation.view',
-            'master.*.view',
+            'master.company_profile.view',
             'reports.*.view',
             'dashboard.operational.view',
         ]),
@@ -280,6 +283,7 @@ ROLE_TEMPLATES = {
             'master.supplier.view', 'master.supplier.create', 'master.supplier.edit',
             'master.supplier.export', 'master.supplier.import',
             'master.barang.view', 'master.gudang.view',
+            'master.company_profile.view',
             'inventory.stock.view',
             'dashboard.operational.view',
         ]),
@@ -307,6 +311,7 @@ ROLE_TEMPLATES = {
             'master.pelanggan.export', 'master.pelanggan.import',
             'master.barang.view', 'master.gudang.view', 'master.satuan.view',
             'master.kategori_barang.view', 'master.syarat_bayar.view',
+            'master.company_profile.view',
             'inventory.stock.view',
             'dashboard.operational.view',
         ]),
@@ -334,6 +339,7 @@ ROLE_TEMPLATES = {
             'master.barang.export', 'master.barang.import',
             'master.satuan.view', 'master.satuan.create', 'master.satuan.edit',
             'master.kategori_barang.view',
+            'master.company_profile.view',
             'dashboard.operational.view',
         ]),
     },
@@ -342,7 +348,7 @@ ROLE_TEMPLATES = {
         'description': 'Hanya melihat dashboard/laporan (view only) sesuai scope.',
         'is_system': True,
         'super': False,
-        'permissions': _expand(['dashboard.operational.view', 'reports.*.view']),
+        'permissions': _expand(['dashboard.operational.view', 'reports.*.view', 'master.company_profile.view']),
     },
 }
 
@@ -431,6 +437,7 @@ _ROUTER_PREFIXES = {
         ('kategori_aset', 'master.kategori_aset'),
         ('kas_bank_akun', 'master.kasbank_akun'),
         ('setting_akun', 'master.setting_akun'),
+        ('company_profile', 'master.company_profile'),
         ('kategori_barang', 'master.kategori_barang'),
         ('kategori', 'master.kategori_barang'),
         ('satuan', 'master.satuan'),

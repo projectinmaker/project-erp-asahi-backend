@@ -18,6 +18,7 @@ from app.models.master.kas_bank_akun import KasBankAkun
 from app.models.master.biaya_tambahan import BiayaTambahan
 from app.models.master.setting_akun import SettingAkun
 from app.models.master.app_setting import AppSetting, AppSettingKey
+from app.models.master.company_profile import CompanyProfile
 
 # RBAC v2 — Role & Permission (revisi role user)
 from app.models.master.access import (
@@ -94,6 +95,7 @@ __all__ = [
     "SettingAkun",
     "AppSetting",
     "AppSettingKey",
+    "CompanyProfile",
     # Transaksi - Kas & Bank
     "PembayaranKas",
     "PenerimaanKas",

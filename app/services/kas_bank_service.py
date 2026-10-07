@@ -29,7 +29,7 @@ from app.models.master.pengguna import Pengguna
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.setting_akun_service import get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK
-from app.utils.nomor_dokumen import get_nomor_dokumen
+from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
 # ==========================================
@@ -121,8 +121,9 @@ def create_pembayaran(
         from app.services.cash_bank_validation import validate_active_kas_bank
         kas_bank = validate_active_kas_bank(db, kas_bank_id, "Pembayaran Kas")
 
-        # Generate nomor bukti
-        no_bukti = get_nomor_dokumen(
+        # Generate nomor bukti (pembayaran/pengeluaran kas)
+        # Update ASAHI: pola penomoran seragam "PAY ASI/YYYY/NNN" (reset tahunan).
+        no_bukti = get_nomor_dokumen_tahunan(
             db, PembayaranKas, prefix="PAY",
             no_column="no_bukti", tanggal=tanggal.date()
         )
@@ -311,7 +312,8 @@ def create_penerimaan(
         from app.services.cash_bank_validation import validate_active_kas_bank
         kas_bank = validate_active_kas_bank(db, kas_bank_id, "Penerimaan Kas")
 
-        no_bukti = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "REC ASI/YYYY/NNN" (reset tahunan).
+        no_bukti = get_nomor_dokumen_tahunan(
             db, PenerimaanKas, prefix="REC",
             no_column="no_bukti", tanggal=tanggal.date()
         )
@@ -499,7 +501,8 @@ def create_transfer(
         # Phase G: validate amount > 0 and fee >= 0
         validate_transfer_amount(nilai_transfer, biaya_transfer, "Transfer Bank")
 
-        no_transfer = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "TRF ASI/YYYY/NNN" (reset tahunan).
+        no_transfer = get_nomor_dokumen_tahunan(
             db, TransferBank, prefix="TRF",
             no_column="no_transfer", tanggal=tanggal.date()
         )

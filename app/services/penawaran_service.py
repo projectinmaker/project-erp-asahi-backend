@@ -25,7 +25,7 @@ from app.models.transaksi.penjualan.penawaran import Penawaran
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
 from app.services.accounting_control import atomic_accounting_write
 from app.services.decimal_utils import safe_decimal, safe_int
-from app.utils.nomor_dokumen import get_nomor_dokumen
+from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
 def _hitung_sub_total_line(harga: Decimal, qty: int, diskon: Decimal) -> Decimal:
@@ -134,7 +134,8 @@ def create_penawaran(
         _normalize_details(details_data)
 
         # Generate nomor penawaran
-        no_penawaran = get_nomor_dokumen(
+        # Update ASAHI: pola penomoran seragam "PEN ASI/YYYY/NNN" (reset tahunan).
+        no_penawaran = get_nomor_dokumen_tahunan(
             db, Penawaran, prefix="PEN",
             no_column="no_penawaran", tanggal=tanggal.date(),
         )
