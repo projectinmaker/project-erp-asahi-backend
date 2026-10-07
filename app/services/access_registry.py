@@ -44,6 +44,7 @@ RESOURCE_NAMES = {
     'kategori_aset': 'Kategori Aset', 'syarat_bayar': 'Syarat Pembayaran',
     'kasbank_akun': 'Akun Kas & Bank', 'setting_akun': 'Setting Akun', 'karyawan': 'Karyawan',
     'company_profile': 'Profil Perusahaan',
+    'mata_uang': 'Mata Uang', 'alamat_pengiriman': 'Alamat Pengiriman',
     # sales
     'sales_order': 'Pesanan Penjualan', 'delivery': 'Pengiriman', 'sales_invoice': 'Invoice Penjualan',
     'sales_return': 'Retur Penjualan', 'ar_settlement': 'Pelunasan Piutang',
@@ -117,6 +118,8 @@ REGISTRY: list = (
     + _res('master', 'setting_akun', ['view', 'edit'], sensitive_extra=('edit',))
     + _res('master', 'karyawan', ['view', 'create', 'edit', 'delete'])
     + _res('master', 'company_profile', ['view', 'edit'], sensitive_extra=('edit',))  # update ASAHI: identitas cetak/PDF
+    + _res('master', 'mata_uang', ['view', 'create', 'edit', 'delete'], sensitive_extra=('create', 'edit', 'delete'))  # update ASAHI #3: dropdown Currency SO/PO
+    + _res('master', 'alamat_pengiriman', ['view', 'create', 'edit', 'delete'], sensitive_extra=('create', 'edit', 'delete'))  # update ASAHI #3: gudang tujuan PO
     # ── Sales ─────────────────────────────────────────────────────────────
     + _res('sales', 'sales_order', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'print', 'export'])
     + _res('sales', 'penawaran', ['view', 'create', 'edit', 'cancel', 'print'])
@@ -204,7 +207,10 @@ ROLE_TEMPLATES = {
         'permissions': _expand([
             'system.users.*', 'system.roles.*', 'system.access.*', 'system.audit.view',
             'system.organisation.*', 'dashboard.operational.view',
-            'master.company_profile.view', 'master.company_profile.edit',
+            'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view',
+            'master.mata_uang.create', 'master.mata_uang.edit', 'master.mata_uang.delete',
+            'master.alamat_pengiriman.create', 'master.alamat_pengiriman.edit', 'master.alamat_pengiriman.delete',
+            'master.company_profile.edit',
         ]),
     },
     'HR_ADMIN': {
@@ -214,7 +220,7 @@ ROLE_TEMPLATES = {
         'super': False,
         'permissions': _expand([
             'master.karyawan.*', 'system.users.view', 'system.users.create', 'system.users.edit',
-            'dashboard.operational.view', 'master.company_profile.view',
+            'dashboard.operational.view', 'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view',
         ]),
     },
     'FINANCE_MANAGER': {
@@ -260,7 +266,7 @@ ROLE_TEMPLATES = {
             'inventory.stock.view', 'inventory.valuation.view', 'inventory.transfer.view',
             'inventory.adjustment.view', 'inventory.stock_request.view',
             'asset.category.view', 'asset.register.view', 'asset.transaction.view', 'asset.reconciliation.view',
-            'master.company_profile.view',
+            'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view',
             'reports.*.view',
             'dashboard.operational.view',
         ]),
@@ -283,7 +289,7 @@ ROLE_TEMPLATES = {
             'master.supplier.view', 'master.supplier.create', 'master.supplier.edit',
             'master.supplier.export', 'master.supplier.import',
             'master.barang.view', 'master.gudang.view',
-            'master.company_profile.view',
+            'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view',
             'inventory.stock.view',
             'dashboard.operational.view',
         ]),
@@ -311,7 +317,7 @@ ROLE_TEMPLATES = {
             'master.pelanggan.export', 'master.pelanggan.import',
             'master.barang.view', 'master.gudang.view', 'master.satuan.view',
             'master.kategori_barang.view', 'master.syarat_bayar.view',
-            'master.company_profile.view',
+            'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view',
             'inventory.stock.view',
             'dashboard.operational.view',
         ]),
@@ -339,7 +345,7 @@ ROLE_TEMPLATES = {
             'master.barang.export', 'master.barang.import',
             'master.satuan.view', 'master.satuan.create', 'master.satuan.edit',
             'master.kategori_barang.view',
-            'master.company_profile.view',
+            'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view',
             'dashboard.operational.view',
         ]),
     },
@@ -348,7 +354,7 @@ ROLE_TEMPLATES = {
         'description': 'Hanya melihat dashboard/laporan (view only) sesuai scope.',
         'is_system': True,
         'super': False,
-        'permissions': _expand(['dashboard.operational.view', 'reports.*.view', 'master.company_profile.view']),
+        'permissions': _expand(['dashboard.operational.view', 'reports.*.view', 'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view']),
     },
 }
 
@@ -438,6 +444,8 @@ _ROUTER_PREFIXES = {
         ('kas_bank_akun', 'master.kasbank_akun'),
         ('setting_akun', 'master.setting_akun'),
         ('company_profile', 'master.company_profile'),
+        ('mata_uang', 'master.mata_uang'),
+        ('alamat_pengiriman', 'master.alamat_pengiriman'),
         ('kategori_barang', 'master.kategori_barang'),
         ('kategori', 'master.kategori_barang'),
         ('satuan', 'master.satuan'),

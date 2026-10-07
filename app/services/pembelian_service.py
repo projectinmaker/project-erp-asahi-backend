@@ -190,6 +190,9 @@ def create_purchase_order(
     created_by: Optional[UUID] = None,
     syarat_bayar_id: Optional[UUID] = None,
     currency: str = "IDR",
+    # === Update ASAHI #3 — alamat pengiriman (wajib pilih satu) + PPIC ===
+    alamat_pengiriman_id: Optional[UUID] = None,
+    ppic: bool = False,
 ) -> PurchaseOrder:
     """Buat PurchaseOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis (PO-YYYY-MM-NNN)
@@ -203,6 +206,23 @@ def create_purchase_order(
         supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
         if not supplier:
             raise ValueError(f"Supplier dengan ID {supplier_id} tidak ditemukan")
+
+        # === Update ASAHI #3 — alamat pengiriman WAJIB dipilih satu ===
+        if alamat_pengiriman_id is None:
+            raise ValueError("Alamat pengiriman wajib dipilih — pilih satu gudang tujuan")
+        from app.models.master.alamat_pengiriman import AlamatPengiriman
+        alamat_kirim = db.query(AlamatPengiriman).filter(AlamatPengiriman.id == alamat_pengiriman_id).first()
+        if not alamat_kirim:
+            raise ValueError("Alamat pengiriman tidak ditemukan")
+        # Snapshot teks untuk cetak: "<prefix>\n<nama>" — dokumen tidak berubah
+        # walau master diedit/dihapus kemudian.
+        alamat_pengiriman_snapshot = f"{alamat_kirim.prefix}\n{alamat_kirim.nama}"
+
+        # === Update ASAHI #3 — validasi mata uang terhadap master ===
+        currency = (currency or "IDR").strip().upper()
+        from app.models.master.mata_uang import MataUang
+        if db.query(MataUang).filter(MataUang.kode == currency).first() is None:
+            raise ValueError(f"Mata uang {currency} tidak dikenal — tambahkan dulu di Pengaturan → Profil Perusahaan")
 
         # Hitung sub_total dan total_diskon dari detail
         sub_total, total_diskon = _hitung_total_detail_with_diskon(details_data)
@@ -240,6 +260,10 @@ def create_purchase_order(
             created_by=created_by,
             syarat_bayar_id=syarat_bayar_id,
             currency=currency,
+            # === Update ASAHI #3 — alamat pengiriman + PPIC ===
+            alamat_pengiriman_id=alamat_pengiriman_id,
+            alamat_pengiriman=alamat_pengiriman_snapshot,
+            ppic=ppic,
         )
         db.add(po)
         db.flush()
@@ -297,6 +321,11 @@ def update_purchase_order(
     ppn: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    # === Update ASAHI #3 — dukung update currency/syarat bayar/alamat kirim/PPIC ===
+    syarat_bayar_id: Optional[UUID] = None,
+    currency: Optional[str] = None,
+    alamat_pengiriman_id: Optional[UUID] = None,
+    ppic: Optional[bool] = None,
 ) -> PurchaseOrder:
     """Update data purchase order (hanya field header, tidak re-calculate detail)."""
     require_unposted(db_obj)
@@ -319,6 +348,25 @@ def update_purchase_order(
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+
+    # === Update ASAHI #3 — field baru pada update header ===
+    if syarat_bayar_id is not None:
+        db_obj.syarat_bayar_id = syarat_bayar_id
+    if currency is not None:
+        currency = currency.strip().upper()
+        from app.models.master.mata_uang import MataUang
+        if db.query(MataUang).filter(MataUang.kode == currency).first() is None:
+            raise ValueError(f"Mata uang {currency} tidak dikenal — tambahkan dulu di Pengaturan → Profil Perusahaan")
+        db_obj.currency = currency
+    if alamat_pengiriman_id is not None:
+        from app.models.master.alamat_pengiriman import AlamatPengiriman
+        alamat_kirim = db.query(AlamatPengiriman).filter(AlamatPengiriman.id == alamat_pengiriman_id).first()
+        if not alamat_kirim:
+            raise ValueError("Alamat pengiriman tidak ditemukan")
+        db_obj.alamat_pengiriman_id = alamat_pengiriman_id
+        db_obj.alamat_pengiriman = f"{alamat_kirim.prefix}\n{alamat_kirim.nama}"
+    if ppic is not None:
+        db_obj.ppic = ppic
 
     # Fix diskon global: hitung ulang total bila diskon_global/ppn diubah —
     # sebelumnya total lama (stale) tetap tersimpan meski persen berubah.

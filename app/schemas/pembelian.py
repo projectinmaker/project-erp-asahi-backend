@@ -115,11 +115,18 @@ class PurchaseOrderBase(BaseSchema):
     # Phase B — new fields
     syarat_bayar_id: Optional[UUID] = None
     currency: str = 'IDR'
+    # === Update ASAHI #3 — alamat pengiriman (gudang tujuan) + PPIC ===
+    # Optional di Base agar PO lama (sebelum update) tetap bisa diserialisasi;
+    # PurchaseOrderCreate meng-override jadi WAJIB (pilih satu saat input PO).
+    alamat_pengiriman_id: Optional[UUID] = None
+    ppic: bool = False
 
 
 class PurchaseOrderCreate(PurchaseOrderBase):
     details: List[PurchaseOrderDetailCreate]
     biaya_tambahan: List[TransaksiBiayaCreate] = []
+    # Wajib pilih SATU alamat pengiriman (checkbox di form PO).
+    alamat_pengiriman_id: UUID
 
 
 class PurchaseOrderUpdate(BaseSchema):
@@ -133,6 +140,9 @@ class PurchaseOrderUpdate(BaseSchema):
     # Phase B — new fields
     syarat_bayar_id: Optional[UUID] = None
     currency: Optional[str] = None
+    # === Update ASAHI #3 — alamat pengiriman (gudang tujuan) + PPIC ===
+    alamat_pengiriman_id: Optional[UUID] = None
+    ppic: Optional[bool] = None
     # Phase B — support detail update
     details: Optional[List[PurchaseOrderDetailCreate]] = None
 
@@ -148,6 +158,8 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     status: str
     jurnal_umum_id: Optional[UUID] = None  # LEGACY — should always be null
     supplier_name_snapshot: Optional[str] = None  # Phase B
+    # === Update ASAHI #3 — snapshot teks alamat pengiriman untuk cetak PO ===
+    alamat_pengiriman: Optional[str] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime

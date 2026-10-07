@@ -95,6 +95,9 @@ def create_purchase_order(
             created_by=current_user.id,
             syarat_bayar_id=data_in.syarat_bayar_id,
             currency=data_in.currency,
+            # === Update ASAHI #3 — alamat pengiriman (wajib) + PPIC ===
+            alamat_pengiriman_id=data_in.alamat_pengiriman_id,
+            ppic=data_in.ppic,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id)
@@ -176,8 +179,9 @@ def update_purchase_order(
 ):
     """Update data Purchase Order (header only).
 
-    Field schema yang tidak didukung service (details/syarat_bayar_id/currency)
-    diabaikan agar tidak memicu HTTP 500 — update bersifat header-only.
+    Field header (termasuk currency, syarat_bayar_id, alamat pengiriman, dan
+    PPIC — update ASAHI #3) diteruskan ke service; details diabaikan agar
+    tidak memicu HTTP 500 (update bersifat header-only).
     """
     item = svc.get_purchase_order_by_id(db, po_id)
     if not item:

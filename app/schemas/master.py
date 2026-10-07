@@ -533,3 +533,51 @@ class CompanyProfileUpdate(BaseSchema):
     telepon: Optional[str] = Field(default=None, max_length=50)
     email: Optional[str] = Field(default=None, max_length=100)
     logo: Optional[str] = None
+
+
+# ==========================================
+# MATA UANG (dropdown Currency SO/PO) — update ASAHI #3
+# ==========================================
+class MataUangBase(BaseSchema):
+    kode: str = Field(min_length=2, max_length=8)
+    nama: str = Field(min_length=1, max_length=100)
+    is_aktif: bool = True
+
+
+class MataUangCreate(MataUangBase):
+    pass
+
+
+class MataUangUpdate(BaseSchema):
+    kode: Optional[str] = Field(default=None, min_length=2, max_length=8)
+    nama: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    is_aktif: Optional[bool] = None
+
+
+class MataUangResponse(MataUangBase):
+    id: UUID
+    updated_at: Optional[datetime] = None
+
+
+# ==========================================
+# ALAMAT PENGIRIMAN (gudang tujuan PO) — update ASAHI #3
+# ==========================================
+class AlamatPengirimanBase(BaseSchema):
+    prefix: str = Field(min_length=1, max_length=200)
+    nama: str = Field(min_length=1, max_length=200)
+    is_aktif: bool = True
+
+
+class AlamatPengirimanCreate(AlamatPengirimanBase):
+    pass
+
+
+class AlamatPengirimanUpdate(BaseSchema):
+    prefix: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    nama: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    is_aktif: Optional[bool] = None
+
+
+class AlamatPengirimanResponse(AlamatPengirimanBase):
+    id: UUID
+    updated_at: Optional[datetime] = None

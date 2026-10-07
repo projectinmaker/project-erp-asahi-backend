@@ -20,6 +20,8 @@ from app.models.master.kas_bank_akun import KasBankAkun, JenisKasBank
 from app.models.master.setting_akun import SettingAkun
 from app.models.master.app_setting import AppSetting
 from app.models.master.company_profile import CompanyProfile
+from app.models.master.mata_uang import MataUang
+from app.models.master.alamat_pengiriman import AlamatPengiriman
 from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.satuan import Satuan
 from app.models.master.barang import ItemTypeBarang
@@ -44,6 +46,8 @@ from app.schemas.master import (
     SettingAkunUpdate, SettingAkunResponse,
     AppSettingUpdate, AppSettingResponse,
     CompanyProfileResponse, CompanyProfileUpdate,
+    MataUangCreate, MataUangUpdate, MataUangResponse,
+    AlamatPengirimanCreate, AlamatPengirimanUpdate, AlamatPengirimanResponse,
     COASimpleResponse,
     ImportResult, ImportRowError,
 )
@@ -2049,11 +2053,15 @@ def get_company_profile(
     if row is None:
         # Fallback defensif bila migrasi/seed belum jalan — kembalikan nilai
         # default lama (identik dengan COMPANY_INFO yang dulu hardcoded FE).
+        # Update ASAHI #3: alamat dipecah 2 baris setelah "Jatireja" (kop cetak).
         from uuid import uuid4
         return CompanyProfileResponse(
             id=uuid4(),
             nama_perusahaan="ASAHI Books",
-            alamat="Jalan Simpangan No.18, RT.03/RW.06, Jatireja, Kec. Cikarang Tim., Kabupaten Bekasi, Jawa Barat 17530",
+            alamat=(
+                "Jalan Simpangan No.18, RT.03/RW.06, Jatireja,\n"
+                "Kec. Cikarang Tim., Kabupaten Bekasi, Jawa Barat 17530"
+            ),
         )
     return row
 
@@ -2085,3 +2093,172 @@ def update_company_profile(
     db.commit()
     db.refresh(row)
     return row
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Mata Uang — dropdown Currency form SO/PO (update ASAHI #3)
+# Dikelola di Pengaturan → Profil Perusahaan.
+# ═════════════════════════════════════════════════════════════════════════
+
+@router.get("/mata-uang", response_model=List[MataUangResponse])
+def list_mata_uang(
+    aktif_only: bool = Query(False, description="True = hanya yang aktif (untuk dropdown)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar mata uang. Dropdown form pesanan memakai aktif_only=true."""
+    query = db.query(MataUang)
+    if aktif_only:
+        query = query.filter(MataUang.is_aktif.is_(True))
+    return query.order_by(MataUang.kode).all()
+
+
+@router.post("/mata-uang", response_model=MataUangResponse, status_code=status.HTTP_201_CREATED)
+def create_mata_uang(
+    data_in: MataUangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Tambah mata uang baru (contoh: EUR, CNY, SGD)."""
+    kode = data_in.kode.strip().upper()
+    if db.query(MataUang).filter(MataUang.kode == kode).first():
+        raise HTTPException(400, f"Mata uang {kode} sudah ada")
+    row = MataUang(kode=kode, nama=data_in.nama.strip(), is_aktif=data_in.is_aktif)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.put("/mata-uang/{mata_uang_id}", response_model=MataUangResponse)
+def update_mata_uang(
+    mata_uang_id: UUID,
+    data_in: MataUangUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Edit mata uang (nama / status aktif / kode)."""
+    row = db.query(MataUang).filter(MataUang.id == mata_uang_id).first()
+    if not row:
+        raise HTTPException(404, "Mata uang tidak ditemukan")
+
+    payload = data_in.model_dump(exclude_unset=True)
+    if "kode" in payload and payload["kode"] is not None:
+        kode_baru = payload["kode"].strip().upper()
+        if kode_baru != row.kode and db.query(MataUang).filter(MataUang.kode == kode_baru).first():
+            raise HTTPException(400, f"Mata uang {kode_baru} sudah ada")
+        payload["kode"] = kode_baru
+    if "nama" in payload and payload["nama"] is not None:
+        payload["nama"] = payload["nama"].strip()
+
+    # IDR adalah mata uang dasar pembukuan — tidak boleh dinonaktifkan.
+    if row.kode == "IDR" and payload.get("is_aktif") is False:
+        raise HTTPException(400, "IDR (Rupiah) adalah mata uang dasar dan tidak dapat dinonaktifkan")
+
+    for key, value in payload.items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/mata-uang/{mata_uang_id}", status_code=status.HTTP_200_OK)
+def delete_mata_uang(
+    mata_uang_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Hapus mata uang. IDR tidak boleh dihapus; mata uang yang masih dipakai
+    dokumen (SO/PO) juga ditolak agar histori tetap konsisten."""
+    row = db.query(MataUang).filter(MataUang.id == mata_uang_id).first()
+    if not row:
+        raise HTTPException(404, "Mata uang tidak ditemukan")
+    if row.kode == "IDR":
+        raise HTTPException(400, "IDR (Rupiah) adalah mata uang dasar dan tidak dapat dihapus")
+
+    from app.models.transaksi.penjualan.sales_order import SalesOrder
+    from app.models.transaksi.pembelian.purchase_order import PurchaseOrder
+    if db.query(PurchaseOrder).filter(PurchaseOrder.currency == row.kode).first() or \
+       db.query(SalesOrder).filter(SalesOrder.currency == row.kode).first():
+        raise HTTPException(400, f"Mata uang {row.kode} masih dipakai dokumen pesanan — nonaktifkan saja agar tidak muncul di dropdown")
+
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "message": f"Mata uang {row.kode} dihapus"}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Alamat Pengiriman — gudang tujuan PO (update ASAHI #3)
+# Dikelola di Pengaturan → Profil Perusahaan; saat input PO wajib pilih satu.
+# ═════════════════════════════════════════════════════════════════════════
+
+@router.get("/alamat-pengiriman", response_model=List[AlamatPengirimanResponse])
+def list_alamat_pengiriman(
+    aktif_only: bool = Query(False, description="True = hanya yang aktif (untuk form PO)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar alamat pengiriman (gudang tujuan PO)."""
+    query = db.query(AlamatPengiriman)
+    if aktif_only:
+        query = query.filter(AlamatPengiriman.is_aktif.is_(True))
+    return query.order_by(AlamatPengiriman.created_at).all()
+
+
+@router.post("/alamat-pengiriman", response_model=AlamatPengirimanResponse, status_code=status.HTTP_201_CREATED)
+def create_alamat_pengiriman(
+    data_in: AlamatPengirimanCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Tambah alamat pengiriman (gudang) baru."""
+    row = AlamatPengiriman(
+        prefix=data_in.prefix.strip(),
+        nama=data_in.nama.strip(),
+        is_aktif=data_in.is_aktif,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.put("/alamat-pengiriman/{alamat_id}", response_model=AlamatPengirimanResponse)
+def update_alamat_pengiriman(
+    alamat_id: UUID,
+    data_in: AlamatPengirimanUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Edit alamat pengiriman. PO lama TIDAK ikut berubah (cetak memakai snapshot)."""
+    row = db.query(AlamatPengiriman).filter(AlamatPengiriman.id == alamat_id).first()
+    if not row:
+        raise HTTPException(404, "Alamat pengiriman tidak ditemukan")
+
+    payload = data_in.model_dump(exclude_unset=True)
+    if "prefix" in payload and payload["prefix"] is not None:
+        payload["prefix"] = payload["prefix"].strip()
+    if "nama" in payload and payload["nama"] is not None:
+        payload["nama"] = payload["nama"].strip()
+
+    for key, value in payload.items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/alamat-pengiriman/{alamat_id}", status_code=status.HTTP_200_OK)
+def delete_alamat_pengiriman(
+    alamat_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Hapus alamat pengiriman. PO yang merujuk alamat ini tetap aman —
+    referensinya di-NULL-kan dan cetakan memakai snapshot teks."""
+    row = db.query(AlamatPengiriman).filter(AlamatPengiriman.id == alamat_id).first()
+    if not row:
+        raise HTTPException(404, "Alamat pengiriman tidak ditemukan")
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "message": "Alamat pengiriman dihapus"}

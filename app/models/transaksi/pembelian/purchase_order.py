@@ -35,6 +35,14 @@ class PurchaseOrder(BaseModel, BaseMixin):
     currency = Column(String(3), nullable=False, default='IDR')
     supplier_name_snapshot = Column(String(200), nullable=True)  # For historical reference
 
+    # === Update ASAHI #3 — alamat pengiriman (gudang tujuan) + PPIC ===
+    # Referensi ke master alamat_pengiriman (SET NULL bila master dihapus);
+    # snapshot teks di alamat_pengiriman dipakai untuk cetak agar dokumen
+    # lama tidak berubah ketika master diedit/dihapus.
+    alamat_pengiriman_id = Column(UUID(as_uuid=True), ForeignKey("alamat_pengiriman.id", name="fk_po_alamat_pengiriman", ondelete="SET NULL"), nullable=True, index=True)
+    alamat_pengiriman = Column(Text, nullable=True)  # snapshot: "<prefix>\n<nama>"
+    ppic = Column(Boolean, nullable=False, default=False)
+
     # Relationships
     supplier = relationship("Supplier")
     syarat_bayar = relationship("SyaratBayar", foreign_keys=[syarat_bayar_id])
