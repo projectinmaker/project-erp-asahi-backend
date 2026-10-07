@@ -3,6 +3,7 @@ from sqlalchemy import Column, String, Boolean
 from app.database import BaseModel
 from app.models.base import BaseMixin
 
+
 class AlamatPengiriman(BaseModel, BaseMixin):
     """Daftar alamat pengiriman (gudang tujuan) untuk Purchase Order — update ASAHI #3.
 
@@ -12,6 +13,7 @@ class AlamatPengiriman(BaseModel, BaseMixin):
     diedit/dihapus; kolom ``alamat_pengiriman_id`` hanya referensi (SET NULL
     bila master dihapus).
     """
+
     __tablename__ = "alamat_pengiriman"
 
     prefix = Column(String(200), nullable=False, default="PT ASAHI SUKSES INDUSTRI")

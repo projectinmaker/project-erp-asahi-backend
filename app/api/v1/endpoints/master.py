@@ -73,12 +73,30 @@ class PelangganSimpleResponse(BaseSchema):
     id: UUID
     kode: str
     nama: str
+    # === Update #4 — auto-fill master data di form transaksi ===
+    # Dropdown pelanggan kini membawa data master (alamat, kontak, syarat bayar)
+    # sehingga form SO/Invoice/Penawaran/Pengiriman bisa menarik otomatis tanpa
+    # input manual. Field opsional — aman untuk pemakaian lama.
+    alamat: str | None = None
+    telepon: str | None = None
+    kontak_person: str | None = None
+    email: str | None = None
+    syarat_bayar_id: UUID | None = None
 
 
 class SupplierSimpleResponse(BaseSchema):
     id: UUID
     kode: str
     nama: str
+    # === Update #4 — auto-fill master data di form transaksi ===
+    # Dropdown supplier membawa alamat/kontak/syarat bayar + mata uang default
+    # supplier (dipakai form PO untuk memilih currency otomatis).
+    alamat: str | None = None
+    telepon: str | None = None
+    kontak_person: str | None = None
+    email: str | None = None
+    syarat_bayar_id: UUID | None = None
+    currency: str | None = None
 
 
 from app.services import master_service
