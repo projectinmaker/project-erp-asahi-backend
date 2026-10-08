@@ -22,7 +22,7 @@ default_prefix_map = {
     "SALES_ORDER": "SO",
     "PURCHASE_ORDER": "PO",
     "PENERIMAAN_BARANG": "PB",
-    "PENGIRIMAN_BARANG": "KB",
+    "PENGIRIMAN_BARANG": "DO",  # Update ASAHI #3: dulu "KB" (Kartu/Bukti) — kini Delivery Order
     "PENYESUAIAN_STOK": "PS",
     "TRANSFER_KAS": "TK",
     "MANUAL_JURNAL": "JV",

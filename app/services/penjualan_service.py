@@ -995,10 +995,11 @@ def create_pengiriman(
         if not pelanggan:
             raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
 
-        # Generate nomor surat jalan
-        # Update ASAHI: pola penomoran seragam "KB ASI/YYYY/NNN" (reset tahunan).
+        # Generate nomor dokumen pengiriman (Delivery Order)
+        # Update ASAHI #3: prefix nomor diganti "KB" → "DO" (pola "DO ASI/YYYY/NNN",
+        # reset tahunan). Dokumen lama KB ASI/... tetap memakai nomor lamanya.
         no_surat_jalan = get_nomor_dokumen_tahunan(
-            db, PengirimanBarang, prefix="KB",
+            db, PengirimanBarang, prefix="DO",
             no_column="no_surat_jalan", tanggal=tanggal.date()
         )
 

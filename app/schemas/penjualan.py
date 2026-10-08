@@ -20,6 +20,10 @@ class PelangganSimpleResponse(BaseSchema):
     id: UUID
     kode: str
     nama: str
+    # Update ASAHI — cetak Delivery Order (Pengiriman, dulu "Surat Jalan"):
+    # alamat perusahaan dari master pelanggan ditampilkan di bawah nama
+    # "Kirim ke" pada cetakan.
+    alamat: Optional[str] = None
 
 
 class SyaratBayarSimpleResponse(BaseSchema):
