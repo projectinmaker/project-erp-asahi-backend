@@ -93,12 +93,25 @@ def _hitung_grand_total(
     total_diskon: Decimal,
     ppn_pct: Decimal,
     total_biaya_tambahan: Decimal,
-) -> Tuple[Decimal, Decimal]:
-    """Hitung total_ppn dan grand_total."""
+    # === Update ASAHI — PPh23/PPN opsional (Purchase Order) ===
+    ppn_applicable: bool = True,
+    pph23_pct: Optional[Decimal] = None,
+    pph23_applicable: bool = False,
+) -> Tuple[Decimal, Decimal, Decimal]:
+    """Hitung total_ppn, total_pph23, dan grand_total.
+
+    PPN hanya diterapkan bila ppn_applicable; PPh23 hanya dihitung bila
+    pph23_applicable dan memotong grand_total (potongan pajak).
+    """
     dasar_pajak = sub_total - total_diskon
-    total_ppn = dasar_pajak * ppn_pct / Decimal("100")
-    grand_total = dasar_pajak + total_ppn + total_biaya_tambahan
-    return total_ppn, grand_total
+    total_ppn = dasar_pajak * (ppn_pct if ppn_applicable else Decimal("0")) / Decimal("100")
+    total_pph23 = (
+        dasar_pajak * pph23_pct / Decimal("100")
+        if (pph23_applicable and pph23_pct is not None)
+        else Decimal("0")
+    )
+    grand_total = dasar_pajak + total_ppn + total_biaya_tambahan - total_pph23
+    return total_ppn, total_pph23, grand_total
 
 
 def _create_biaya_tambahan(db: Session, model_obj, biaya_data: list, fk_field: str):
@@ -185,6 +198,10 @@ def create_purchase_order(
     alamat: Optional[str] = None,
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
+    # === Update ASAHI — pilihan PPh23/PPN saat input PO ===
+    ppn_applicable: bool = True,
+    pph23_applicable: bool = False,
+    pph23: Decimal = Decimal("2"),
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
@@ -228,8 +245,11 @@ def create_purchase_order(
         sub_total, total_diskon = _hitung_total_detail_with_diskon(details_data)
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        total_ppn, grand_total = _hitung_grand_total(
-            sub_total, total_diskon, ppn, total_biaya_tambahan
+        total_ppn, total_pph23, grand_total = _hitung_grand_total(
+            sub_total, total_diskon, ppn, total_biaya_tambahan,
+            ppn_applicable=ppn_applicable,
+            pph23_pct=pph23,
+            pph23_applicable=pph23_applicable,
         )
 
         # Generate nomor pesanan
@@ -249,6 +269,11 @@ def create_purchase_order(
             alamat=alamat,
             diskon_global=diskon_global,
             ppn=ppn,
+            # === Update ASAHI — pilihan PPh23/PPN saat input PO ===
+            ppn_applicable=ppn_applicable,
+            pph23_applicable=pph23_applicable,
+            pph23=pph23,
+            total_pph23=total_pph23,
             sub_total=sub_total,
             total_diskon=total_diskon,
             total_ppn=total_ppn,
@@ -319,6 +344,10 @@ def update_purchase_order(
     alamat: Optional[str] = None,
     diskon_global: Optional[Decimal] = None,
     ppn: Optional[Decimal] = None,
+    # === Update ASAHI — pilihan PPh23/PPN saat update PO ===
+    ppn_applicable: Optional[bool] = None,
+    pph23_applicable: Optional[bool] = None,
+    pph23: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
     # === Update ASAHI #3 — dukung update currency/syarat bayar/alamat kirim/PPIC ===
@@ -344,6 +373,13 @@ def update_purchase_order(
         db_obj.diskon_global = diskon_global
     if ppn is not None:
         db_obj.ppn = ppn
+    # === Update ASAHI — pilihan PPh23/PPN ===
+    if ppn_applicable is not None:
+        db_obj.ppn_applicable = ppn_applicable
+    if pph23_applicable is not None:
+        db_obj.pph23_applicable = pph23_applicable
+    if pph23 is not None:
+        db_obj.pph23 = pph23
     if keterangan is not None:
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
@@ -368,9 +404,10 @@ def update_purchase_order(
     if ppic is not None:
         db_obj.ppic = ppic
 
-    # Fix diskon global: hitung ulang total bila diskon_global/ppn diubah —
-    # sebelumnya total lama (stale) tetap tersimpan meski persen berubah.
-    if diskon_global is not None or ppn is not None:
+    # Fix diskon global: hitung ulang total bila diskon_global/ppn/pilihan
+    # pajak (PPh23/PPN) diubah — sebelumnya total lama (stale) tetap
+    # tersimpan meski persen berubah.
+    if diskon_global is not None or ppn is not None or ppn_applicable is not None or pph23_applicable is not None or pph23 is not None:
         from app.services.document_totals import refresh_totals
         refresh_totals(db_obj)
 
@@ -492,7 +529,8 @@ def create_purchase_invoice(
         sub_total, total_diskon = _hitung_total_detail_with_diskon(details_data)
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        total_ppn, grand_total = _hitung_grand_total(
+        # Invoice pembelian belum mendukung pilihan PPh23 (default PPN aktif).
+        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
             sub_total, total_diskon, ppn, total_biaya_tambahan
         )
 
@@ -752,7 +790,7 @@ def create_purchase_retur(
         # Hitung sub_total dari detail (tanpa diskon)
         sub_total = _hitung_total_detail_no_diskon(details_data)
 
-        total_ppn, grand_total = _hitung_grand_total(
+        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
             sub_total, Decimal("0"), ppn, Decimal("0")
         )
 

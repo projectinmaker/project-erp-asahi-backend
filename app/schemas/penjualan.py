@@ -218,6 +218,11 @@ class SalesInvoiceBase(BaseSchema):
     mata_uang: str = "IDR"
     diskon_global: Optional[Decimal] = Decimal("0")
     ppn: Decimal = Decimal("11")
+    # === Update ASAHI — pilihan PPh23/PPN saat input SI (bisa keduanya,
+    # salah satu, atau tidak sama sekali) ===
+    ppn_applicable: bool = True
+    pph23_applicable: bool = False
+    pph23: Decimal = Decimal("2")
     keterangan: Optional[str] = None
     auto_post_jurnal: bool = False
 
@@ -239,6 +244,10 @@ class SalesInvoiceUpdate(BaseSchema):
     mata_uang: Optional[str] = None
     diskon_global: Optional[Decimal] = None
     ppn: Optional[Decimal] = None
+    # === Update ASAHI — pilihan PPh23/PPN opsional ===
+    ppn_applicable: Optional[bool] = None
+    pph23_applicable: Optional[bool] = None
+    pph23: Optional[Decimal] = None
     keterangan: Optional[str] = None
     auto_post_jurnal: Optional[bool] = None
     # Update #3 — penggantian baris detail (termasuk link source-line
@@ -252,6 +261,7 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     sub_total: Decimal
     total_diskon: Decimal
     total_ppn: Decimal
+    total_pph23: Decimal
     total_biaya_tambahan: Decimal
     grand_total: Decimal
     status: str

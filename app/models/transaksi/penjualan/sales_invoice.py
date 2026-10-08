@@ -27,6 +27,16 @@ class SalesInvoice(BaseModel, BaseMixin):
     total_ppn = Column(Numeric(18, 2), default=0, nullable=False)
     total_biaya_tambahan = Column(Numeric(18, 2), default=0, nullable=False)
     grand_total = Column(Numeric(18, 2), default=0, nullable=False)
+
+    # === Update ASAHI (PPh23/PPN opsional) — pilihan pajak saat input SI ===
+    # ppn_applicable=False → total_ppn dipaksa 0 (PPN tidak dipilih).
+    # pph23_applicable=True → total_pph23 dihitung dan MEMOTONG grand_total
+    # (PPh23 ditanggung/dipotong pelanggan saat bayar). Boleh keduanya,
+    # salah satu, atau tidak sama sekali (sesuai permintaan user).
+    ppn_applicable = Column(Boolean, nullable=False, default=True, server_default="true")
+    pph23_applicable = Column(Boolean, nullable=False, default=False, server_default="false")
+    pph23 = Column(Numeric(5, 2), default=2, nullable=False, server_default="2")
+    total_pph23 = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
     # LEGACY - DEPRECATED: SI posting via workflow, bukan auto_post
     auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Changed default to False
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)

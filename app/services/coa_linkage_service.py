@@ -66,47 +66,60 @@ def _generate_next_detail_kode(db: Session, parent: AkunPerkiraan) -> str:
     ada/tidaknya '.' dan panjang digit).
 
     Logic:
-    1. Cari semua child langsung dari parent (induk_id == parent.id)
-    2. Ambil kode terbesar, increment 3 digit terakhir
-    3. Jika belum ada child, mulai dari parent.kode dengan 3 digit terakhir = 001
+    1. Kumpulkan semua kode child langsung dari parent (normalisasi tanpa '.')
+    2. Tentukan prefix target sesuai format parent (3-digit flat / 6-digit flat / dotted)
+    3. Ambil sequence (3 digit terakhir) terbesar dari child yang bentuknya
+       PERSIS prefix + 3 digit (satu ruang kode yang sama), lalu increment.
+       Child dengan bentuk kode berbeda (mis. subledger seeded 1111xx001 di
+       bawah 111000000) TIDAK dihitung sebagai max — hanya guard bentrok.
+    4. Guard: skip kandidat yang sudah dipakai child mana pun (hindari
+       UniqueViolation ix_akun_perkiraan_kode).
     """
     parent_kode = parent.kode  # e.g. "111000000" atau "111.000.000"
     is_dotted = "." in parent_kode
 
-    # Cari child terakhir di bawah parent ini
-    last = (
-        db.query(AkunPerkiraan)
-        .filter(AkunPerkiraan.induk_id == parent.id)
-        .order_by(AkunPerkiraan.kode.desc())
-        .first()
-    )
-
-    if last:
-        # Ambil 3 digit terakhir dari kode child (buang '.' dulu kalau ada)
-        last_digits_only = last.kode.replace(".", "")
-        try:
-            last_seq = int(last_digits_only[-3:])
-        except (IndexError, ValueError):
-            last_seq = 0
-        next_seq = last_seq + 1
-    else:
-        # Belum ada child, mulai dari 001
-        next_seq = 1
+    # Semua kode child langsung, dinormalisasi tanpa '.'
+    existing_norm = {
+        row[0].replace(".", "")
+        for row in db.query(AkunPerkiraan.kode).filter(AkunPerkiraan.induk_id == parent.id).all()
+    }
 
     if is_dotted:
         # Ambil 2 segmen pertama dari parent (misal "111.000"), tambah segmen baru
         segments = parent_kode.split(".")
-        prefix = ".".join(segments[:2])  # "111.000"
-        return f"{prefix}.{next_seq:03d}"
+        prefix_dotted = ".".join(segments[:2])  # "111.000"
+        prefix_norm = prefix_dotted.replace(".", "")
+    else:
+        digits_only = parent_kode.replace(".", "")
+        if len(digits_only) <= 6:
+            # FLAT 6-digit (COA ASAHI 111xxx): child = 3 digit prefix + 3 digit seq
+            prefix_norm = parent_kode[:3]
+            prefix_dotted = None
+        else:
+            # FLAT 9-digit: 6 digit depan parent + 3 digit sequence
+            prefix_norm = parent_kode[:6]
+            prefix_dotted = None
 
-    digits_only = parent_kode.replace(".", "")
-    if len(digits_only) <= 6:
-        # FLAT 6-digit (COA ASAHI 111xxx): child = 3 digit prefix + 3 digit seq
-        prefix_3 = parent_kode[:3]
-        return f"{prefix_3}{next_seq:03d}"
-    # FLAT 9-digit: 6 digit depan parent + 3 digit sequence
-    prefix_6 = parent_kode[:6]
-    return f"{prefix_6}{next_seq:03d}"
+    # Sequence terbesar di ruang kode yang sama (prefix + 3 digit)
+    max_seq = 0
+    seq_len = len(prefix_norm) + 3
+    for kode_norm in existing_norm:
+        if (
+            len(kode_norm) == seq_len
+            and kode_norm.startswith(prefix_norm)
+            and kode_norm[len(prefix_norm):].isdigit()
+        ):
+            max_seq = max(max_seq, int(kode_norm[len(prefix_norm):]))
+
+    next_seq = max_seq + 1
+
+    # Guard: skip kandidat yang sudah terpakai child dengan bentuk kode lain
+    while f"{prefix_norm}{next_seq:03d}" in existing_norm:
+        next_seq += 1
+
+    if prefix_dotted is not None:
+        return f"{prefix_dotted}.{next_seq:03d}"
+    return f"{prefix_norm}{next_seq:03d}"
 
 
 def _create_detail_coa(

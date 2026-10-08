@@ -43,6 +43,8 @@ from app.services.setting_akun_service import (
     KEY_RETUR_PENJUALAN,
     KEY_PENDAPATAN_ANGKUT,
     KEY_PERSEDIAAN_BARANG_JADI,
+    # === Update ASAHI — PPh23 opsional pada Invoice Penjualan ===
+    KEY_PPH23_DIBAYAR_DIMUKA,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
@@ -65,15 +67,26 @@ def _hitung_grand_total(
     total_diskon: Decimal,
     ppn_pct: Decimal,
     total_biaya_tambahan: Decimal,
+    # === Update ASAHI — PPh23/PPN opsional (Sales Invoice) ===
+    ppn_applicable: bool = True,
+    pph23_pct: Optional[Decimal] = None,
+    pph23_applicable: bool = False,
 ) -> Tuple[Decimal, Decimal, Decimal]:
-    """Hitung total_ppn dan grand_total.
-    ppn = (sub_total - total_diskon) * ppn_pct / 100
-    grand_total = sub_total - total_diskon + ppn + total_biaya_tambahan
+    """Hitung total_ppn, total_pph23, dan grand_total.
+
+    ppn = (sub_total - total_diskon) * ppn_pct / 100   (bila ppn_applicable)
+    pph23 = (sub_total - total_diskon) * pph23_pct / 100 (bila pph23_applicable)
+    grand_total = sub_total - total_diskon + ppn + total_biaya_tambahan - pph23
     """
     dasar_pajak = sub_total - total_diskon
-    total_ppn = dasar_pajak * ppn_pct / Decimal("100")
-    grand_total = dasar_pajak + total_ppn + total_biaya_tambahan
-    return total_ppn, grand_total
+    total_ppn = dasar_pajak * (ppn_pct if ppn_applicable else Decimal("0")) / Decimal("100")
+    total_pph23 = (
+        dasar_pajak * pph23_pct / Decimal("100")
+        if (pph23_applicable and pph23_pct is not None)
+        else Decimal("0")
+    )
+    grand_total = dasar_pajak + total_ppn + total_biaya_tambahan - total_pph23
+    return total_ppn, total_pph23, grand_total
 
 
 def _create_biaya_tambahan(db: Session, model_obj, biaya_data: list, fk_field: str):
@@ -199,7 +212,8 @@ def create_sales_order(
             d["sub_total"] = line_total - diskon_nilai  # Update sub_total per line
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        total_ppn, grand_total = _hitung_grand_total(
+        # Sales Order belum mendukung pilihan PPh23 (default PPN aktif).
+        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
             sub_total, total_diskon, ppn, total_biaya_tambahan
         )
 
@@ -428,6 +442,10 @@ def create_sales_invoice(
     mata_uang: str = "IDR",
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
+    # === Update ASAHI — pilihan PPh23/PPN saat input SI ===
+    ppn_applicable: bool = True,
+    pph23_applicable: bool = False,
+    pph23: Decimal = Decimal("2"),
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
@@ -466,8 +484,11 @@ def create_sales_invoice(
             d["sub_total"] = line_total - diskon_nilai
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        total_ppn, grand_total = _hitung_grand_total(
-            sub_total, total_diskon, ppn, total_biaya_tambahan
+        total_ppn, total_pph23, grand_total = _hitung_grand_total(
+            sub_total, total_diskon, ppn, total_biaya_tambahan,
+            ppn_applicable=ppn_applicable,
+            pph23_pct=pph23,
+            pph23_applicable=pph23_applicable,
         )
 
         # Generate nomor invoice
@@ -490,6 +511,11 @@ def create_sales_invoice(
             mata_uang=mata_uang,
             diskon_global=diskon_global,
             ppn=ppn,
+            # === Update ASAHI — pilihan PPh23/PPN saat input SI ===
+            ppn_applicable=ppn_applicable,
+            pph23_applicable=pph23_applicable,
+            pph23=pph23,
+            total_pph23=total_pph23,
             sub_total=sub_total,
             total_diskon=total_diskon,
             total_ppn=total_ppn,
@@ -556,6 +582,10 @@ def update_sales_invoice(
     mata_uang: Optional[str] = None,
     diskon_global: Optional[Decimal] = None,
     ppn: Optional[Decimal] = None,
+    # === Update ASAHI — pilihan PPh23/PPN saat update SI ===
+    ppn_applicable: Optional[bool] = None,
+    pph23_applicable: Optional[bool] = None,
+    pph23: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
     tanggal_jatuh_tempo=None,
@@ -586,6 +616,13 @@ def update_sales_invoice(
         db_obj.diskon_global = diskon_global
     if ppn is not None:
         db_obj.ppn = ppn
+    # === Update ASAHI — pilihan PPh23/PPN ===
+    if ppn_applicable is not None:
+        db_obj.ppn_applicable = ppn_applicable
+    if pph23_applicable is not None:
+        db_obj.pph23_applicable = pph23_applicable
+    if pph23 is not None:
+        db_obj.pph23 = pph23
     if keterangan is not None:
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
@@ -734,7 +771,7 @@ def create_sales_retur(
             sub_total += line_total
             d["sub_total"] = line_total
 
-        total_ppn, grand_total = _hitung_grand_total(
+        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
             sub_total, Decimal("0"), ppn, Decimal("0")
         )
 
@@ -1298,6 +1335,8 @@ def post_sales_invoice(db: Session, inv, created_by):
     sub_total = inv.sub_total
     total_diskon = inv.total_diskon
     total_ppn = inv.total_ppn
+    # === Update ASAHI — PPh23 opsional: nilai potongan pajak pada invoice ===
+    total_pph23 = safe_decimal(getattr(inv, "total_pph23", 0))
     total_biaya_tambahan = inv.total_biaya_tambahan
     grand_total = inv.grand_total
     if not pelanggan.akun_piutang_id:
@@ -1374,6 +1413,21 @@ def post_sales_invoice(db: Session, inv, created_by):
                 ),
                 kredit=total_biaya_tambahan,
                 keterangan=f"Biaya tambahan INV {no_invoice}",
+            )
+        )
+
+    # === Update ASAHI — PPh23 opsional (potongan pajak oleh pelanggan) ===
+    # Grand total sudah dipotong total_pph23 (Debit Piutang lebih kecil),
+    # sehingga perlu Debit "PPh 23 Dibayar Dimuka" (aktiva pajak) agar
+    # jurnal tetap balance: D(Piutang + PPh23) = K(Pendapatan + PPN + Angkut).
+    if total_pph23 > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PPH23_DIBAYAR_DIMUKA, context=f"INV {no_invoice}"
+                ),
+                debit=total_pph23,
+                keterangan=f"PPh23 dipotong pelanggan INV {no_invoice}",
             )
         )
 

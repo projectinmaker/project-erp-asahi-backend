@@ -59,6 +59,12 @@ KEY_HPP_PRODUK_JADI = "HPP_PRODUK_JADI"
 # Akun laba/rugi tahun berjalan (322000) — system account, tidak diposting manual
 KEY_LABA_RUGI_TAHUN_BERJALAN = "LABA_RUGI_TAHUN_BERJALAN"
 
+# Akun PPh 23 Dibayar Dimuka (150100002) — dipakai saat Invoice Penjualan
+# memakai pilihan PPh23 (potongan pajak oleh pelanggan): debit saat posting
+# agar jurnal balance (grand_total sudah dipotong total_pph23).
+# Update ASAHI — pilihan PPh23/PPN opsional pada PO & Invoice Penjualan.
+KEY_PPH23_DIBAYAR_DIMUKA = "PPH23_DIBAYAR_DIMUKA"
+
 # Akun laba ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
 KEY_LABA_DITAHAN = "LABA_DITAHAN"
 
@@ -93,6 +99,7 @@ KNOWN_SETTING_LABELS = {
     KEY_HPP_PRODUK_JADI: "HPP Produk Jadi",
     KEY_LABA_RUGI_TAHUN_BERJALAN: "Laba (Rugi) Tahun Berjalan",
     KEY_LABA_DITAHAN: "Laba (Rugi) Ditahan",
+    KEY_PPH23_DIBAYAR_DIMUKA: "PPh 23 Dibayar Dimuka",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)

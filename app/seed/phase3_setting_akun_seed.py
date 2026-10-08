@@ -179,6 +179,10 @@ def seed_phase3_coa_and_settings():
             # -- AKTIVA --
             # PPN Masukan (under PAJAK DIBAYAR DIMUKA 150)
             ("150", "100", "001", "PPN Masukan", HeaderCOA.AKTIVA, SaldoNormal.DEBIT, "150"),
+            # PPh 23 Dibayar Dimuka (under PAJAK DIBAYAR DIMUKA 150) —
+            # Update ASAHI: pilihan PPh23 pada Invoice Penjualan (debit saat
+            # posting karena grand_total dipotong total_pph23).
+            ("150", "100", "002", "PPh 23 Dibayar Dimuka", HeaderCOA.AKTIVA, SaldoNormal.DEBIT, "150"),
 
             # Persediaan (under PERSEDIAAN 131)
             ("131", "100", "001", "Persediaan Bahan Baku", HeaderCOA.AKTIVA, SaldoNormal.DEBIT, "131"),
@@ -337,6 +341,9 @@ def seed_phase3_coa_and_settings():
             ("LABA_RUGI_TAHUN_BERJALAN", "Laba (Rugi) Tahun Berjalan", "322", "000", ""),
             # Laba Ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
             ("LABA_DITAHAN", "Laba (Rugi) Ditahan", "321", "000", ""),
+            # PPh 23 Dibayar Dimuka (150100002) — dipakai jurnal Invoice
+            # Penjualan yang memakai pilihan PPh23 (Update ASAHI).
+            ("PPH23_DIBAYAR_DIMUKA", "PPh 23 Dibayar Dimuka", "150", "100", "002"),
         ]
 
         # Kandidat kode cadangan per-key (dicoba BILA kode utama tidak ketemu,

@@ -90,6 +90,10 @@ def create_purchase_order(
             alamat=data_in.alamat,
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,
+            # === Update ASAHI — pilihan PPh23/PPN saat input PO ===
+            ppn_applicable=data_in.ppn_applicable,
+            pph23_applicable=data_in.pph23_applicable,
+            pph23=data_in.pph23,
             keterangan=data_in.keterangan,
             auto_post_jurnal=False,
             created_by=current_user.id,

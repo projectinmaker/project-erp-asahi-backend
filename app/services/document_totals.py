@@ -43,8 +43,15 @@ def refresh_totals(obj):
             discount += cut
         global_pct = amount(getattr(obj, 'diskon_global', 0))
         tax_pct = amount(obj.ppn)
-        if global_pct > 100 or tax_pct > 100:
-            raise ValueError('Diskon global dan PPN harus antara 0 dan 100 persen')
+        # === Update ASAHI — PPh23/PPN opsional (PO & Sales Invoice) ===
+        # Flag dipilih saat input: boleh keduanya, salah satu, atau tidak
+        # sama sekali. PPN off → total_ppn dipaksa 0; PPh23 on → total_pph23
+        # dihitung dan memotong grand_total.
+        pph23_pct = amount(getattr(obj, 'pph23', 0))
+        if global_pct > 100 or tax_pct > 100 or pph23_pct > 100:
+            raise ValueError('Diskon global, PPN, dan PPh23 harus antara 0 dan 100 persen')
+        ppn_applied = tax_pct if getattr(obj, 'ppn_applicable', True) else ZERO
+        pph23_applied = pph23_pct if getattr(obj, 'pph23_applicable', False) else ZERO
         # Diskon global diterapkan setelah diskon baris (sama seperti invoice):
         # base = (gross - diskon baris) * (1 - diskon global %)
         discount += money((subtotal - discount) * global_pct / 100)
@@ -55,8 +62,13 @@ def refresh_totals(obj):
             obj.total_diskon = discount
         if hasattr(obj, 'total_biaya_tambahan'):
             obj.total_biaya_tambahan = fees
-        obj.total_ppn = money(base * tax_pct / 100)
-        obj.grand_total = base + obj.total_ppn + fees
+        obj.total_ppn = money(base * ppn_applied / 100)
+        if hasattr(obj, 'total_pph23'):
+            # PPh23 dipotong dari grand_total (potongan pajak atas dokumen).
+            obj.total_pph23 = money(base * pph23_applied / 100)
+            obj.grand_total = base + obj.total_ppn + fees - obj.total_pph23
+        else:
+            obj.grand_total = base + obj.total_ppn + fees
     elif name in ('pembayaran_kas', 'penerimaan_kas'):
         if not obj.rincian or any(amount(r.nilai) <= 0 for r in obj.rincian):
             raise ValueError('Rincian kas/bank wajib diisi dengan nilai positif')
