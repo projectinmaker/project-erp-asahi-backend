@@ -178,7 +178,12 @@ REGISTRY_CODES = {f"{m}.{r}.{a}" for m, r, a, _, _ in REGISTRY}
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _expand(patterns: list) -> set:
-    """Ekspansi pattern 'sales.*' / 'sales.sales_order.view' ke kumpulan code registry."""
+    """Ekspansi pattern 'sales.*' / 'sales.sales_order.view' ke kumpulan code registry.
+
+    Update ASAHI #5: wildcard tengah 'reports.*.view' kini diekspansi benar —
+    sebelumnya pattern ini dianggap kode literal (tidak pernah cocok) sehingga
+    template FINANCE_STAFF & MANAGEMENT_VIEWER kehilangan seluruh izin laporan.
+    """
     out = set()
     for p in patterns:
         if p == '*':
@@ -186,6 +191,15 @@ def _expand(patterns: list) -> set:
         elif p.endswith('.*'):
             prefix = p[:-1]  # 'sales.'
             out |= {c for c in REGISTRY_CODES if c.startswith(prefix)}
+        elif '*' in p:
+            # Wildcard tengah: 'module.*.action' / 'module.resource.*' per segmen.
+            parts = p.split('.')
+            if len(parts) == 3:
+                m, r, a = parts
+                for c in REGISTRY_CODES:
+                    cm, cr, ca = c.split('.')
+                    if (m == '*' or cm == m) and (r == '*' or cr == r) and (a == '*' or ca == a):
+                        out.add(c)
         else:
             if p in REGISTRY_CODES:
                 out.add(p)
