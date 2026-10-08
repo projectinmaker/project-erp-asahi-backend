@@ -69,6 +69,9 @@ class BarangSimpleResponse(BaseSchema):
     # Update #4 — dipakai barang-dropdown agar FE tahu metode valuasi barang
     # (optional agar aman untuk pemakaian lain kelas ini)
     metode_valuasi: str | None = None
+    # Update ASAHI #4 — satuan default barang (base_uom) untuk auto-fill
+    # dropdown satuan di form transaksi penjualan/pembelian (sejalan auto-fill harga).
+    satuan_id: UUID | None = None
 
 
 class PelangganSimpleResponse(BaseSchema):
