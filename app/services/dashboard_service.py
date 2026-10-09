@@ -247,10 +247,11 @@ def get_balance_sheet_kpi_widget(
         try:
             from app.services.aging_service import aging
             ar_aging = aging(db, 'piutang', as_of)
+            # Fix E2E audit: rincian aging memakai key 'nilai' (bukan 'sisa_tagihan')
+            # sehingga sum rincian selalu 0. Pakai 'total' per pihak = Σ sisa_tagihan.
             ar_outstanding = sum(
-                Decimal(str(r.get('sisa_tagihan', 0)))
-                for p in ar_aging.get('items', [])
-                for r in p.get('rincian', [])
+                (Decimal(str(p.get('total', 0))) for p in ar_aging.get('items', [])),
+                Decimal('0'),
             )
         except Exception:
             ar_outstanding = Decimal('0')
@@ -259,9 +260,8 @@ def get_balance_sheet_kpi_widget(
         try:
             ap_aging = aging(db, 'hutang', as_of)
             ap_outstanding = sum(
-                Decimal(str(r.get('sisa_tagihan', 0)))
-                for p in ap_aging.get('items', [])
-                for r in p.get('rincian', [])
+                (Decimal(str(p.get('total', 0))) for p in ap_aging.get('items', [])),
+                Decimal('0'),
             )
         except Exception:
             ap_outstanding = Decimal('0')

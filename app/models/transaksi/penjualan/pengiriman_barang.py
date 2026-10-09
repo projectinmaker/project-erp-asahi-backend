@@ -25,4 +25,6 @@ class PengirimanBarang(BaseModel, BaseMixin):
     sales_order = relationship("SalesOrder", back_populates="pengiriman")
     pelanggan = relationship("Pelanggan")
     creator = relationship("Pengguna", foreign_keys=[created_by])
+    # Fix E2E audit: relasi jurnal HPP (sinkron dengan modul lain: SI/PI/kas-bank)
+    jurnal = relationship("JurnalUmum")
     details = relationship("PengirimanBarangDetail", back_populates="pengiriman", cascade="all, delete-orphan")

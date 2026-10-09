@@ -431,6 +431,11 @@ class PengirimanBarangResponse(PengirimanBarangBase):
     id: UUID
     no_surat_jalan: str
     status: str
+    # Fix E2E audit: expose link jurnal HPP (kolom jurnal_umum_id ada di model;
+    # modul lain (SI/PI/kas-bank) sudah expose — pengiriman sebelumnya bocor
+    # link jurnalnya sehingga FE tidak bisa menampilkan nomor jurnal terkait).
+    jurnal_umum_id: Optional[UUID] = None
+    jurnal: Optional[JurnalSimpleResponse] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
