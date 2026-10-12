@@ -26,6 +26,27 @@ from app.services.hard_delete_service import hard_delete_document
 router = APIRouter()
 
 
+def _pembayaran_response(item):
+    """Update cetak "Bayar Pemasok" — bangun response + detail faktur per alokasi.
+
+    Data diskon/terutang sudah live di kolom payment_allocation; detail faktur
+    (no faktur, tanggal, jatuh tempo, nilai tagihan) diisi dari relasi
+    purchase_invoice yang di-joinedload get_pembayaran_by_id. Urutan baris
+    diurutkan kronologis per tanggal faktur supaya tabel cetak rapi.
+    """
+    resp = PembayaranKasResponse.model_validate(item)
+    for a, d in zip(item.alokasi, resp.alokasi):
+        inv = a.purchase_invoice
+        if inv is not None:
+            d.no_faktur = inv.no_faktur
+            if inv.tanggal is not None:
+                d.tanggal_faktur = inv.tanggal.date() if hasattr(inv.tanggal, 'date') else inv.tanggal
+            d.jatuh_tempo = inv.tanggal_jatuh_tempo
+            d.nilai_tagihan = inv.grand_total
+    resp.alokasi.sort(key=lambda d: (d.tanggal_faktur is not None, d.tanggal_faktur, d.no_faktur or ''))
+    return resp
+
+
 # ==========================================
 # PEMBAYARAN KAS
 # ==========================================
@@ -71,6 +92,11 @@ def create_pembayaran(
             catatan=data_in.catatan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
+            # Update cetak "Bayar Pemasok" — info header cek & mata uang
+            tanggal_cek=data_in.tanggal_cek,
+            jumlah_cek=data_in.jumlah_cek,
+            mata_uang=data_in.mata_uang,
+            nilai_tukar=data_in.nilai_tukar,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         workflow_service.direct_complete(db, current_user, 'pembayaran_kas', obj.id)
@@ -90,7 +116,7 @@ def get_pembayaran_detail(
     item = svc.get_pembayaran_by_id(db, pembayaran_id)
     if not item:
         raise HTTPException(status_code=404, detail="Pembayaran Kas tidak ditemukan")
-    return item
+    return _pembayaran_response(item)
 
 
 @router.put("/pembayaran/{pembayaran_id}", response_model=PembayaranKasResponse)

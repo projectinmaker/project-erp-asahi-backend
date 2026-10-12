@@ -150,7 +150,11 @@ def create_pelunasan(jenis: Jenis, data_in: SettlementCreate, db=Depends(get_cur
     try:
         obj = svc.create_settlement(db, jenis, data_in.pihak_id, data_in.tanggal, data_in.kas_bank_id,
                                     data_in.no_nukti, [r.model_dump() for r in data_in.alokasi], user.id, data_in.catatan,
-                                    penalti=data_in.penalti, akun_penalti_id=data_in.akun_penalti_id)
+                                    penalti=data_in.penalti, akun_penalti_id=data_in.akun_penalti_id,
+                                    # Update cetak "Bayar Pemasok" — info header cek & mata uang
+                                    no_cek=data_in.no_cek, tanggal_cek=data_in.tanggal_cek,
+                                    jumlah_cek=data_in.jumlah_cek, mata_uang=data_in.mata_uang,
+                                    nilai_tukar=data_in.nilai_tukar)
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         kind = 'penerimaan_kas' if jenis == 'piutang' else 'pembayaran_kas'
         workflow_service.direct_complete(db, user, kind, obj.id)

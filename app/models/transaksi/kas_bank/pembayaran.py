@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy import Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -20,6 +20,11 @@ class PembayaranKas(BaseModel, BaseMixin):
     kas_bank_id = Column(UUID(as_uuid=True), ForeignKey("kas_bank_akun.id"), nullable=False)
     no_nukti = Column(String(50), nullable=False)
     no_cek = Column(String(50), nullable=True)
+    # === Update cetak "Bayar Pemasok" — info cek & mata uang untuk layout print ===
+    tanggal_cek = Column(Date, nullable=True)
+    jumlah_cek = Column(Numeric(18, 2), nullable=True)
+    mata_uang = Column(String(8), nullable=False, default="IDR", server_default="IDR")
+    nilai_tukar = Column(Numeric(18, 4), nullable=False, default=1, server_default="1")
     penerima = Column(String(255), nullable=True)
     catatan = Column(Text, nullable=True)
     total_nilai = Column(Numeric(18, 2), default=0, nullable=False)
@@ -32,6 +37,7 @@ class PembayaranKas(BaseModel, BaseMixin):
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
 
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=True)
+    supplier = relationship("Supplier")
     alokasi = relationship("PaymentAllocation", back_populates="pembayaran", cascade="all, delete-orphan")
 
     # Relationships

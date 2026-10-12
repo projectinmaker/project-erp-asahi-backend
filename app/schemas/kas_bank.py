@@ -4,7 +4,7 @@ PembayaranKas, PenerimaanKas, TransferBank + Detail tabel.
 FIX v2: Tambah JurnalSimpleResponse + relasi jurnal di 3 Response class.
 """
 
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
@@ -42,6 +42,13 @@ class KasBankSimpleResponse(BaseSchema):
     akun_perkiraan: AkunPerkiraanSimpleResponse
 
 
+# === Update cetak "Bayar Pemasok" — blok Pemasok (nama + alamat) di print ===
+class SupplierSimpleResponse(BaseSchema):
+    id: UUID
+    nama: str
+    alamat: Optional[str] = None
+
+
 # ==========================================
 # PEMBAYARAN KAS
 # ==========================================
@@ -64,6 +71,11 @@ class PembayaranKasBase(BaseSchema):
     kas_bank_id: UUID
     no_nukti: str
     no_cek: Optional[str] = None
+    # === Update cetak "Bayar Pemasok" — info cek & mata uang ===
+    tanggal_cek: Optional[date] = None
+    jumlah_cek: Optional[Decimal] = None
+    mata_uang: str = "IDR"
+    nilai_tukar: Decimal = Decimal("1")
     penerima: Optional[str] = None
     catatan: Optional[str] = None
     auto_post_jurnal: bool = False
@@ -78,6 +90,11 @@ class PembayaranKasUpdate(BaseSchema):
     kas_bank_id: Optional[UUID] = None
     no_nukti: Optional[str] = None
     no_cek: Optional[str] = None
+    # === Update cetak "Bayar Pemasok" — info cek & mata uang (editable) ===
+    tanggal_cek: Optional[date] = None
+    jumlah_cek: Optional[Decimal] = None
+    mata_uang: Optional[str] = None
+    nilai_tukar: Optional[Decimal] = None
     penerima: Optional[str] = None
     catatan: Optional[str] = None
     auto_post_jurnal: Optional[bool] = None
@@ -86,6 +103,8 @@ class PembayaranKasUpdate(BaseSchema):
 class PembayaranKasResponse(PembayaranKasBase):
     supplier_id: Optional[UUID] = None
     alokasi: List[AllocationResponse] = []
+    # === Update cetak "Bayar Pemasok" — relasi supplier untuk blok Pemasok ===
+    supplier: Optional[SupplierSimpleResponse] = None
     id: UUID
     no_bukti: str
     total_nilai: Decimal

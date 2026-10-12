@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -1351,12 +1351,39 @@ def delete_barang_satuan(
 # ==========================================
 # GUDANG ENDPOINTS
 # ==========================================
+def _apply_total_barang(db: Session, items: list[Gudang]) -> None:
+    """Isi gudang.total_barang on-read dari stock_balance.
+
+    Kolom gudang.total_barang di database tidak pernah di-maintain oleh alur
+    transaksi stok (penyesuaian/penerimaan/pengiriman hanya menulis
+    stock_balance), sehingga nilai kolomnya selalu 0. Hitung di sini agar
+    respons selalu akurat: jumlah jenis barang (SKU) dengan stok > 0 di
+    gudang tersebut. Endpoint GET tidak melakukan commit, sehingga override
+    atribut instance ini tidak akan tersimpan ke database.
+    """
+    if not items:
+        return
+    counts = dict(
+        db.query(StockBalance.gudang_id, func.count(func.distinct(StockBalance.barang_id)))
+        .filter(
+            StockBalance.gudang_id.in_([g.id for g in items]),
+            StockBalance.qty > 0,
+        )
+        .group_by(StockBalance.gudang_id)
+        .all()
+    )
+    for g in items:
+        g.total_barang = int(counts.get(g.id, 0))
+
+
 @router.get("/gudang", response_model=list[GudangResponse])
 def get_gudang_list(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    return db.query(Gudang).filter(Gudang.status == "AKTIF").order_by(Gudang.nama).all()
+    rows = db.query(Gudang).filter(Gudang.status == "AKTIF").order_by(Gudang.nama).all()
+    _apply_total_barang(db, rows)
+    return rows
 
 @router.post("/gudang", response_model=GudangResponse, status_code=status.HTTP_201_CREATED)
 def create_gudang(
@@ -1379,6 +1406,7 @@ def export_gudang(
     if search:
         query = query.filter(or_(Gudang.nama.ilike(f"%{search}%"), Gudang.kode.ilike(f"%{search}%")))
     rows = query.order_by(Gudang.kode).all()
+    _apply_total_barang(db, rows)
     data = [
         [g.kode, g.nama, g.alamat or "", g.status, g.total_barang or 0]
         for g in rows
@@ -1455,13 +1483,16 @@ async def import_gudang(
 def get_gudang_detail(gudang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, Gudang, gudang_id)
     if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+    _apply_total_barang(db, [item])
     return item
 
 @router.put("/gudang/{gudang_id}", response_model=GudangResponse)
 def update_gudang(gudang_id: UUID, data_in: GudangUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, Gudang, gudang_id)
     if not item: raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
-    return master_service.update_master(db, item, data_in)
+    item = master_service.update_master(db, item, data_in)
+    _apply_total_barang(db, [item])
+    return item
 
 @router.delete("/gudang/{gudang_id}", status_code=status.HTTP_200_OK)
 def delete_gudang(gudang_id: UUID, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):

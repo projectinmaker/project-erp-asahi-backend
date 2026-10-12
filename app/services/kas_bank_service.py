@@ -26,9 +26,10 @@ from app.models.detail.pembayaran_rincian import PembayaranRincian
 from app.models.detail.penerimaan_rincian import PenerimaanRincian
 from app.models.master.kas_bank_akun import KasBankAkun
 from app.models.master.pengguna import Pengguna
+from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
-from app.services.setting_akun_service import get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK
+from app.services.setting_akun_service import get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK, KEY_POTONGAN_HUTANG
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
@@ -52,6 +53,12 @@ def get_pembayaran_list(
         joinedload(PembayaranKas.creator),
         joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
         joinedload(PembayaranKas.jurnal),
+        # Update cetak "Pembayaran Lain" — supaya list bisa membedakan dokumen
+        # settlement (Bayar Pemasok) vs pembayaran biasa (Pembayaran Lain):
+        # relasi supplier + alokasi di-eager-load (schema response sudah punya
+        # field-nya; tanpa ini list selalu tampak "tanpa alokasi").
+        joinedload(PembayaranKas.supplier),
+        joinedload(PembayaranKas.alokasi),
     )
 
     if search:
@@ -83,7 +90,9 @@ def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[Pembayara
         .options(
             joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(PembayaranKas.creator),
+            joinedload(PembayaranKas.supplier),
             joinedload(PembayaranKas.rincian).joinedload(PembayaranRincian.akun_perkiraan),
+            joinedload(PembayaranKas.alokasi).joinedload(PaymentAllocation.purchase_invoice),
             joinedload(PembayaranKas.jurnal),
         )
         .filter(PembayaranKas.id == pembayaran_id)
@@ -104,6 +113,10 @@ def create_pembayaran(
     auto_post_jurnal: bool = False,
     created_by: UUID = None,
     is_settlement: bool = False,
+    tanggal_cek: Optional[date] = None,
+    jumlah_cek: Optional[Decimal] = None,
+    mata_uang: Optional[str] = None,
+    nilai_tukar: Optional[Decimal] = None,
 ) -> PembayaranKas:
     """
     Buat PembayaranKas baru beserta rincian.
@@ -115,6 +128,9 @@ def create_pembayaran(
         is_settlement: True kalau ini adalah pelunasan AP (punya allocation
             ke purchase_invoice). Akan memakai RefModule.AP_SETTLEMENT
             (canonical) di jurnal. Default False.
+        tanggal_cek / jumlah_cek / mata_uang / nilai_tukar:
+            Update cetak "Bayar Pemasok" — info header tambahan untuk layout
+            cetak (tgl cek, jumlah cek, mata uang, nilai tukar).
     """
     try:
         # Phase G: validate kas_bank ACTIVE
@@ -131,6 +147,16 @@ def create_pembayaran(
         # Hitung total dari rincian
         total_nilai = sum(Decimal(str(r.get("nilai", 0))) for r in rincian_data)
 
+        # Update cetak "Bayar Pemasok" — normalisasi mata uang & nilai tukar
+        mata_uang = (mata_uang or "IDR").strip().upper()[:8] or "IDR"
+        nilai_tukar = Decimal(str(nilai_tukar)) if nilai_tukar is not None else Decimal("1")
+        if nilai_tukar <= 0:
+            raise ValueError("Nilai tukar harus lebih dari 0")
+        if jumlah_cek is not None:
+            jumlah_cek = Decimal(str(jumlah_cek))
+            if jumlah_cek < 0:
+                raise ValueError("Jumlah cek tidak boleh negatif")
+
         # Buat header
         pembayaran = PembayaranKas(
             no_bukti=no_bukti,
@@ -138,6 +164,10 @@ def create_pembayaran(
             kas_bank_id=kas_bank_id,
             no_nukti=no_nukti,
             no_cek=no_cek,
+            tanggal_cek=tanggal_cek,
+            jumlah_cek=jumlah_cek,
+            mata_uang=mata_uang,
+            nilai_tukar=nilai_tukar,
             penerima=penerima,
             catatan=catatan,
             total_nilai=total_nilai,
@@ -186,6 +216,10 @@ def update_pembayaran(
     penerima: Optional[str] = None,
     catatan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
+    tanggal_cek: Optional[date] = None,
+    jumlah_cek: Optional[Decimal] = None,
+    mata_uang: Optional[str] = None,
+    nilai_tukar: Optional[Decimal] = None,
 ) -> PembayaranKas:
     """Update data pembayaran (hanya field yang diberikan)."""
     require_unposted(db_obj)
@@ -197,6 +231,18 @@ def update_pembayaran(
         db_obj.no_nukti = no_nukti
     if no_cek is not None:
         db_obj.no_cek = no_cek
+    # Update cetak "Bayar Pemasok" — info cek & mata uang
+    if tanggal_cek is not None:
+        db_obj.tanggal_cek = tanggal_cek
+    if jumlah_cek is not None:
+        db_obj.jumlah_cek = Decimal(str(jumlah_cek))
+    if mata_uang is not None:
+        db_obj.mata_uang = mata_uang.strip().upper()[:8] or "IDR"
+    if nilai_tukar is not None:
+        nilai_tukar = Decimal(str(nilai_tukar))
+        if nilai_tukar <= 0:
+            raise ValueError("Nilai tukar harus lebih dari 0")
+        db_obj.nilai_tukar = nilai_tukar
     if penerima is not None:
         db_obj.penerima = penerima
     if catatan is not None:
@@ -624,6 +670,16 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
     # sehingga total debit = total kredit tetap seimbang.
     penalti = Decimal(str(getattr(pembayaran, "penalti", 0) or 0))
     akun_penalti_id = getattr(pembayaran, "akun_penalti_id", None)
+    # Update cetak "Bayar Pemasok" — Σ diskon pelunasan per faktur. Rincian
+    # tetap Dr hutang sebesar Σ nilai PENUH, sedangkan Kas/Bank dikredit
+    # total_nilai (Σ nilai − Σ diskon + penalti); selisihnya dikredit ke
+    # akun Potongan Hutang (setting POTONGAN_HUTANG) supaya jurnal balance:
+    #   Dr Hutang Σ nilai | Dr Penalti | Cr Kas total_nilai | Cr Potongan Σ diskon
+    total_diskon = sum((Decimal(str(getattr(a, "diskon", 0) or 0)) for a in (pembayaran.alokasi or [])), Decimal("0"))
+    if total_diskon > 0:
+        akun_potongan_id = get_akun_id_or_raise(db, KEY_POTONGAN_HUTANG, "potongan hutang pelunasan")
+    else:
+        akun_potongan_id = None
     entries = [
         # Kredit: Kas/Bank
         JurnalEntryItem(
@@ -632,6 +688,15 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
             keterangan=f"Pembayaran {no_bukti}",
         ),
     ]
+    # Kredit: Potongan Hutang (hanya bila ada diskon pelunasan)
+    if akun_potongan_id is not None:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=akun_potongan_id,
+                kredit=total_diskon,
+                keterangan=f"Potongan pelunasan {no_bukti}",
+            )
+        )
     # Debit: Akun-akun dari rincian (grup akun kontrol alokasi + akun penalti)
     for r in rincian_data:
         entries.append(
@@ -655,6 +720,8 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
     )
     if penalti > 0:
         keterangan += f" (termasuk penalti {penalti})"
+    if total_diskon > 0:
+        keterangan += f" (termasuk diskon {total_diskon})"
 
     jurnal = auto_posting_jurnal(
         db=db,

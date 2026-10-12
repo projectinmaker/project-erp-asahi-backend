@@ -20,6 +20,14 @@ class PaymentAllocation(BaseModel, BaseMixin):
     purchase_invoice_id = Column(UUID(as_uuid=True), ForeignKey('purchase_invoice.id'), nullable=True, index=True)
     akun_perkiraan_id = Column(UUID(as_uuid=True), ForeignKey('akun_perkiraan.id'), nullable=False)
     nilai = Column(Numeric(18, 2), nullable=False)
+    # === Update cetak "Bayar Pemasok" — diskon pelunasan per faktur ===
+    # nilai = nominal hutang yang dilunasi (mengurangi sisa tagihan);
+    # diskon = bagian dari nilai yang tidak dibayar tunai (potongan dari
+    # supplier) sehingga kas keluar = nilai - diskon per faktur.
+    diskon = Column(Numeric(18, 2), nullable=False, default=0, server_default='0')
+    # Snapshot sisa tagihan faktur SEBELUM pembayaran ini (untuk kolom
+    # "Terutang" di layout cetak Bayar Pemasok).
+    terutang = Column(Numeric(18, 2), nullable=True)
     penerimaan = relationship('PenerimaanKas', back_populates='alokasi')
     pembayaran = relationship('PembayaranKas', back_populates='alokasi')
     sales_invoice = relationship('SalesInvoice')

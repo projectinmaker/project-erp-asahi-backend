@@ -9,6 +9,9 @@ from app.schemas.base import BaseSchema
 class AllocationInput(BaseSchema):
     invoice_id: UUID
     nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    # Update cetak "Bayar Pemasok" — diskon pelunasan per faktur (hutang saja).
+    # Kas keluar = nilai - diskon; sisa tagihan berkurang sebesar nilai.
+    diskon: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
 
 
 class AllocationUpdate(BaseSchema):
@@ -26,11 +29,24 @@ class SettlementCreate(AllocationUpdate):
     catatan: Optional[str] = None
     # Update #5 — penalti: menambah total kas yang dibayar/diterima di luar alokasi invoice
     penalti: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    # === Update cetak "Bayar Pemasok" — info header tambahan (pembayaran/hutang) ===
+    no_cek: Optional[str] = Field(default=None, max_length=50)
+    tanggal_cek: Optional[date] = None
+    jumlah_cek: Optional[Decimal] = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    mata_uang: str = Field(default="IDR", max_length=8)
+    nilai_tukar: Decimal = Field(default=Decimal("1"), gt=0, max_digits=18, decimal_places=4)
 
 
 class AllocationResponse(AllocationInput):
     id: UUID
     akun_perkiraan_id: UUID
+    # === Update cetak "Bayar Pemasok" — detail faktur untuk tabel cetak ===
+    # Hanya diisi untuk pembayaran (AP settlement); penerimaan membiarkan None.
+    terutang: Optional[Decimal] = None
+    no_faktur: Optional[str] = None
+    tanggal_faktur: Optional[date] = None
+    jatuh_tempo: Optional[date] = None
+    nilai_tagihan: Optional[Decimal] = None
 
 
 class SettlementResponse(BaseSchema):

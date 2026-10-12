@@ -46,7 +46,13 @@ def _get_gl_balance(
     """Hitung saldo GL untuk akun tertentu (debit - kredit untuk akun DEBIT normal,
     kredit - debit untuk akun KREDIT normal).
 
-    Filter: hanya POSTED journals, sampai tanggal as_of (inclusive).
+    Filter: hanya POSTED journals. Parameter ``as_of`` DIABAIKAN — basis
+    rekonsiliasi adalah CURRENT register (AsetTetap.akumulasi_penyusutan adalah
+    snapshot terkini yang di-update saat event diposting) sehingga sisi GL pun
+    harus mencakup SEMUA jurnal POSTED, termasuk yang bertanggal masa depan
+    (penyusutan di-batch end-of-month ter posting sebelum tanggal efektifnya).
+    Memfilter ``tanggal <= as_of`` membuat rekonsiliasi mismatch semu pada
+    pertengahan bulan ketika penyusutan bulan berjalan sudah diposting.
     """
     query = (
         db.query(
@@ -59,8 +65,7 @@ def _get_gl_balance(
             JurnalUmum.status == StatusJurnal.POSTED,
         )
     )
-    if as_of is not None:
-        query = query.filter(JurnalUmum.tanggal <= as_of)
+    # Perhatian: JANGAN filter tanggal — lihat docstring.
 
     row = query.first()
     total_debit = Decimal(str(row[0] or 0))

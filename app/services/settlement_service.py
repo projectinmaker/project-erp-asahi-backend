@@ -135,6 +135,18 @@ def normalize_penalti(value):
     return value
 
 
+def normalize_diskon(value):
+    """Update cetak "Bayar Pemasok" — diskon pelunasan per faktur.
+
+    Boleh nol; tidak boleh negatif / lebih dari 2 desimal. Diskon adalah
+    potongan dari supplier saat pelunasan: hutang berkurang sebesar ``nilai``
+    penuh, kas keluar hanya ``nilai - diskon``."""
+    value = Decimal(str(value if value is not None else 0))
+    if not value.is_finite() or value < 0 or value != value.quantize(Decimal('.01')) or value >= Decimal('10000000000000000'):
+        raise ValueError('Diskon pelunasan tidak boleh negatif, maksimal 2 desimal dan dalam batas nominal')
+    return value
+
+
 def validate_penalti_account(db, akun_penalti_id):
     """Akun penalti wajib ADA, AKTIF, leaf (DETAIL tanpa anak), dan bukan
     akun kas/bank maupun kontrol/subledger piutang-hutang. Untuk hutang
@@ -205,22 +217,34 @@ def prepare(db, jenis, pihak_id, tanggal, allocation_data):
         nilai = positive_money(data['nilai'])
         if nilai > current[obj.id]['sisa_tagihan']:
             raise ValueError(f'Alokasi melebihi sisa tagihan {current[obj.id]["no_dokumen"]}')
+        # Update cetak "Bayar Pemasok" — diskon pelunasan (hanya hutang/pembayaran)
+        diskon = normalize_diskon(data.get('diskon'))
+        if diskon > 0 and jenis != 'hutang':
+            raise ValueError('Diskon pelunasan saat ini hanya didukung untuk pelunasan hutang (pembayaran)')
+        if diskon > nilai:
+            raise ValueError(f'Diskon melebihi nilai alokasi {current[obj.id]["no_dokumen"]}')
         account_id = control_account(db, obj)
         grouped[account_id] += nilai
-        rows.append({'invoice_id': obj.id, 'nilai': nilai, 'akun_perkiraan_id': account_id})
+        # terutang = snapshot sisa tagihan SEBELUM pembayaran ini (kolom
+        # "Terutang" di layout cetak Bayar Pemasok).
+        rows.append({'invoice_id': obj.id, 'nilai': nilai, 'diskon': diskon,
+                     'terutang': current[obj.id]['sisa_tagihan'], 'akun_perkiraan_id': account_id})
     return rows, [{'akun_perkiraan_id': account, 'nilai': amount} for account, amount in grouped.items()]
 
 
 def attach(payment, jenis, rows):
     for row in rows:
         attrs = {'sales_invoice_id' if jenis == 'piutang' else 'purchase_invoice_id': row['invoice_id'],
-                 'nilai': row['nilai'], 'akun_perkiraan_id': row['akun_perkiraan_id']}
+                 'nilai': row['nilai'], 'akun_perkiraan_id': row['akun_perkiraan_id'],
+                 'diskon': row.get('diskon', ZERO), 'terutang': row.get('terutang')}
         payment.alokasi.append(PaymentAllocation(**attrs))
 
 
 @atomic_accounting_write
 def create_settlement(db, jenis, pihak_id, tanggal, kas_bank_id, no_nukti, allocation_data, created_by,
-                      catatan=None, penalti=None, akun_penalti_id=None):
+                      catatan=None, penalti=None, akun_penalti_id=None,
+                      no_cek=None, tanggal_cek=None, jumlah_cek=None,
+                      mata_uang=None, nilai_tukar=None):
     from app.services import kas_bank_service as cash
     rows, rincian = prepare(db, jenis, pihak_id, tanggal, allocation_data)
     penalti, akun_penalti_id = resolve_penalti(db, penalti, akun_penalti_id)
@@ -229,13 +253,23 @@ def create_settlement(db, jenis, pihak_id, tanggal, kas_bank_id, no_nukti, alloc
         # total_nilai = Σ alokasi + penalti dihitung dari Σ rincian.
         rincian = rincian + [{'akun_perkiraan_id': akun_penalti_id, 'nilai': penalti}]
     create = cash.create_penerimaan if jenis == 'piutang' else cash.create_pembayaran
+    extra = {}
+    if jenis == 'hutang':
+        # Update cetak "Bayar Pemasok" — info header cek & mata uang hanya
+        # relevan untuk pembayaran (pengeluaran kas ke pemasok).
+        extra = {'no_cek': no_cek, 'tanggal_cek': tanggal_cek, 'jumlah_cek': jumlah_cek,
+                 'mata_uang': mata_uang, 'nilai_tukar': nilai_tukar}
     payment = create(db, no_nukti, tanggal, kas_bank_id, rincian, catatan=catatan,
                      auto_post_jurnal=False, created_by=created_by,
-                     is_settlement=True)  # ← canonical: AR_SETTLEMENT / AP_SETTLEMENT
+                     is_settlement=True, **extra)  # ← canonical: AR_SETTLEMENT / AP_SETTLEMENT
     setattr(payment, 'pelanggan_id' if jenis == 'piutang' else 'supplier_id', pihak_id)
     payment.penalti = penalti
     payment.akun_penalti_id = akun_penalti_id
     attach(payment, jenis, rows)
+    # Update cetak "Bayar Pemasok" — kas keluar = Σ(nilai - diskon) + penalti.
+    # (Rincian tetap Dr hutang Σ nilai penuh; selisihnya dikredit ke akun
+    # potongan hutang saat posting — lihat kas_bank_service.post_pembayaran.)
+    payment.total_nilai = sum((r['nilai'] - r['diskon'] for r in rows), ZERO) + penalti
     return payment
 
 
@@ -263,7 +297,8 @@ def update_allocations(db, db_obj, jenis, pihak_id, allocation_data, penalti=Non
     if penalti > 0:
         db_obj.rincian.append(detail_model(akun_perkiraan_id=akun_penalti_id, nilai=penalti))
     setattr(db_obj, 'pelanggan_id' if jenis == 'piutang' else 'supplier_id', pihak_id)
-    db_obj.total_nilai = sum((r['nilai'] for r in rows), ZERO) + penalti
+    # Update cetak "Bayar Pemasok" — kas keluar = Σ(nilai - diskon) + penalti.
+    db_obj.total_nilai = sum((r['nilai'] - r['diskon'] for r in rows), ZERO) + penalti
     return db_obj
 
 
@@ -273,7 +308,7 @@ def validate_payment(db, payment):
     jenis = 'piutang' if isinstance(payment, PenerimaanKas) else 'hutang'
     party = payment.pelanggan_id if jenis == 'piutang' else payment.supplier_id
     rows, expected = prepare(db, jenis, party, payment.tanggal,
-                             [{'invoice_id': r.invoice_id, 'nilai': r.nilai} for r in payment.alokasi])
+                             [{'invoice_id': r.invoice_id, 'nilai': r.nilai, 'diskon': getattr(r, 'diskon', None)} for r in payment.alokasi])
     # Update #5 — rincian boleh berisi grup akun alokasi + 1 baris akun penalti;
     # total rincian harus = Σ alokasi + penalti = total_nilai.
     penalti = normalize_penalti(getattr(payment, 'penalti', None))
@@ -283,7 +318,10 @@ def validate_payment(db, payment):
     actual = defaultdict(lambda: ZERO)
     for row in payment.rincian:
         actual[row.akun_perkiraan_id] += row.nilai
-    if dict(actual) != {r['akun_perkiraan_id']: r['nilai'] for r in expected} or sum(actual.values(), ZERO) != payment.total_nilai:
+    # Update cetak "Bayar Pemasok" — Σ rincian (Dr hutang penuh + penalti)
+    # = total kas keluar (total_nilai) + Σ diskon pelunasan.
+    total_diskon = sum((normalize_diskon(getattr(r, 'diskon', None)) for r in payment.alokasi), ZERO)
+    if dict(actual) != {r['akun_perkiraan_id']: r['nilai'] for r in expected} or sum(actual.values(), ZERO) != payment.total_nilai + total_diskon:
         raise ValueError('Rincian kas/bank tidak sesuai alokasi invoice')
     original = {r.invoice_id: r.akun_perkiraan_id for r in payment.alokasi}
     if any(original[r['invoice_id']] != r['akun_perkiraan_id'] for r in rows):
@@ -322,4 +360,6 @@ def payment_summary(payment):
         'status': getattr(payment.status, 'value', payment.status), 'jurnal_umum_id': payment.jurnal_umum_id,
         'pihak_id': payment.pelanggan_id if isinstance(payment, PenerimaanKas) else payment.supplier_id,
         'alokasi': [{'id': r.id, 'invoice_id': r.invoice_id, 'nilai': r.nilai,
+                     'diskon': getattr(r, 'diskon', None) or ZERO,
+                     'terutang': getattr(r, 'terutang', None),
                      'akun_perkiraan_id': r.akun_perkiraan_id} for r in payment.alokasi]}

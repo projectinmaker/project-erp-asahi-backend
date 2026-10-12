@@ -68,6 +68,13 @@ KEY_PPH23_DIBAYAR_DIMUKA = "PPH23_DIBAYAR_DIMUKA"
 # Akun laba ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
 KEY_LABA_DITAHAN = "LABA_DITAHAN"
 
+# === Update cetak "Bayar Pemasok" ===
+# Akun potongan hutang pelunasan — dikredit saat pembayaran ke supplier
+# memakai diskon per faktur (kas keluar < hutang dilunasi). Bersifat
+# opsional: wajib dikonfigurasi HANYA bila ada pelunasan dengan diskon > 0.
+# Konfigurasi via Pengaturan → Setting Akun (PUT /master/setting-akun/POTONGAN_HUTANG).
+KEY_POTONGAN_HUTANG = "POTONGAN_HUTANG"
+
 # Label untuk semua key setting yang dikenal sistem. Dipakai endpoint
 # PUT /master/setting-akun/{key} untuk MEMBUAT baris setting baru bila belum ada
 # (mis. PENDAPATAN_ANGKUT yang di-skip phase3 seed karena akun default legacy
@@ -100,6 +107,7 @@ KNOWN_SETTING_LABELS = {
     KEY_LABA_RUGI_TAHUN_BERJALAN: "Laba (Rugi) Tahun Berjalan",
     KEY_LABA_DITAHAN: "Laba (Rugi) Ditahan",
     KEY_PPH23_DIBAYAR_DIMUKA: "PPh 23 Dibayar Dimuka",
+    KEY_POTONGAN_HUTANG: "Potongan Hutang (Pelunasan)",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)

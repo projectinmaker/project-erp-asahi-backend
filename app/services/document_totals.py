@@ -72,7 +72,12 @@ def refresh_totals(obj):
     elif name in ('pembayaran_kas', 'penerimaan_kas'):
         if not obj.rincian or any(amount(r.nilai) <= 0 for r in obj.rincian):
             raise ValueError('Rincian kas/bank wajib diisi dengan nilai positif')
-        obj.total_nilai = sum((money(amount(r.nilai)) for r in obj.rincian), ZERO)
+        total = sum((money(amount(r.nilai)) for r in obj.rincian), ZERO)
+        # Update cetak "Bayar Pemasok" — diskon pelunasan per faktur
+        # mengurangi kas keluar (rincian tetap Dr hutang penuh).
+        if name == 'pembayaran_kas':
+            total -= sum((money(amount(getattr(a, 'diskon', 0))) for a in (getattr(obj, 'alokasi', None) or [])), ZERO)
+        obj.total_nilai = total
     elif name == 'transfer_bank':
         if obj.dari_kas_bank_id == obj.ke_kas_bank_id:
             raise ValueError('Kas/Bank asal dan tujuan tidak boleh sama')
