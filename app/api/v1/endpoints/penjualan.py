@@ -95,9 +95,10 @@ def create_sales_order(
             details_data=details_data,
             biaya_data=biaya_data,
             syarat_bayar_id=data_in.syarat_bayar_id,
-            ekspedisi=data_in.ekspedisi,
+            # Update ASAHI (revisi SO): ekspedisi/penjual dihapus;
+            # customer_code = singkatan customer → segmen nomor "SO ASI/TBI/2026/001".
+            customer_code=data_in.customer_code,
             tanggal_pengiriman=data_in.tanggal_pengiriman,
-            penjual=data_in.penjual,
             alamat_pengiriman=data_in.alamat_pengiriman,
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,

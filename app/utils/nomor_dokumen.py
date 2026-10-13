@@ -71,14 +71,23 @@ def get_nomor_dokumen_tahunan(
     prefix: str,
     no_column: str = "nomor",
     tanggal: Optional[date] = None,
+    customer_code: Optional[str] = None,
 ) -> str:
     """
     Generate nomor dokumen otomatis dengan format ASAHI:
     "<PREFIX> ASI/YYYY/NNN" (contoh: "SO ASI/2026/001", "PO ASI/2026/001").
 
+    Update ASAHI (revisi Sales Order): bila `customer_code` diberikan, format
+    menjadi "<PREFIX> ASI/<CODE>/YYYY/NNN" — segmen singkatan nama perusahaan
+    customer (input manual, bebas):
+        customer_code="TBI" → "SO ASI/TBI/2026/001"
+        kosong/None        → "SO ASI/-/2026/001"
+
     Perilaku:
     - Sequence RESET ke 001 setiap ganti tahun (reset tahunan).
-    - Sequence TERPISAH per prefix (SO dan PO masing-masing berurutan sendiri).
+    - Sequence TERPISAH per prefix (SO dan PO masing-masing berurutan sendiri)
+      dan BERLANJUT dari nomor lama tanpa segmen code pada tahun yang sama
+      (pattern LIKE juga men-match "SO ASI/2026/001" → tidak ada nomor ganda).
     - Dokumen lama berformat PREFIX-YYYY-MM-NNN tidak ter-match pattern ini,
       sehingga migrasi dimulai bersih dari 001 pada tahun berjalan.
 
@@ -88,18 +97,32 @@ def get_nomor_dokumen_tahunan(
         prefix: Prefix dokumen ("SO" / "PO")
         no_column: Nama kolom nomor di model (default: "nomor")
         tanggal: Tanggal dokumen (default: hari ini)
+        customer_code: Singkatan customer (khusus SO; optional). Karakter "/"
+            tidak boleh dipakai (divalidasi service) agar segmen nomor bersih.
 
     Return:
-        String nomor dokumen, contoh: "SO ASI/2026/001"
+        String nomor dokumen, contoh: "SO ASI/2026/001" / "SO ASI/TBI/2026/001"
     """
     if tanggal is None:
         tanggal = date.today()
 
     year_str = tanggal.strftime("%Y")
-    pattern = f"{prefix} ASI/{year_str}/%"
 
     from app.services.accounting_control import accounting_lock
     accounting_lock(db)
+
+    if customer_code is not None:
+        # Format baru (Sales Order): "SO ASI/<CODE>/YYYY/NNN".
+        # Pattern sengaja "<PREFIX> ASI%/<tahun>/%" supaya nomor lama tanpa
+        # segmen code ("SO ASI/2026/001") tetap terhitung dalam sequence.
+        code = customer_code.strip() or "-"
+        pattern = f"{prefix} ASI%/{year_str}/%"
+        numbers = db.query(getattr(model_class, no_column)).filter(getattr(model_class, no_column).like(pattern)).all()
+        last_seq = max((int(row[0].rsplit('/', 1)[-1]) for row in numbers
+                        if row[0] and row[0].rsplit('/', 1)[-1].isdigit()), default=0)
+        return f"{prefix} ASI/{code}/{year_str}/{last_seq + 1:03d}"
+
+    pattern = f"{prefix} ASI/{year_str}/%"
     numbers = db.query(getattr(model_class, no_column)).filter(getattr(model_class, no_column).like(pattern)).all()
     last_seq = max((int(row[0].rsplit('/', 1)[-1]) for row in numbers
                     if row[0] and row[0].rsplit('/', 1)[-1].isdigit()), default=0)

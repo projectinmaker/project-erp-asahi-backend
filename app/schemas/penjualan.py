@@ -113,9 +113,12 @@ class SalesOrderBase(BaseSchema):
     tanggal: datetime
     pelanggan_id: UUID
     syarat_bayar_id: Optional[UUID] = None
-    ekspedisi: Optional[str] = None
-    tanggal_pengiriman: Optional[datetime] = None
-    penjual: Optional[str] = None
+    # === Update ASAHI — revisi Sales Order ===
+    # Ekspedisi & Penjual dihapus dari dokumen SO.
+    # customer_code = singkatan bebas nama perusahaan customer (input manual)
+    # yang menjadi segmen nomor: "SO ASI/TBI/2026/001"; kosong → "SO ASI/-/2026/001".
+    customer_code: Optional[str] = None
+    tanggal_pengiriman: Optional[datetime] = None  # label UI/cetak: "Target Pengiriman"
     alamat_pengiriman: Optional[str] = None
     diskon_global: Optional[Decimal] = Decimal("0")
     ppn: Decimal = Decimal("11")
@@ -137,9 +140,9 @@ class SalesOrderUpdate(BaseSchema):
     tanggal: Optional[datetime] = None
     pelanggan_id: Optional[UUID] = None
     syarat_bayar_id: Optional[UUID] = None
-    ekspedisi: Optional[str] = None
+    # ekspedisi/penjual dihapus (revisi SO); customer_code TIDAK diizinkan
+    # di update karena bagian dari nomor dokumen (immutable setelah create).
     tanggal_pengiriman: Optional[datetime] = None
-    penjual: Optional[str] = None
     alamat_pengiriman: Optional[str] = None
     diskon_global: Optional[Decimal] = None
     ppn: Optional[Decimal] = None

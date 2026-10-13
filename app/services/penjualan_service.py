@@ -172,9 +172,8 @@ def create_sales_order(
     details_data: list,
     biaya_data: Optional[list] = None,
     syarat_bayar_id: Optional[UUID] = None,
-    ekspedisi: Optional[str] = None,
+    customer_code: Optional[str] = None,
     tanggal_pengiriman: Optional[datetime] = None,
-    penjual: Optional[str] = None,
     alamat_pengiriman: Optional[str] = None,
     diskon_global: Optional[Decimal] = Decimal("0"),
     ppn: Decimal = Decimal("11"),
@@ -189,9 +188,22 @@ def create_sales_order(
     - Generate no_pesanan otomatis
     - Hitung sub_total, total_diskon, ppn, grand_total dari detail
     - Order tidak melakukan posting jurnal; pencatatan dilakukan pada invoice.
+
+    Update ASAHI (revisi SO): field ekspedisi/penjual dihapus; `customer_code`
+    (singkatan bebas nama perusahaan customer) menjadi segmen nomor pesanan:
+        terisi  → "SO ASI/TBI/2026/001"
+        kosong  → "SO ASI/-/2026/001"
     """
     try:
         biaya_data = biaya_data or []
+
+        # Validasi & normalisasi singkatan customer (segmen nomor SO)
+        customer_code = (customer_code or "").strip() or None
+        if customer_code:
+            if "/" in customer_code:
+                raise ValueError("Singkatan customer tidak boleh mengandung karakter '/'")
+            if len(customer_code) > 20:
+                raise ValueError("Singkatan customer maksimal 20 karakter")
 
         # Validasi pelanggan
         pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
@@ -220,9 +232,13 @@ def create_sales_order(
         # Generate nomor pesanan
         # Update ASAHI: format baru "SO ASI/YYYY/NNN" — reset tahunan,
         # sequence terpisah dari PO (jawaban user, catatan update cetak SO/PO).
+        # Update ASAHI (revisi SO): segmen singkatan customer ditambahkan —
+        # "SO ASI/TBI/2026/001" (terisi) atau "SO ASI/-/2026/001" (kosong).
+        # Selalu pass customer_code (string, bisa "") agar format baru aktif.
         no_pesanan = get_nomor_dokumen_tahunan(
             db, SalesOrder, prefix="SO",
-            no_column="no_pesanan", tanggal=tanggal.date()
+            no_column="no_pesanan", tanggal=tanggal.date(),
+            customer_code=customer_code or "",
         )
 
         # Buat header
@@ -231,9 +247,8 @@ def create_sales_order(
             tanggal=tanggal,
             pelanggan_id=pelanggan_id,
             syarat_bayar_id=syarat_bayar_id,
-            ekspedisi=ekspedisi,
+            customer_code=customer_code,
             tanggal_pengiriman=tanggal_pengiriman,
-            penjual=penjual,
             alamat_pengiriman=alamat_pengiriman,
             diskon_global=diskon_global,
             ppn=ppn,
@@ -301,16 +316,18 @@ def update_sales_order(
     tanggal: Optional[datetime] = None,
     pelanggan_id: Optional[UUID] = None,
     syarat_bayar_id: Optional[UUID] = None,
-    ekspedisi: Optional[str] = None,
     tanggal_pengiriman: Optional[datetime] = None,
-    penjual: Optional[str] = None,
     alamat_pengiriman: Optional[str] = None,
     diskon_global: Optional[Decimal] = None,
     ppn: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
 ) -> SalesOrder:
-    """Update data sales order (hanya field header, tidak re-calculate detail)."""
+    """Update data sales order (hanya field header, tidak re-calculate detail).
+
+    Update ASAHI (revisi SO): ekspedisi/penjual dihapus; customer_code tidak
+    dapat diubah — bagian dari nomor dokumen (immutable setelah create).
+    """
     require_unposted(db_obj)
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Sales Order dengan status {db_obj.status.value} tidak bisa diupdate")
@@ -321,12 +338,8 @@ def update_sales_order(
         db_obj.pelanggan_id = pelanggan_id
     if syarat_bayar_id is not None:
         db_obj.syarat_bayar_id = syarat_bayar_id
-    if ekspedisi is not None:
-        db_obj.ekspedisi = ekspedisi
     if tanggal_pengiriman is not None:
         db_obj.tanggal_pengiriman = tanggal_pengiriman
-    if penjual is not None:
-        db_obj.penjual = penjual
     if alamat_pengiriman is not None:
         db_obj.alamat_pengiriman = alamat_pengiriman
     if diskon_global is not None:

@@ -14,6 +14,8 @@ menyentuh:
   - Master data menu Pengaturan (Pelanggan, Supplier, Barang + konversi
     satuan, Satuan, Gudang, Kategori Barang, Kategori Aset, Syarat Bayar,
     Biaya Tambahan, Kas/Bank Akun, Karyawan)
+  - Pengaturan perusahaan: Company Profile, Mata Uang, Rekening Bank,
+    Alamat Pengiriman
   - Pengguna + password + RBAC (roles, permissions, override)
   - Organisasi + Klasifikasi Arus Kas
 
@@ -160,6 +162,11 @@ Efek setelah reset (yang diharapkan):
       (supplier-from-coa) — tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-10-12  + KEEP : company_profile, mata_uang, rekening_bank,
+                         alamat_pengiriman (tabel baru dari migrasi
+                         terbaru yang sebelumnya belum terklasifikasi —
+                         script menolak jalan). Semuanya master/pengaturan
+                         sehingga tidak ikut dihapus saat reset.
     2026-10-05  + Akun subledger otomatis (update #14): --reset-master yang
                 menyentuh pelanggan/supplier kini ikut menghapus akun COA
                 'Piutang - {Nama}' / 'Hutang - {Nama}' (auto-created) milik
@@ -250,6 +257,11 @@ KEEP_TABLES = frozenset({
     "barang_satuan",
     "kas_bank_akun",
     "karyawan",
+    # Pengaturan perusahaan & referensi (menu Pengaturan)
+    "company_profile",     # profil perusahaan (nama, alamat, NPWP, logo, dsb.)
+    "mata_uang",           # master mata uang
+    "rekening_bank",       # rekening bank perusahaan
+    "alamat_pengiriman",   # master alamat pengiriman
     # Pengguna & RBAC v2
     "pengguna",
     "roles",
@@ -350,6 +362,9 @@ KEEP_GROUPS = [
         "barang", "barang_satuan", "pelanggan", "supplier", "kategori_barang",
         "satuan", "gudang", "kategori_aset", "syarat_bayar", "biaya_tambahan",
         "karyawan",
+    ]),
+    ("Pengaturan Perusahaan", [
+        "company_profile", "mata_uang", "rekening_bank", "alamat_pengiriman",
     ]),
     ("Kas/Bank Akun & Pengguna", ["kas_bank_akun", "pengguna"]),
     ("RBAC (role & permission)", [

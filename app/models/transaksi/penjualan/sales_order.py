@@ -30,12 +30,10 @@ class FulfillmentStatus(str, enum.Enum):
 class SalesOrder(BaseModel, BaseMixin):
     __tablename__ = "sales_order"
 
-    no_pesanan = Column(String(30), unique=True, nullable=False, index=True)
+    no_pesanan = Column(String(40), unique=True, nullable=False, index=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
     syarat_bayar_id = Column(UUID(as_uuid=True), ForeignKey("syarat_bayar.id"), nullable=True)
-    ekspedisi = Column(String(100), nullable=True)
-    tanggal_pengiriman = Column(DateTime(timezone=True), nullable=True)
-    penjual = Column(String(100), nullable=True)
+    tanggal_pengiriman = Column(DateTime(timezone=True), nullable=True)  # label UI/cetak: "Target Pengiriman"
     pelanggan_id = Column(UUID(as_uuid=True), ForeignKey("pelanggan.id"), nullable=False)
     alamat_pengiriman = Column(Text, nullable=True)
     diskon_global = Column(Numeric(5, 2), default=0, nullable=True)
@@ -55,6 +53,15 @@ class SalesOrder(BaseModel, BaseMixin):
     keterangan = Column(Text, nullable=True)
     status = Column(SQLEnum(StatusPenjualan), default=StatusPenjualan.DRAFT, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
+
+    # === Update ASAHI — revisi Sales Order ===
+    # Kolom ekspedisi & penjual DIHAPUS dari dokumen SO (catatan update user).
+    # customer_code = singkatan bebas nama perusahaan customer (input manual,
+    # mis. "TBI" untuk TOYOTA BOSHUKU INDONESIA) yang menjadi segmen nomor SO:
+    #   terisi  → "SO ASI/TBI/2026/001"
+    #   kosong  → "SO ASI/-/2026/001"
+    # Field immutable setelah create karena bagian dari nomor dokumen.
+    customer_code = Column(String(20), nullable=True)
 
     # === NEW Phase B — Catatan Sales Order §4 ===
     customer_po_number = Column(String(50), nullable=True)  # Customer PO reference (B2B)
