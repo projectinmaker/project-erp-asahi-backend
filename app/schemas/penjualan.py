@@ -486,6 +486,47 @@ class SalesOrderSisaResponse(BaseSchema):
 
 
 # ==========================================
+# SISA PENGIRIMAN / DO (tarik No DO — Update #004)
+# ==========================================
+class PengirimanSisaDetailResponse(BaseSchema):
+    """Satu baris DO + qty yang sudah difakturkan.
+
+    qtyTerfaktur = SUM invoice detail (status DIPROSES/SELESAI) yang ter-link
+    ke baris DO ini via delivery_detail_id
+    (mirror sales_validation.get_qty_invoiced_so_far).
+    sisaFaktur = qtyKirim - qtyTerfaktur (min 0).
+    harga/diskon ditarik dari line SO asal bila baris DO ter-link
+    (sales_order_detail_id) — baris DO tanpa link SO mengembalikan 0
+    (user mengisi manual di form invoice).
+    """
+    delivery_detail_id: UUID
+    sales_order_detail_id: UUID | None = None
+    barang_id: UUID
+    kode_barang: str | None = None
+    nama_barang: str | None = None
+    satuan_id: UUID | None = None
+    satuan_nama: str | None = None
+    qty_kirim: int
+    qty_terfaktur: int
+    sisa_faktur: int
+    harga: float = 0
+    diskon: float = 0
+
+
+class PengirimanSisaResponse(BaseSchema):
+    pengiriman_id: UUID
+    no_surat_jalan: str
+    tanggal: datetime
+    sales_order_id: UUID
+    no_pesanan: str | None = None
+    pelanggan_id: UUID
+    pelanggan_nama: str | None = None
+    alamat_pengiriman: str | None = None
+    gudang_id: UUID | None = None
+    details: list[PengirimanSisaDetailResponse] = []
+
+
+# ==========================================
 # PENAWARAN (quotation — Update #3)
 # ==========================================
 class PenawaranDetailBase(BaseSchema):

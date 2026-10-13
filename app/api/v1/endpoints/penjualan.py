@@ -22,6 +22,7 @@ from app.schemas.penjualan import (
     SalesReturCreate, SalesReturUpdate, SalesReturResponse,
     PengirimanBarangCreate, PengirimanBarangUpdate, PengirimanBarangResponse,
     SalesOrderSisaResponse,
+    PengirimanSisaResponse,
     PenawaranCreate, PenawaranUpdate, PenawaranResponse,
 )
 from app.schemas.tukar_faktur import (
@@ -35,6 +36,7 @@ from app.services.hard_delete_service import hard_delete_document
 from app.services.sales_validation import (
     get_qty_delivered_so_far,
     get_qty_invoiced_for_so_detail,
+    get_qty_invoiced_so_far,
 )
 from app.schemas.workflow import HardDeleteRequest
 
@@ -519,6 +521,60 @@ def get_pengiriman_detail(
     if not item:
         raise HTTPException(status_code=404, detail="Pengiriman Barang tidak ditemukan")
     return item
+
+
+@router.get("/pengiriman/{pengiriman_id}/sisa", response_model=PengirimanSisaResponse)
+def get_pengiriman_sisa(
+    pengiriman_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Sisa qty per baris DO yang belum difakturkan (fitur tarik No DO — Update #004).
+
+    Dipakai form Invoice Penjualan saat user memilih No DO (mirror pola tarik
+    No SO lewat /sales-order/{id}/sisa):
+    - qtyTerfaktur = SUM qty invoice detail berstatus DIPROSES/SELESAI yang
+      ter-link ke baris DO via delivery_detail_id.
+    - sisaFaktur = qtyKirim - qtyTerfaktur (min 0); form hanya menarik baris
+      dengan sisa > 0.
+    - harga/diskon ditarik dari line SO asal bila baris DO ter-link
+      (sales_order_detail_id); tanpa link → 0 (isi manual).
+    """
+    pb = svc.get_pengiriman_by_id(db, pengiriman_id)
+    if not pb:
+        raise HTTPException(status_code=404, detail="Pengiriman Barang tidak ditemukan")
+
+    details = []
+    for d in pb.details:
+        qty_terfaktur = get_qty_invoiced_so_far(db, d.id)
+        so_line = d.sales_order_detail
+        details.append({
+            "delivery_detail_id": d.id,
+            "sales_order_detail_id": d.sales_order_detail_id,
+            "barang_id": d.barang_id,
+            "kode_barang": d.barang.kode if d.barang else None,
+            "nama_barang": d.barang.nama if d.barang else None,
+            "satuan_id": d.satuan_id,
+            "satuan_nama": d.satuan.nama if d.satuan else None,
+            "qty_kirim": d.qty,
+            "qty_terfaktur": qty_terfaktur,
+            "sisa_faktur": max(d.qty - qty_terfaktur, 0),
+            "harga": float(so_line.harga or 0) if so_line is not None else 0.0,
+            "diskon": float(so_line.diskon or 0) if so_line is not None else 0.0,
+        })
+
+    return {
+        "pengiriman_id": pb.id,
+        "no_surat_jalan": pb.no_surat_jalan,
+        "tanggal": pb.tanggal,
+        "sales_order_id": pb.sales_order_id,
+        "no_pesanan": pb.sales_order.no_pesanan if pb.sales_order else None,
+        "pelanggan_id": pb.pelanggan_id,
+        "pelanggan_nama": pb.pelanggan.nama if pb.pelanggan else None,
+        "alamat_pengiriman": pb.alamat_pengiriman,
+        "gudang_id": pb.gudang_id,
+        "details": details,
+    }
 
 
 @router.put("/pengiriman/{pengiriman_id}", response_model=PengirimanBarangResponse)
