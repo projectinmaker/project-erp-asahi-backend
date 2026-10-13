@@ -1,6 +1,6 @@
 """Service modul LPPB — Laporan Pemeriksaan dan Pengujian Barang (update ASAHI #005).
 
-Dokumen RECORD QC barang masuk dari vendor (non-finansial: tidak posting
+Dokumen RECORD QC barang masuk dari supplier (non-finansial: tidak posting
 jurnal / tidak menggerakkan stok — Penerimaan Barang tetap pencatat stok).
 
 Workflow (mirror pola ROP #003 — tanpa upacara persetujuan):
@@ -45,7 +45,7 @@ def _resolve_po(db: Session, purchase_order_id: UUID) -> PurchaseOrder:
     if not po:
         raise ValueError("Purchase Order tidak ditemukan")
     if not po.supplier_id:
-        raise ValueError("Purchase Order tidak memiliki supplier (vendor tidak bisa ditarik)")
+        raise ValueError("Purchase Order tidak memiliki supplier (data tidak bisa ditarik)")
     return po
 
 
@@ -258,7 +258,7 @@ def create_lppb(
 ) -> Lppb:
     """Buat LPPB baru — no_form otomatis "LPPB ASI/YYYY/NNN" (sequence tahunan).
 
-    Supplier (Vendor) ditarik otomatis dari Purchase Order yang dipilih.
+    Supplier ditarik otomatis dari Purchase Order yang dipilih.
     """
     if not details:
         raise ValueError("Minimal 1 baris pemeriksaan diperlukan")

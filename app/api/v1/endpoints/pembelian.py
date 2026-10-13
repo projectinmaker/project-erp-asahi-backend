@@ -685,7 +685,7 @@ def get_invoice_belum_bayar(
 def list_lppb(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    search: Optional[str] = Query(None, description="Cari no LPPB, no PO, vendor, proyek, No DO, No RI"),
+    search: Optional[str] = Query(None, description="Cari no LPPB, no PO, supplier, proyek, No DO, No RI"),
     status_filter: Optional[str] = Query(None, alias="status", description="Filter status (DRAFT/SELESAI)"),
     purchase_order_id: Optional[UUID] = Query(None, description="Filter per Purchase Order"),
     supplier_id: Optional[UUID] = Query(None, description="Filter per supplier"),
@@ -715,7 +715,7 @@ def create_lppb(
 ):
     """Buat LPPB baru (auto-generate no "LPPB ASI/YYYY/NNN").
 
-    Vendor (supplier) ditarik otomatis dari Purchase Order yang dipilih;
+    Supplier ditarik otomatis dari Purchase Order yang dipilih;
     item tabel diprefill frontend via GET /purchase-order/{id}/sisa.
     """
     try:

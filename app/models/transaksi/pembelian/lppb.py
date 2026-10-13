@@ -9,7 +9,7 @@ from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 class Lppb(BaseModel, BaseMixin):
     """LPPB — Laporan Pemeriksaan dan Pengujian Barang (update ASAHI #005).
 
-    Dokumen RECORD QMS untuk inspeksi barang masuk dari vendor.
+    Dokumen RECORD QMS untuk inspeksi barang masuk dari supplier.
     Ter-link ke Purchase Order (tarik item + hitung sisa); kolom-kolom
     snapshot (nomor_do, nomor_ri, proyek, dst.) disimpan sebagai teks agar
     cetakan tidak berubah ketika master diedit.
@@ -27,7 +27,7 @@ class Lppb(BaseModel, BaseMixin):
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=False, index=True)
 
     # Referensi eksternal (teks manual — tidak ada entity-nya di sistem)
-    nomor_do = Column(String(100), nullable=True)  # surat jalan / DO vendor
+    nomor_do = Column(String(100), nullable=True)  # surat jalan / DO supplier
     nomor_ri = Column(String(100), nullable=True)  # nomor referensi inspeksi eksternal
     proyek = Column(String(200), nullable=True)
 
