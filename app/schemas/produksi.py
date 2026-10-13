@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.schemas.base import BaseSchema
 
@@ -48,15 +48,26 @@ class PenggunaSimpleResponse(BaseSchema):
 # ==========================================
 class RequestOrderPartItemBase(BaseSchema):
     no: int = 0
-    # Kelompok ORDER
+    # Kolom ORDER
     id_part: Optional[str] = None
     description: Optional[str] = None
     material: Optional[str] = None
     qty: Decimal = Decimal("0")
-    # Kelompok STOK
-    qs: Decimal = Decimal("0")
+    # Kolom STOK — QS bertipe data seperti ID PART (kode, update #003)
+    qs: Optional[str] = None
     supplier_id: Optional[UUID] = None
-    keterangan: Optional[str] = None
+    # KETERANGAN — dua sub-kolom di bawah header grup (update #003)
+    keterangan_order: Optional[str] = None
+    keterangan_stok: Optional[str] = None
+
+    @field_validator("qs", mode="before")
+    @classmethod
+    def _qs_coerce_str(cls, value):
+        """Kompatibilitas transisi: payload lama mengirim QS sebagai angka —
+        konversi ke string agar tidak 422 (tipe kolom kini varchar)."""
+        if value is None or isinstance(value, str):
+            return value
+        return str(value)
 
 
 class RequestOrderPartItemCreate(RequestOrderPartItemBase):

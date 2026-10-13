@@ -87,6 +87,8 @@ class PelangganSimpleResponse(BaseSchema):
     kontak_person: str | None = None
     email: str | None = None
     syarat_bayar_id: UUID | None = None
+    # === Update ASAHI #003 — singkatan untuk auto-fill form Penawaran/SO ===
+    singkatan: str | None = None
 
 
 class SupplierSimpleResponse(BaseSchema):
@@ -312,7 +314,7 @@ def export_pelanggan(
     )
     data = [
         [
-            p.kode, p.nama, p.alamat or "", p.telepon or "", p.email or "",
+            p.kode, p.nama, p.singkatan or "", p.alamat or "", p.telepon or "", p.email or "",
             p.kontak_person or "", p.npwp or "", p.nitku or "", p.tax_status or "",
             p.credit_limit, p.syarat_bayar.nama if p.syarat_bayar else "",
             p.status, _akun_label(p.akun_piutang),
@@ -320,10 +322,10 @@ def export_pelanggan(
         for p in rows
     ]
     wb = excel_service.workbook_from_rows(
-        headers=["Kode", "Nama", "Alamat", "Telepon", "Email", "Kontak Person", "NPWP", "NITKU",
+        headers=["Kode", "Nama", "Singkatan", "Alamat", "Telepon", "Email", "Kontak Person", "NPWP", "NITKU",
                  "Tax Status", "Credit Limit", "Syarat Bayar", "Status", "Akun Piutang"],
         rows=data, sheet="Data",
-        decimal_columns={9},
+        decimal_columns={10},
     )
     return _xlsx_streaming_response(wb, f"pelanggan-{_stamp()}.xlsx")
 
@@ -334,7 +336,7 @@ def pelanggan_import_template(
 ):
     """Template import pelanggan (.xlsx): sheet Data (header saja) + Petunjuk."""
     wb = excel_service.workbook_from_rows(
-        headers=["Kode*", "Nama*", "Alamat", "Telepon", "Email", "Kontak Person",
+        headers=["Kode*", "Nama*", "Singkatan", "Alamat", "Telepon", "Email", "Kontak Person",
                  "NPWP", "NITKU", "Tax Status", "Credit Limit"],
         rows=[], sheet="Data",
     )
@@ -342,6 +344,7 @@ def pelanggan_import_template(
         ["Kolom", "Wajib", "Tipe Data", "Keterangan"],
         ["Kode*", "Ya", "Teks (maks 20)", "Kode unik pelanggan. Contoh: PLG-001. Duplikat dengan pelanggan AKTIF existing ditolak per baris."],
         ["Nama*", "Ya", "Teks (maks 200)", "Nama pelanggan. Contoh: PT Maju Jaya."],
+        ["Singkatan", "Tidak", "Teks (maks 20)", "Singkatan nama perusahaan tanpa '/'. Contoh: TBI. Dipakai segmen nomor SO (SO ASI/TBI/2026/001) — update #003."],
         ["Alamat", "Tidak", "Teks", "Alamat lengkap. Contoh: Jl. Sudirman No. 1, Jakarta."],
         ["Telepon", "Tidak", "Teks", "Contoh: 021-555123."],
         ["Email", "Tidak", "Teks", "Contoh: admin@majujaya.co.id."],
@@ -384,6 +387,7 @@ async def import_pelanggan(
             credit_limit = _cell_decimal(_get_col(raw, header_map, "credit limit"), None)
             data_in = PelangganCreate(
                 kode=kode, nama=nama,
+                singkatan=_cell_str(_get_col(raw, header_map, "singkatan")),
                 alamat=_cell_str(_get_col(raw, header_map, "alamat")),
                 telepon=_cell_str(_get_col(raw, header_map, "telepon")),
                 email=_cell_str(_get_col(raw, header_map, "email")),
@@ -518,6 +522,8 @@ def get_pelanggan_coa(
             "email": pelanggan.email if pelanggan else None,
             "kontak_person": pelanggan.kontak_person if pelanggan else None,
             "npwp": pelanggan.npwp if pelanggan else None,
+            # Update ASAHI #003 — singkatan (segmen nomor SO, auto-fill form)
+            "singkatan": pelanggan.singkatan if pelanggan else None,
             "syarat_bayar_default": pelanggan.syarat_bayar_default if pelanggan else None,
             "status": pelanggan.status if pelanggan else (coa.status if coa else "AKTIF"),
             "is_linked": pelanggan is not None,

@@ -1,4 +1,7 @@
-"""Produksi Endpoints — Request Order Part (form pre-PO dari Engineering)."""
+"""Produksi Endpoints — Request Order Part (form pre-PO dari Engineering).
+
+Update ASAHI #003: endpoint approve diganti /buat (workflow tanpa
+persetujuan — lihat buat_request_order_part)."""
 
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -30,7 +33,7 @@ def get_request_order_part_list(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     search: Optional[str] = Query(None, description="Cari no ROP, project, model, no SO, nama customer"),
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter status (DRAFT/DISETUJUI)"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter status (DRAFT/DIBUAT)"),
     sales_order_id: Optional[UUID] = Query(None, description="Filter per Sales Order"),
     tanggal_from: Optional[datetime] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[datetime] = Query(None, description="Filter tanggal sampai"),
@@ -111,18 +114,22 @@ def update_request_order_part(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/request-order-part/{rop_id}/approve", response_model=RequestOrderPartResponse)
-def approve_request_order_part(
+@router.post("/request-order-part/{rop_id}/buat", response_model=RequestOrderPartResponse)
+def buat_request_order_part(
     rop_id: UUID,
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Setujui Request Order Part: DRAFT → DISETUJUI (final)."""
+    """'Buat ROP' (finalisasi): DRAFT → DIBUAT (update ASAHI #003).
+
+    Workflow baru tanpa persetujuan: form diisi → Simpan (DRAFT) →
+    tombol "Buat ROP". Dokumen final tidak bisa diedit lagi.
+    """
     item = svc.get_request_order_part_by_id(db, rop_id)
     if not item:
         raise HTTPException(status_code=404, detail="Request Order Part tidak ditemukan")
     try:
-        return svc.approve_request_order_part(db, db_obj=item)
+        return svc.buat_request_order_part(db, db_obj=item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

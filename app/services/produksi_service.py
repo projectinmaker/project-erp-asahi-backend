@@ -1,8 +1,10 @@
 """Service modul Produksi — Request Order Part (pre-PO dari Engineering).
 
 Dokumen ringan non-finansial (tidak posting jurnal / tidak menggerakkan stok).
-Alur status: DRAFT → DISETUJUI (aksi approve). Cancel = hard delete +
-snapshot ke deleted_document_log (konvensi ERP Asahi).
+Workflow (update ASAHI #003): form diisi → Simpan (DRAFT) → tombol "Buat ROP"
+(aksi buat = final, status DIBUAT, tidak bisa diedit lagi; menggantikan
+konsep persetujuan). Cancel/Hapus = hard delete + snapshot ke
+deleted_document_log (konvensi ERP Asahi).
 """
 
 from datetime import datetime, timezone
@@ -46,9 +48,11 @@ def _validate_items(items: Optional[List[Dict[str, Any]]]) -> None:
         qty = it.get("qty")
         if qty is not None and Decimal(str(qty)) < 0:
             raise ValueError(f"Qty baris {idx} tidak boleh negatif")
+        # QS kini bertipe data seperti ID PART (kode) — update #003, cukup
+        # batasi panjangnya.
         qs = it.get("qs")
-        if qs is not None and Decimal(str(qs)) < 0:
-            raise ValueError(f"QS (stok) baris {idx} tidak boleh negatif")
+        if qs is not None and len(str(qs)) > 100:
+            raise ValueError(f"QS baris {idx} maksimal 100 karakter")
 
 
 def _replace_items(db: Session, rop: RequestOrderPart, items: List[Dict[str, Any]]) -> None:
@@ -63,9 +67,10 @@ def _replace_items(db: Session, rop: RequestOrderPart, items: List[Dict[str, Any
             description=(it.get("description") or None),
             material=(it.get("material") or None),
             qty=Decimal(str(it.get("qty") or 0)),
-            qs=Decimal(str(it.get("qs") or 0)),
+            qs=(it.get("qs") or None),
             supplier_id=it.get("supplier_id"),
-            keterangan=(it.get("keterangan") or None),
+            keterangan_order=(it.get("keterangan_order") or None),
+            keterangan_stok=(it.get("keterangan_stok") or None),
         ))
 
 
@@ -76,9 +81,10 @@ def _serialize_item(item: RequestOrderPartItem) -> Dict[str, Any]:
         "description": item.description,
         "material": item.material,
         "qty": str(item.qty) if item.qty is not None else None,
-        "qs": str(item.qs) if item.qs is not None else None,
+        "qs": item.qs,
         "supplier_id": str(item.supplier_id) if item.supplier_id else None,
-        "keterangan": item.keterangan,
+        "keterangan_order": item.keterangan_order,
+        "keterangan_stok": item.keterangan_stok,
     }
 
 
@@ -235,9 +241,10 @@ def create_request_order_part(
             description=(it.get("description") or None),
             material=(it.get("material") or None),
             qty=Decimal(str(it.get("qty") or 0)),
-            qs=Decimal(str(it.get("qs") or 0)),
+            qs=(it.get("qs") or None),
             supplier_id=it.get("supplier_id"),
-            keterangan=(it.get("keterangan") or None),
+            keterangan_order=(it.get("keterangan_order") or None),
+            keterangan_stok=(it.get("keterangan_stok") or None),
         ))
     db.commit()
     db.refresh(rop)
@@ -303,15 +310,20 @@ def update_request_order_part(
 
 
 @atomic_accounting_write
-def approve_request_order_part(db: Session, db_obj: RequestOrderPart) -> RequestOrderPart:
-    """Setujui ROP: DRAFT → DISETUJUI (final, tidak bisa diedit lagi)."""
+def buat_request_order_part(db: Session, db_obj: RequestOrderPart) -> RequestOrderPart:
+    """'Buat ROP' (finalisasi): DRAFT → DIBUAT (tidak bisa diedit lagi).
+
+    Update ASAHI #003 — menggantikan approve_request_order_part:
+    workflow tanpa persetujuan; setelah form beres diisi → Simpan (DRAFT),
+    lalu tombol "Buat ROP" meng-finalisasi dokumen.
+    """
     current = getattr(db_obj.status, "value", db_obj.status)
     if current != "DRAFT":
-        raise ValueError("Hanya ROP berstatus DRAFT yang bisa disetujui")
-    db_obj.status = StatusRequestOrderPart.DISETUJUI
+        raise ValueError("Hanya ROP berstatus DRAFT yang bisa dibuat (final)")
+    db_obj.status = StatusRequestOrderPart.DIBUAT
     db.commit()
     db.refresh(db_obj)
-    logger.info(f"ROP disetujui: {db_obj.no_rop}")
+    logger.info(f"ROP dibuat (final): {db_obj.no_rop}")
     return db_obj
 
 

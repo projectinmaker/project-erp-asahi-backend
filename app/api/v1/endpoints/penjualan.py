@@ -727,6 +727,9 @@ def create_penawaran(
             syarat_bayar_id=data_in.syarat_bayar_id,
             alamat_pengiriman=data_in.alamat_pengiriman,
             keterangan=data_in.keterangan,
+            # Update ASAHI #003 — dibawa ke SO saat konversi
+            customer_po_number=data_in.customer_po_number,
+            customer_code=data_in.customer_code,
             mata_uang=data_in.mata_uang,
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,

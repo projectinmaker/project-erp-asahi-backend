@@ -515,6 +515,11 @@ class PenawaranBase(BaseSchema):
     syarat_bayar_id: UUID | None = None
     alamat_pengiriman: str | None = None
     keterangan: str | None = None
+    # === Update ASAHI #003 — dibawa ke SO saat konversi ===
+    # No. PO customer → SalesOrder.customer_po_number.
+    customer_po_number: str | None = None
+    # Singkatan customer → segmen nomor SO (SO ASI/<singkatan>/YYYY/NNN).
+    customer_code: str | None = None
     mata_uang: str = "IDR"
     diskon_global: Decimal | None = Decimal("0")
     ppn: Decimal = Decimal("11")
@@ -532,6 +537,9 @@ class PenawaranUpdate(BaseSchema):
     syarat_bayar_id: UUID | None = None
     alamat_pengiriman: str | None = None
     keterangan: str | None = None
+    # === Update ASAHI #003 ===
+    customer_po_number: str | None = None
+    customer_code: str | None = None
     mata_uang: str | None = None
     diskon_global: Decimal | None = None
     ppn: Decimal | None = None

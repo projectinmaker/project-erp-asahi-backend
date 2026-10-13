@@ -5,9 +5,13 @@ Sebelum masuk ke PO, Engineering mengisi form REQUEST ORDER PART.
 Isi form: Project Name, Model, Customer (ditarik otomatis dari Sales Order
 yang dipilih), Tanggal, lalu tabel part dengan kolom
 NO | ID PART | DESCRIPTION | MATERIAL | QTY | QS | SUPPLIER | KETERANGAN
-yang terbagi dua kelompok kolom: ORDER dan STOK.
+(NO s.d. SUPPLIER sejajar satu baris header; KETERANGAN dibagi dua
+sub-kolom: ORDER dan STOK — update ASAHI #003).
 Terdapat kolom Note (kiri) dan blok tanda tangan DIBUAT / DIPERIKSA /
 DIKETAHUI / DISETUJUI (input nama) di kanan bawah.
+
+Workflow (update ASAHI #003): form diisi → Simpan (status DRAFT) →
+tombol "Buat ROP" (final — status DIBUAT, tidak bisa diedit lagi).
 
 Distribusi salinan cetak: PUTIH = PURCHASING, KUNING = PRODUKSI,
 MERAH = ENGINEERING.
@@ -23,8 +27,12 @@ from app.models.base import BaseMixin
 
 
 class StatusRequestOrderPart(str, enum.Enum):
+    """DRAFT = masih disusun (bisa diedit/dihapus);
+    DIBUAT = dokumen final (hasil tombol "Buat ROP" — update ASAHI #003,
+    menggantikan konsep DISETUJUI)."""
+
     DRAFT = "DRAFT"
-    DISETUJUI = "DISETUJUI"
+    DIBUAT = "DIBUAT"
 
 
 class RequestOrderPart(BaseModel, BaseMixin):
@@ -81,10 +89,15 @@ class RequestOrderPartItem(BaseModel, BaseMixin):
     material = Column(String(200), nullable=True)
     qty = Column(Numeric(18, 2), default=0, nullable=False)
 
-    # ── Kelompok kolom STOK ───────────────────────────────────────────
-    qs = Column(Numeric(18, 2), default=0, nullable=False)  # QS = Quantity Stok
+    # ── Kolom STOK ───────────────────────────────────────────
+    # QS bertipe data seperti ID PART (kode, bisa alfanumerik) — update #003.
+    qs = Column(String(100), nullable=True)
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=True)
-    keterangan = Column(String(500), nullable=True)
+
+    # KETERANGAN — dibagi dua sub-kolom (update ASAHI #003):
+    # header grup KETERANGAN dengan sub-kolom ORDER dan STOK.
+    keterangan_order = Column(String(500), nullable=True)
+    keterangan_stok = Column(String(500), nullable=True)
 
     # Relationships
     supplier = relationship("Supplier")

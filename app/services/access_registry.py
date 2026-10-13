@@ -385,13 +385,17 @@ ROLE_TEMPLATES = {
     },
     'ENGINEERING_STAFF': {
         'name': 'Staf Engineering',
-        'description': 'Mengajukan Request Order Part (form pre-PO) untuk kebutuhan '
+        'description': 'Mengisi dan memfinalisasi Request Order Part (form '
+                       'pre-PO — Simpan lalu "Buat ROP") untuk kebutuhan '
                        'produksi/project. Melihat SO terkait tanpa akses finansial.',
         'is_system': True,
         'super': False,
         'permissions': _expand([
             'production.request_order_part.view', 'production.request_order_part.create',
             'production.request_order_part.edit', 'production.request_order_part.cancel',
+            # Update ASAHI #003: workflow tanpa persetujuan — pengisi form sendiri
+            # yang menfinalisasi lewat tombol "Buat ROP" (endpoint /buat).
+            'production.request_order_part.approve',
             'production.request_order_part.print',
             'sales.sales_order.view',
             'master.barang.view', 'master.supplier.view', 'master.company_profile.view',
@@ -613,6 +617,9 @@ _EXPLICIT = {
     'export_tagihan': None,        # dinamis via path → .export (Update #5)
     # persediaan — export stok (Update #5)
     'export_stok': 'inventory.stock.export',
+    # produksi — "Buat ROP" (finalisasi DRAFT → DIBUAT, update ASAHI #003).
+    # Aksi finalisasi dipetakan ke permission approve (hak finalisasi dokumen).
+    'buat_request_order_part': 'production.request_order_part.approve',
 }
 
 # Router yang permission-nya ditegakkan di SERVICE (bukan router gate).

@@ -133,7 +133,8 @@ def require_unposted(item):
     if getattr(item, "jurnal_umum_id", None):
         raise ValueError("Dokumen sudah diposting. Batalkan dengan jurnal pembalik sebelum membuat koreksi.")
     value = getattr(getattr(item, "status", None), "value", getattr(item, "status", None))
-    if value in ("BATAL", "DIBATALKAN", "SELESAI", "DISETUJUI", "POSTED"):
+    # DIBUAT = status final ROP hasil tombol "Buat ROP" (update ASAHI #003)
+    if value in ("BATAL", "DIBATALKAN", "SELESAI", "DISETUJUI", "DIBUAT", "POSTED"):
         raise ValueError("Dokumen final/batal tidak bisa diubah.")
     db = object_session(item)
     if db:
@@ -145,5 +146,5 @@ def require_unposted(item):
 
 def require_no_stock_movement(item):
     value = getattr(item.status, "value", item.status)
-    if value in ("SELESAI", "DISETUJUI"):
+    if value in ("SELESAI", "DISETUJUI", "DIBUAT"):
         raise ValueError("Dokumen sudah mengubah stok. Gunakan retur/penyesuaian stok, bukan pembatalan langsung.")

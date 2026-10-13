@@ -28,6 +28,13 @@ class Penawaran(BaseModel, BaseMixin):
     syarat_bayar_id = Column(UUID(as_uuid=True), ForeignKey("syarat_bayar.id"), nullable=True)
     alamat_pengiriman = Column(String(255), nullable=True)
     keterangan = Column(Text, nullable=True)
+    # === Update ASAHI #003 — dibawa ke SO saat konversi (SO langsung lengkap) ===
+    # No. PO customer (referensi PO dari pelanggan, mis. diterima bersama
+    # konfirmasi order) → SalesOrder.customer_po_number.
+    customer_po_number = Column(String(50), nullable=True)
+    # Singkatan nama perusahaan customer (snapshot; mirror SO.customer_code)
+    # → segmen nomor SO hasil konversi: "SO ASI/<singkatan>/YYYY/NNN".
+    customer_code = Column(String(20), nullable=True)
     mata_uang = Column(String(10), nullable=False, default="IDR")
     diskon_global = Column(Numeric(18, 2), default=0, nullable=False)
     ppn = Column(Numeric(5, 2), default=11, nullable=False)

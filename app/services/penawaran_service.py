@@ -112,6 +112,8 @@ def create_penawaran(
     diskon_global: Decimal | None = Decimal("0"),
     ppn: Decimal = Decimal("11"),
     berlaku_hingga: date | None = None,
+    customer_po_number: str | None = None,
+    customer_code: str | None = None,
     created_by: UUID | None = None,
 ) -> Penawaran:
     """Buat Penawaran baru beserta detail + biaya tambahan.
@@ -120,6 +122,9 @@ def create_penawaran(
     - sub_total per baris = harga * qty * (100 - diskon%) / 100
     - Totals header (sub_total/total_diskon/total_ppn/total_biaya_tambahan/
       grand_total) dihitung dengan pola create_sales_order → refresh_totals.
+    - Update ASAHI #003: `customer_po_number` (No. PO customer) +
+      `customer_code` (singkatan) disimpan sebagai snapshot — keduanya dibawa
+      ke Sales Order saat konversi (SO langsung lengkap).
     - TANPA jurnal, TANPA workflow (status DRAFT).
     """
     try:
@@ -129,6 +134,10 @@ def create_penawaran(
         pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
         if not pelanggan:
             raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
+
+        # Validasi & normalisasi singkatan customer (mirror create_sales_order)
+        customer_code = _normalize_customer_code(customer_code)
+        customer_po_number = (customer_po_number or "").strip() or None
 
         # sub_total per baris
         _normalize_details(details_data)
@@ -149,6 +158,8 @@ def create_penawaran(
             syarat_bayar_id=syarat_bayar_id,
             alamat_pengiriman=alamat_pengiriman,
             keterangan=keterangan,
+            customer_po_number=customer_po_number,
+            customer_code=customer_code,
             mata_uang=mata_uang,
             diskon_global=diskon_global,
             ppn=ppn,
@@ -195,6 +206,18 @@ def create_penawaran(
         raise
 
 
+def _normalize_customer_code(customer_code: str | None) -> str | None:
+    """Normalisasi + validasi singkatan customer (mirror create_sales_order):
+    strip; tanpa karakter '/'; maksimal 20 karakter."""
+    code = (customer_code or "").strip() or None
+    if code:
+        if "/" in code:
+            raise ValueError("Singkatan customer tidak boleh mengandung karakter '/'")
+        if len(code) > 20:
+            raise ValueError("Singkatan customer maksimal 20 karakter")
+    return code
+
+
 @atomic_accounting_write
 def update_penawaran(
     db: Session,
@@ -205,6 +228,8 @@ def update_penawaran(
     syarat_bayar_id: UUID | None = None,
     alamat_pengiriman: str | None = None,
     keterangan: str | None = None,
+    customer_po_number: str | None = None,
+    customer_code: str | None = None,
     mata_uang: str | None = None,
     diskon_global: Decimal | None = None,
     ppn: Decimal | None = None,
@@ -219,6 +244,13 @@ def update_penawaran(
     """
     if db_obj.status != "DRAFT":
         raise ValueError(f"Penawaran dengan status {db_obj.status} tidak bisa diupdate")
+
+    # Update ASAHI #003 — No. PO customer + singkatan (bisa di-clear dengan "")
+    customer_code = _normalize_customer_code(customer_code)
+    if customer_po_number is not None:
+        db_obj.customer_po_number = (customer_po_number or "").strip() or None
+    if customer_code is not None:
+        db_obj.customer_code = customer_code
 
     if tanggal is not None:
         db_obj.tanggal = tanggal
@@ -338,6 +370,11 @@ def convert_to_so(db: Session, penawaran_id: UUID, user):
         keterangan=keterangan,
         diskon_global=penawaran.diskon_global,
         ppn=penawaran.ppn,
+        # Update ASAHI #003 — No. PO customer + singkatan dibawa ke SO
+        # sehingga SO hasil konversi langsung lengkap (nomor SO memakai
+        # segmen singkatan, No. PO customer terisi).
+        customer_po_number=penawaran.customer_po_number,
+        customer_code=penawaran.customer_code,
         created_by=getattr(user, "id", None) or penawaran.created_by,
         currency=penawaran.mata_uang,
     )

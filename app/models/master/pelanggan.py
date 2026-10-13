@@ -24,6 +24,11 @@ class Pelanggan(BaseModel, BaseMixin):
     status = Column(String(20), default="AKTIF", nullable=False)
     akun_piutang_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=True)
 
+    # === Update ASAHI #003 — singkatan nama perusahaan (mis. TBI / YUT) ===
+    # Dipakai sebagai segmen nomor dokumen (SO ASI/<singkatan>/YYYY/NNN);
+    # auto-fill di form Penawaran/SO lalu bisa disunting per dokumen.
+    singkatan = Column(String(20), nullable=True)
+
     # === Optional fields (P0 nullable) ===
     alamat = Column(Text, nullable=True)
     telepon = Column(String(30), nullable=True)

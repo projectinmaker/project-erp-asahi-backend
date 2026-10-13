@@ -55,6 +55,9 @@ class PelangganBase(BaseSchema):
     nitku: Optional[str] = None
     credit_limit: Optional[Decimal] = None
     tax_status: Optional[str] = None  # PKP / NON_PKP / null
+    # === Update ASAHI #003 — singkatan nama perusahaan (mis. TBI) ===
+    # Auto-fill di form Penawaran/SO; segmen nomor dokumen SO.
+    singkatan: Optional[str] = None
     # FK canonical (prefer pakai ini); legacy syarat_bayar_default string tetap dipertahankan
     syarat_bayar_id: Optional[UUID] = None
     # LEGACY (akan di-drop di Phase berikutnya)
@@ -81,6 +84,7 @@ class PelangganUpdate(BaseSchema):
     nitku: Optional[str] = None
     credit_limit: Optional[Decimal] = None
     tax_status: Optional[str] = None
+    singkatan: Optional[str] = None  # Update ASAHI #003
     syarat_bayar_id: Optional[UUID] = None
     # LEGACY
     syarat_bayar_default: Optional[str] = None
@@ -126,6 +130,7 @@ class PelangganCoaResponse(BaseSchema):
     kontak_person: Optional[str] = None
     npwp: Optional[str] = None
     nitku: Optional[str] = None  # NEW Phase 2
+    singkatan: Optional[str] = None  # Update ASAHI #003 — segmen nomor SO (auto-fill Penawaran/SO)
     syarat_bayar_default: Optional[str] = None
     status: str
     is_linked: bool
