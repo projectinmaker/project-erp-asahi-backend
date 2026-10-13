@@ -54,3 +54,8 @@ api_router.include_router(access.router, prefix='/access', tags=['Role & Akses']
 
 from app.api.v1.endpoints import histori
 api_router.include_router(histori.router, prefix='/histori', tags=['Histori Dokumen'])
+
+# Catatan update (Request Order Part): modul Produksi — form pre-PO dari
+# Engineering. Prefix /produksi, permission gate module_access('production').
+from app.api.v1.endpoints import produksi
+api_router.include_router(produksi.router, prefix="/produksi", tags=["Produksi"], dependencies=[Depends(module_access("production"))])

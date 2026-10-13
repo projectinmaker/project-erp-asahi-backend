@@ -25,6 +25,7 @@ MODULES = {
     'sales': 'Penjualan',
     'purchase': 'Pembelian',
     'inventory': 'Persediaan',
+    'production': 'Produksi',
     'finance': 'Kas & Bank',
     'accounting': 'Akuntansi',
     'asset': 'Aset Tetap',
@@ -57,6 +58,8 @@ RESOURCE_NAMES = {
     # inventory
     'stock': 'Stok', 'valuation': 'Valuasi Persediaan', 'transfer': 'Pemindahan Barang',
     'adjustment': 'Penyesuaian Stok', 'stock_request': 'Permintaan Barang',
+    # production (Catatan update: Request Order Part)
+    'request_order_part': 'Request Order Part',
     # finance
     'cash_payment': 'Pembayaran Kas', 'cash_receipt': 'Penerimaan Kas',
     'bank_transfer': 'Transfer Bank', 'bank_reconciliation': 'Rekonsiliasi Bank',
@@ -157,6 +160,8 @@ REGISTRY: list = (
     + _res('asset', 'register', ['view', 'create', 'edit', 'delete'])
     + _res('asset', 'transaction', ['view', 'create', 'cancel', 'submit', 'approve', 'post', 'export'])
     + _res('asset', 'reconciliation', ['view', 'export'])
+    # ── Production (Catatan update: Request Order Part — pre-PO dari Engineering) ─
+    + _res('production', 'request_order_part', ['view', 'create', 'edit', 'cancel', 'approve', 'print'])
     # ── Reports ───────────────────────────────────────────────────────────
     + _res('reports', 'financial', ['view', 'export'])
     + _res('reports', 'ledger', ['view', 'export'])
@@ -248,6 +253,7 @@ ROLE_TEMPLATES = {
         'super': False,
         'permissions': _expand([
             'finance.*', 'accounting.*', 'sales.*', 'purchase.*', 'inventory.*', 'asset.*',
+            'production.request_order_part.*',
             'reports.*', 'master.*', 'dashboard.operational.view', 'workflow.queue.view',
             'system.audit.view', 'system.organisation.view', 'system.organisation.edit',
         ]),
@@ -303,6 +309,9 @@ ROLE_TEMPLATES = {
             'purchase.purchase_invoice.cancel', 'purchase.purchase_invoice.submit',
             'purchase.purchase_return.view', 'purchase.purchase_return.create', 'purchase.purchase_return.edit',
             'purchase.purchase_return.cancel', 'purchase.purchase_return.submit',
+            # Catatan update (Request Order Part): Purchasing melihat & mencetak ROP
+            # dari Engineering sebagai dasar pembuatan PO.
+            'production.request_order_part.view', 'production.request_order_part.print',
             'master.supplier.view', 'master.supplier.create', 'master.supplier.edit',
             'master.supplier.export', 'master.supplier.import',
             'master.barang.view', 'master.gudang.view',
@@ -366,12 +375,27 @@ ROLE_TEMPLATES = {
             'dashboard.operational.view',
         ]),
     },
+    'ENGINEERING_STAFF': {
+        'name': 'Staf Engineering',
+        'description': 'Mengajukan Request Order Part (form pre-PO) untuk kebutuhan '
+                       'produksi/project. Melihat SO terkait tanpa akses finansial.',
+        'is_system': True,
+        'super': False,
+        'permissions': _expand([
+            'production.request_order_part.view', 'production.request_order_part.create',
+            'production.request_order_part.edit', 'production.request_order_part.cancel',
+            'production.request_order_part.print',
+            'sales.sales_order.view',
+            'master.barang.view', 'master.supplier.view', 'master.company_profile.view',
+            'dashboard.operational.view',
+        ]),
+    },
     'MANAGEMENT_VIEWER': {
         'name': 'Viewer Management',
         'description': 'Hanya melihat dashboard/laporan (view only) sesuai scope.',
         'is_system': True,
         'super': False,
-        'permissions': _expand(['dashboard.operational.view', 'reports.*.view', 'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view']),
+        'permissions': _expand(['dashboard.operational.view', 'reports.*.view', 'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view', 'production.request_order_part.view']),
     },
 }
 
@@ -653,6 +677,7 @@ def infer_permission(router_module: str, fn: str, method: str, path: str) -> Opt
         'asset_cycle': 'asset.transaction',
         'dashboard': 'dashboard.operational',
         'jurnal': 'accounting.journal',
+        'production': 'production.request_order_part',
     }
     if router_module in simple:
         act = _action_for(method, fn)

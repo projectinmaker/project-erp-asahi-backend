@@ -52,6 +52,11 @@ from app.models.transaksi.persediaan.permintaan_barang import PermintaanBarang, 
 from app.models.transaksi.persediaan.pemindahan_barang import PemindahanBarang, ProsesPemindahan
 from app.models.transaksi.persediaan.penyesuaian_stok import PenyesuaianStok, TipePenyesuaian
 
+# Transaksi - Produksi
+from app.models.transaksi.produksi.request_order_part import (
+    RequestOrderPart, RequestOrderPartItem, StatusRequestOrderPart,
+)
+
 # Transaksi - Aset Tetap
 from app.models.transaksi.aset_tetap.aset_tetap import AsetTetap, MetodePenyusutan, StatusAsetTetap, AcquisitionSourceType
 
@@ -119,6 +124,9 @@ __all__ = [
     "PermintaanBarang",
     "PemindahanBarang",
     "PenyesuaianStok",
+    # Transaksi - Produksi
+    "RequestOrderPart",
+    "RequestOrderPartItem",
     # Transaksi - Aset Tetap
     "AsetTetap",
     # Transaksi - Lainnya
@@ -158,6 +166,7 @@ __all__ = [
     "StatusJurnal",
     "TipeMutasiStok",
     "StatusPeriode",
+    "StatusRequestOrderPart",
 ]
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent, IdempotentOperation
 

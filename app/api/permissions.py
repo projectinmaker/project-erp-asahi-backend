@@ -60,7 +60,7 @@ def module_access(module: str):
             db.info['request_actor'] = user
             key = request.headers.get('Idempotency-Key')
             # Required for document creates; optional for updates/cancels. Scope per actor.
-            required = request.method == 'POST' and fn.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle', 'organisasi')
+            required = request.method == 'POST' and fn.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle', 'organisasi', 'production')
             if required and not key:
                 raise HTTPException(400, 'Header Idempotency-Key wajib diisi untuk membuat dokumen')
             if key:

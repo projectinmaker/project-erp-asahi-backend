@@ -162,6 +162,10 @@ Efek setelah reset (yang diharapkan):
       (supplier-from-coa) — tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-10-13  + WIPE : request_order_part, request_order_part_item
+                         (modul Request Order Part — dokumen transaksi
+                         beserta item-nya; sebelumnya belum terklasifikasi
+                         sehingga script menolak jalan).
     2026-10-12  + KEEP : company_profile, mata_uang, rekening_bank,
                          alamat_pengiriman (tabel baru dari migrasi
                          terbaru yang sebelumnya belum terklasifikasi —
@@ -311,6 +315,9 @@ WIPE_TABLES = frozenset({
     "purchase_retur",
     "purchase_retur_detail",
     "purchase_invoice_receipt_match",
+    # Request Order Part
+    "request_order_part",
+    "request_order_part_item",
     # Aset Tetap
     "aset_tetap",
     "asset_event",
@@ -348,6 +355,7 @@ WIPE_GROUPS = [
         "permintaan_barang", "pemindahan_barang", "penyesuaian_stok",
         "stok_mutasi", "stok_kartu_layer", "stock_balance",
     ]),
+    ("Request Order Part", ["request_order_part", "request_order_part_item"]),
     ("Aset Tetap", ["aset_tetap", "asset_event"]),
     ("Pelunasan / Workflow / Histori", [
         "transaksi_biaya", "payment_allocation", "penutupan_periode",
