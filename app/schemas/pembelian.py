@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Optional, List
 from uuid import UUID
 
-from pydantic import computed_field
+from pydantic import computed_field, Field
 
 from app.schemas.base import BaseSchema
 
@@ -499,3 +499,119 @@ class PurchaseOrderSisaResponse(BaseSchema):
     alamat: str | None = None
     syarat_bayar_id: UUID | None = None
     details: list[PurchaseOrderSisaDetailResponse] = []
+
+
+# ==========================================
+# LPPB — LAPORAN PEMERIKSAAN & PENGUJIAN BARANG (Update ASAHI #005)
+# Dokumen RECORD QC barang masuk. Tidak posting stok/jurnal.
+# ==========================================
+class LppbDetailCreate(BaseSchema):
+    """Satu baris pemeriksaan/pengujian.
+
+    Baris barang: barang_id + purchase_order_detail_id + snapshot PO terisi
+    (prefill dari GET /purchase-order/{id}/sisa di sisi frontend).
+    Baris jasa pengujian (mis. NDT): barang_id NULL — hanya deskripsi
+    manual; dibuat berpasangan di bawah barangnya lewat urutan frontend.
+    """
+    urutan: int = 1
+    barang_id: UUID | None = None
+    purchase_order_detail_id: UUID | None = None
+    kode_material: str | None = None
+    deskripsi_spesifikasi: str = Field(min_length=1, max_length=2000)
+    satuan: str | None = None
+    qty_po: int = 0
+    qty_penerimaan: int = 0
+    qty_baik: int = 0
+    qty_tidak_baik: int = 0
+    # qty_sudah/belum_diterima dihitung SERVER dari akumulasi penerimaan
+    # PO + qty_penerimaan baris ini (frontend mengirim hanya sebagai info
+    # prefill; nilai final yang dipakai hasil kalkulasi server).
+
+
+class LppbDetailResponse(BaseSchema):
+    id: UUID
+    urutan: int
+    barang_id: UUID | None = None
+    purchase_order_detail_id: UUID | None = None
+    kode_material: str | None = None
+    deskripsi_spesifikasi: str
+    satuan: str | None = None
+    qty_po: int
+    qty_penerimaan: int
+    qty_baik: int
+    qty_tidak_baik: int
+    qty_sudah_diterima: int
+    qty_belum_diterima: int
+
+
+class LppbBase(BaseSchema):
+    tanggal: datetime
+    tanggal_terima: datetime | None = None
+    purchase_order_id: UUID
+    nomor_do: str | None = None
+    nomor_ri: str | None = None
+    proyek: str | None = None
+    revisi: str | None = None
+    no_format: str | None = None
+    keterangan: str | None = None
+    mengetahui_jabatan: str | None = None
+    mengetahui_nama: str | None = None
+
+
+class LppbCreate(LppbBase):
+    details: List[LppbDetailCreate] = Field(min_length=1, description="Minimal 1 baris pemeriksaan")
+
+
+class LppbUpdate(BaseSchema):
+    tanggal: Optional[datetime] = None
+    tanggal_terima: Optional[datetime] = None
+    purchase_order_id: Optional[UUID] = None
+    nomor_do: Optional[str] = None
+    nomor_ri: Optional[str] = None
+    proyek: Optional[str] = None
+    revisi: Optional[str] = None
+    no_format: Optional[str] = None
+    keterangan: Optional[str] = None
+    mengetahui_jabatan: Optional[str] = None
+    mengetahui_nama: Optional[str] = None
+    details: Optional[List[LppbDetailCreate]] = None
+
+
+class LppbListResponse(BaseSchema):
+    """Baris list ringan (tanpa items)."""
+    id: UUID
+    no_form: str
+    tanggal: datetime
+    tanggal_terima: Optional[datetime] = None
+    purchase_order_id: UUID
+    supplier_id: UUID
+    nomor_do: Optional[str] = None
+    nomor_ri: Optional[str] = None
+    proyek: Optional[str] = None
+    revisi: Optional[str] = None
+    no_format: Optional[str] = None
+    keterangan: Optional[str] = None
+    mengetahui_jabatan: Optional[str] = None
+    mengetahui_nama: Optional[str] = None
+    status: str
+    created_by: UUID
+    created_at: datetime
+    updated_at: datetime
+    total_item: int = 0
+    purchase_order: Optional[PurchaseOrderSimpleResponse] = None
+    supplier: Optional[SupplierSimpleResponse] = None
+    creator: Optional[PenggunaSimpleResponse] = None
+
+
+class LppbResponse(LppbBase):
+    id: UUID
+    no_form: str
+    supplier_id: UUID
+    status: str
+    created_by: UUID
+    created_at: datetime
+    updated_at: datetime
+    purchase_order: Optional[PurchaseOrderSimpleResponse] = None
+    supplier: Optional[SupplierSimpleResponse] = None
+    creator: Optional[PenggunaSimpleResponse] = None
+    details: List[LppbDetailResponse] = []

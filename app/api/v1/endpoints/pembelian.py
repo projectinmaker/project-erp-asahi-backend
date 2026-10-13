@@ -1,10 +1,10 @@
 """
 Pembelian Endpoints.
-PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang.
+PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang, LPPB.
 """
 
-from datetime import date
-from typing import Optional
+from datetime import date, datetime
+from typing import Optional, Dict, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -20,8 +20,10 @@ from app.schemas.pembelian import (
     PurchaseReturCreate, PurchaseReturUpdate, PurchaseReturResponse,
     PenerimaanBarangCreate, PenerimaanBarangUpdate, PenerimaanBarangResponse,
     PurchaseOrderSisaResponse,
+    LppbCreate, LppbUpdate, LppbResponse, LppbListResponse,
 )
 from app.services import pembelian_service as svc
+from app.services import lppb_service as lppb_svc
 from app.services import workflow_service
 from app.services.hard_delete_service import hard_delete_document
 from app.services.purchase_validation import (
@@ -671,3 +673,142 @@ def get_invoice_belum_bayar(
         })
 
     return result
+
+
+# ==========================================
+# LPPB — LAPORAN PEMERIKSAAN & PENGUJIAN BARANG (Update ASAHI #005)
+# Dokumen RECORD QC barang masuk — non-finansial (tanpa posting stok/jurnal).
+# Workflow: Simpan (DRAFT) → "Selesaikan" (SELESAI, final) → Cetak.
+# ==========================================
+
+@router.get("/lppb", response_model=PaginatedResponse[LppbListResponse])
+def list_lppb(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    search: Optional[str] = Query(None, description="Cari no LPPB, no PO, vendor, proyek, No DO, No RI"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter status (DRAFT/SELESAI)"),
+    purchase_order_id: Optional[UUID] = Query(None, description="Filter per Purchase Order"),
+    supplier_id: Optional[UUID] = Query(None, description="Filter per supplier"),
+    tanggal_from: Optional[datetime] = Query(None, description="Filter tanggal mulai"),
+    tanggal_to: Optional[datetime] = Query(None, description="Filter tanggal sampai"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil daftar LPPB dengan filter dan pagination."""
+    try:
+        data, total = lppb_svc.get_lppb_list(
+            db, skip=skip, limit=limit, search=search,
+            status=status_filter, purchase_order_id=purchase_order_id,
+            supplier_id=supplier_id,
+            tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+
+@router.post("/lppb", response_model=LppbResponse, status_code=status.HTTP_201_CREATED)
+def create_lppb(
+    data_in: LppbCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buat LPPB baru (auto-generate no "LPPB ASI/YYYY/NNN").
+
+    Vendor (supplier) ditarik otomatis dari Purchase Order yang dipilih;
+    item tabel diprefill frontend via GET /purchase-order/{id}/sisa.
+    """
+    try:
+        return lppb_svc.create_lppb(
+            db=db,
+            tanggal=data_in.tanggal,
+            purchase_order_id=data_in.purchase_order_id,
+            details=[d.model_dump() for d in data_in.details],
+            created_by=current_user.id,
+            tanggal_terima=data_in.tanggal_terima,
+            nomor_do=data_in.nomor_do,
+            nomor_ri=data_in.nomor_ri,
+            proyek=data_in.proyek,
+            revisi=data_in.revisi,
+            no_format=data_in.no_format,
+            keterangan=data_in.keterangan,
+            mengetahui_jabatan=data_in.mengetahui_jabatan,
+            mengetahui_nama=data_in.mengetahui_nama,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/lppb/{lppb_id}", response_model=LppbResponse)
+def get_lppb(
+    lppb_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil detail 1 LPPB (lengkap dengan baris pemeriksaan)."""
+    item = lppb_svc.get_lppb_by_id(db, lppb_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="LPPB tidak ditemukan")
+    return item
+
+
+@router.put("/lppb/{lppb_id}", response_model=LppbResponse)
+def update_lppb(
+    lppb_id: UUID,
+    data_in: LppbUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Update LPPB (hanya status DRAFT)."""
+    item = lppb_svc.get_lppb_by_id(db, lppb_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="LPPB tidak ditemukan")
+
+    update_data = data_in.model_dump(exclude_unset=True)
+    details = update_data.pop("details", None)
+    try:
+        return lppb_svc.update_lppb(db, db_obj=item, details=details, **update_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/lppb/{lppb_id}/selesaikan", response_model=LppbResponse)
+def selesaikan_lppb(
+    lppb_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """"Selesaikan" LPPB (finalisasi): DRAFT → SELESAI.
+
+    Workflow tanpa persetujuan (pola ROP #003): form diisi → Simpan (DRAFT) →
+    tombol "Selesaikan". Dokumen final tidak bisa diedit lagi; hanya Batalkan.
+    """
+    item = lppb_svc.get_lppb_by_id(db, lppb_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="LPPB tidak ditemukan")
+    try:
+        return lppb_svc.selesaikan_lppb(db, db_obj=item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/lppb/{lppb_id}/cancel")
+def cancel_lppb(
+    lppb_id: UUID,
+    payload: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Hapus permanen LPPB (hard delete) — berlaku utk DRAFT maupun final.
+
+    Dokumen + baris pemeriksaan dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    """
+    item = lppb_svc.get_lppb_by_id(db, lppb_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="LPPB tidak ditemukan")
+    reason = (payload or {}).get("reason")
+    try:
+        return lppb_svc.cancel_lppb(db, db_obj=item, user=current_user, reason=reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

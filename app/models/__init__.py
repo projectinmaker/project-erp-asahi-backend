@@ -46,6 +46,7 @@ from app.models.transaksi.pembelian.purchase_order import PurchaseOrder
 from app.models.transaksi.pembelian.penerimaan_barang import PenerimaanBarang
 from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
 from app.models.transaksi.pembelian.purchase_retur import PurchaseRetur
+from app.models.transaksi.pembelian.lppb import Lppb
 
 # Transaksi - Persediaan
 from app.models.transaksi.persediaan.permintaan_barang import PermintaanBarang, StatusPersediaan
@@ -80,6 +81,7 @@ from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
 from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
 from app.models.detail.purchase_retur_detail import PurchaseReturDetail
 from app.models.detail.purchase_invoice_receipt_match import PurchaseInvoiceReceiptMatch
+from app.models.detail.lppb_detail import LppbDetail
 from app.models.detail.barang_satuan import BarangSatuan
 from app.models.detail.penawaran_detail import PenawaranDetail
 from app.models.detail.tukar_faktur_detail import TukarFakturDetail
@@ -120,6 +122,7 @@ __all__ = [
     "PenerimaanBarang",
     "PurchaseInvoice",
     "PurchaseRetur",
+    "Lppb",
     # Transaksi - Persediaan
     "PermintaanBarang",
     "PemindahanBarang",
@@ -148,6 +151,7 @@ __all__ = [
     "PenerimaanBarangDetail",
     "PurchaseInvoiceDetail",
     "PurchaseReturDetail",
+    "LppbDetail",
     "PurchaseInvoiceReceiptMatch",
     "BarangSatuan",
     "PenawaranDetail",

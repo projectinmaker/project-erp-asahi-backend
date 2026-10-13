@@ -55,6 +55,7 @@ RESOURCE_NAMES = {
     'purchase_order': 'Purchase Order', 'goods_receipt': 'Penerimaan Barang',
     'purchase_invoice': 'Invoice Pembelian', 'purchase_return': 'Retur Pembelian',
     'ap_settlement': 'Pelunasan Hutang',
+    'lppb': 'LPPB (Pemeriksaan & Pengujian Barang)',  # Update ASAHI #005
     # inventory
     'stock': 'Stok', 'valuation': 'Valuasi Persediaan', 'transfer': 'Pemindahan Barang',
     'adjustment': 'Penyesuaian Stok', 'stock_request': 'Permintaan Barang',
@@ -139,6 +140,7 @@ REGISTRY: list = (
     + _res('purchase', 'purchase_invoice', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'export'])
     + _res('purchase', 'purchase_return', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'export'])
     + _res('purchase', 'ap_settlement', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'export'])
+    + _res('purchase', 'lppb', ['view', 'create', 'edit', 'cancel', 'execute', 'print'])  # Update ASAHI #005 — dokumen QC barang masuk (RECORD, non-finansial)
     # ── Inventory ─────────────────────────────────────────────────────────
     + _res('inventory', 'stock', ['view', 'reconcile', 'export'])
     + _res('inventory', 'valuation', ['view', 'export'])
@@ -286,6 +288,7 @@ ROLE_TEMPLATES = {
             'sales.tukar_faktur.view',
             'purchase.purchase_order.view', 'purchase.goods_receipt.view', 'purchase.purchase_invoice.view',
             'purchase.purchase_return.view',
+            'purchase.lppb.view',  # Update ASAHI #005
             'inventory.stock.view', 'inventory.valuation.view', 'inventory.transfer.view',
             'inventory.adjustment.view', 'inventory.stock_request.view',
             'asset.category.view', 'asset.register.view', 'asset.transaction.view', 'asset.reconciliation.view',
@@ -309,6 +312,10 @@ ROLE_TEMPLATES = {
             'purchase.purchase_invoice.cancel', 'purchase.purchase_invoice.submit',
             'purchase.purchase_return.view', 'purchase.purchase_return.create', 'purchase.purchase_return.edit',
             'purchase.purchase_return.cancel', 'purchase.purchase_return.submit',
+            # Update ASAHI #005 — LPPB: Purchasing mengelola dokumen pemeriksaan
+            # barang masuk (melengkapi alur PO → QC → Penerimaan).
+            'purchase.lppb.view', 'purchase.lppb.create', 'purchase.lppb.edit',
+            'purchase.lppb.cancel', 'purchase.lppb.execute', 'purchase.lppb.print',
             # Catatan update (Request Order Part): Purchasing melihat & mencetak ROP
             # dari Engineering sebagai dasar pembuatan PO.
             'production.request_order_part.view', 'production.request_order_part.print',
@@ -372,6 +379,9 @@ ROLE_TEMPLATES = {
             'inventory.stock.view', 'inventory.valuation.view',
             'purchase.goods_receipt.view', 'purchase.goods_receipt.create', 'purchase.goods_receipt.edit',
             'purchase.goods_receipt.cancel', 'purchase.goods_receipt.submit', 'purchase.goods_receipt.execute',
+            # Update ASAHI #005 — LPPB: Gudang melihat & mencetak hasil
+            # pemeriksaan QC sebelum menerima barang ke gudang.
+            'purchase.lppb.view', 'purchase.lppb.print',
             'sales.delivery.view', 'sales.delivery.create', 'sales.delivery.edit',
             'sales.delivery.cancel', 'sales.delivery.submit', 'sales.delivery.execute',
             'master.gudang.view', 'master.gudang.create', 'master.gudang.edit',
@@ -397,6 +407,10 @@ ROLE_TEMPLATES = {
             # yang menfinalisasi lewat tombol "Buat ROP" (endpoint /buat).
             'production.request_order_part.approve',
             'production.request_order_part.print',
+            # Update ASAHI #005 — LPPB: Engineering/QC mengisi & memfinalisasi
+            # Laporan Pemeriksaan dan Pengujian Barang (dokumen QMS mereka).
+            'purchase.lppb.view', 'purchase.lppb.create', 'purchase.lppb.edit',
+            'purchase.lppb.cancel', 'purchase.lppb.execute', 'purchase.lppb.print',
             'sales.sales_order.view',
             'master.barang.view', 'master.supplier.view', 'master.company_profile.view',
             'dashboard.operational.view',
@@ -468,6 +482,7 @@ _ROUTER_PREFIXES = {
         ('purchase_invoice', 'purchase.purchase_invoice'),
         ('purchase_retur', 'purchase.purchase_return'),
         ('penerimaan', 'purchase.goods_receipt'),
+        ('lppb', 'purchase.lppb'),  # Update ASAHI #005
         ('invoice_belum_bayar', 'purchase.ap_settlement'),
     ],
     'kas_bank': [
@@ -620,6 +635,9 @@ _EXPLICIT = {
     # produksi — "Buat ROP" (finalisasi DRAFT → DIBUAT, update ASAHI #003).
     # Aksi finalisasi dipetakan ke permission approve (hak finalisasi dokumen).
     'buat_request_order_part': 'production.request_order_part.approve',
+    # LPPB — "Selesaikan" (finalisasi DRAFT → SELESAI, update ASAHI #005).
+    # Dipetakan ke execute (hak finalisasi), selaras goods_receipt.
+    'selesaikan_lppb': 'purchase.lppb.execute',
 }
 
 # Router yang permission-nya ditegakkan di SERVICE (bukan router gate).
