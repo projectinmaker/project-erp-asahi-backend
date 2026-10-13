@@ -77,3 +77,8 @@ class SalesOrder(BaseModel, BaseMixin):
     details = relationship("SalesOrderDetail", back_populates="sales_order", cascade="all, delete-orphan")
     biaya_tambahan = relationship("TransaksiBiaya", back_populates="sales_order", cascade="all, delete-orphan")
     pengiriman = relationship("PengirimanBarang", back_populates="sales_order")
+
+    @property
+    def pelanggan_nama(self):
+        """Nama pelanggan (Update ASAHI #002 — dipakai nested mini di baris PO)."""
+        return self.pelanggan.nama if self.pelanggan else None

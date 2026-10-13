@@ -23,7 +23,7 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.transaksi.pembelian.purchase_order import PurchaseOrder
+from app.models.transaksi.pembelian.purchase_order import PurchaseOrder, JENIS_PEMBELIAN_VALUES
 from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
 from app.models.transaksi.pembelian.purchase_retur import PurchaseRetur
 from app.models.transaksi.pembelian.penerimaan_barang import PenerimaanBarang
@@ -33,7 +33,7 @@ from app.models.detail.purchase_retur_detail import PurchaseReturDetail
 from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
 from app.models.master.supplier import Supplier
-from app.models.transaksi.penjualan.sales_order import StatusPenjualan
+from app.models.transaksi.penjualan.sales_order import StatusPenjualan, SalesOrder
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.stok_service import update_stok_barang
@@ -51,6 +51,60 @@ from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 # ==========================================
 # HELPER: Hitung total dari detail
 # ==========================================
+def _validate_po_detail_refs(db: Session, details_data: list) -> None:
+    """Update ASAHI #002 — validasi referensi per baris PO.
+
+    - ``jenis_pembelian`` (opsional) harus salah satu dari
+      CONSUMABLE / PROJECT / ASSET / ATK (dasar belanja → tujuan posting).
+    - ``sales_order_id`` (opsional) harus merujuk SO yang ada — satu PO bisa
+      memuat item dari beberapa SO berbeda (tracking per baris).
+    """
+    so_ids = set()
+    for d in details_data:
+        jenis = (d.get("jenis_pembelian") or "").strip() or None
+        if jenis is not None and jenis not in JENIS_PEMBELIAN_VALUES:
+            raise ValueError(
+                f"Jenis pembelian tidak valid: {jenis} — gunakan CONSUMABLE, PROJECT, ASSET, atau ATK"
+            )
+        so_id = d.get("sales_order_id")
+        if so_id:
+            so_ids.add(so_id)
+    if so_ids:
+        found = {
+            row.id
+            for row in db.query(SalesOrder.id).filter(SalesOrder.id.in_(so_ids)).all()
+        }
+        missing = so_ids - found
+        if missing:
+            raise ValueError("Sales Order yang dipilih pada detail barang tidak ditemukan")
+
+
+def _assert_po_details_replaceable(db: Session, db_obj: PurchaseOrder) -> None:
+    """Update ASAHI #002 — detail PO hanya boleh diganti bila belum ada
+    dokumen lanjutan (penerimaan / invoice / retur) yang menaut barisnya."""
+    detail_ids = [d.id for d in db_obj.details]
+    if not detail_ids:
+        return
+    if (
+        db.query(PenerimaanBarangDetail.id)
+        .filter(PenerimaanBarangDetail.purchase_order_detail_id.in_(detail_ids))
+        .first()
+    ):
+        raise ValueError("Detail tidak bisa diubah — sudah ada Penerimaan Barang yang menaut baris PO ini")
+    if (
+        db.query(PurchaseInvoiceDetail.id)
+        .filter(PurchaseInvoiceDetail.purchase_order_detail_id.in_(detail_ids))
+        .first()
+    ):
+        raise ValueError("Detail tidak bisa diubah — sudah ada Invoice Pembelian yang menaut baris PO ini")
+    if (
+        db.query(PurchaseReturDetail.id)
+        .filter(PurchaseReturDetail.purchase_order_detail_id.in_(detail_ids))
+        .first()
+    ):
+        raise ValueError("Detail tidak bisa diubah — sudah ada Retur Pembelian yang menaut baris PO ini")
+
+
 def _hitung_total_detail_with_diskon(details_data: list) -> Tuple[Decimal, Decimal]:
     """Hitung sub_total dan total_diskon dari list detail (harga * qty, diskon per line).
     Mengembalikan (sub_total_bruto, total_diskon_nilai).
@@ -146,6 +200,8 @@ def get_purchase_order_list(
         joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.barang),
         # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
         joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.satuan),
+        # Update ASAHI #002: eager-load SO per baris — hindari N+1 di list
+        joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.sales_order).joinedload(SalesOrder.pelanggan),
         joinedload(PurchaseOrder.biaya_tambahan),
     )
 
@@ -180,6 +236,9 @@ def get_purchase_order_by_id(db: Session, po_id: UUID) -> Optional[PurchaseOrder
             joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.barang),
             # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
             joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.satuan),
+            # Update ASAHI #002: eager-load SO per baris (+ pelanggan untuk nama)
+            # — kolom "Keterangan SO" di form & cetak PO.
+            joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.sales_order).joinedload(SalesOrder.pelanggan),
             joinedload(PurchaseOrder.biaya_tambahan),
         )
         .filter(PurchaseOrder.id == po_id)
@@ -210,6 +269,9 @@ def create_purchase_order(
     # === Update ASAHI #3 — alamat pengiriman (wajib pilih satu) + PPIC ===
     alamat_pengiriman_id: Optional[UUID] = None,
     ppic: bool = False,
+    # === Update ASAHI #002 — PIC Gudang (kolom Pengiriman PO) ===
+    pic_gudang: Optional[str] = None,
+    pic_gudang_telepon: Optional[str] = None,
 ) -> PurchaseOrder:
     """Buat PurchaseOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis (PO-YYYY-MM-NNN)
@@ -234,6 +296,17 @@ def create_purchase_order(
         # Snapshot teks untuk cetak: "<prefix>\n<nama>" — dokumen tidak berubah
         # walau master diedit/dihapus kemudian.
         alamat_pengiriman_snapshot = f"{alamat_kirim.prefix}\n{alamat_kirim.nama}"
+
+        # === Update ASAHI #002 — PIC Gudang ===
+        # None (tidak dikirim) → fallback ke master gudang; string kosong →
+        # sengaja dikosongkan user (tetap kosong, menimpa master).
+        if pic_gudang is None:
+            pic_gudang = (alamat_kirim.pic_nama or "").strip() or None
+        if pic_gudang_telepon is None:
+            pic_gudang_telepon = (alamat_kirim.pic_telepon or "").strip() or None
+
+        # === Update ASAHI #002 — validasi tracking per baris (SO + jenis) ===
+        _validate_po_detail_refs(db, details_data)
 
         # === Update ASAHI #3 — validasi mata uang terhadap master ===
         currency = (currency or "IDR").strip().upper()
@@ -289,6 +362,9 @@ def create_purchase_order(
             alamat_pengiriman_id=alamat_pengiriman_id,
             alamat_pengiriman=alamat_pengiriman_snapshot,
             ppic=ppic,
+            # === Update ASAHI #002 — PIC Gudang (snapshot) ===
+            pic_gudang=pic_gudang,
+            pic_gudang_telepon=pic_gudang_telepon,
         )
         db.add(po)
         db.flush()
@@ -301,11 +377,17 @@ def create_purchase_order(
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
-                sub_total=Decimal(str(d["sub_total"])),
+                # Update ASAHI #002: .get() + safe_decimal — client boleh tidak
+                # mengirim sub_total (model_dump exclude_unset men-drop default);
+                # refresh_totals menghitung ulang nilai finalnya.
+                sub_total=safe_decimal(d.get("sub_total")),
                 # Update #7 (B-05): persist satuan per baris (schema Phase B sudah
                 # punya field; sebelumnya diabaikan → kolom DB selalu NULL dan FE
                 # menampilkan dialog warning "satuan belum tersimpan").
                 satuan_id=d.get("satuan_id"),
+                # === Update ASAHI #002 — tracking per baris: SO + jenis belanja ===
+                sales_order_id=d.get("sales_order_id"),
+                jenis_pembelian=(d.get("jenis_pembelian") or "").strip() or None,
             )
             db.add(detail)
 
@@ -355,8 +437,18 @@ def update_purchase_order(
     currency: Optional[str] = None,
     alamat_pengiriman_id: Optional[UUID] = None,
     ppic: Optional[bool] = None,
+    # === Update ASAHI #002 — PIC Gudang + replace detail (SO/jenis per baris) ===
+    pic_gudang: Optional[str] = None,
+    pic_gudang_telepon: Optional[str] = None,
+    details: Optional[list] = None,
 ) -> PurchaseOrder:
-    """Update data purchase order (hanya field header, tidak re-calculate detail)."""
+    """Update data purchase order (header + opsional replace detail).
+
+    Update ASAHI #002: ``details`` (jika dikirim) mengganti seluruh baris
+    barang — termasuk relasi SO per baris & jenis pembelian. Hanya boleh
+    untuk PO DRAFT yang belum ditaut penerimaan/invoice/retur; total
+    dihitung ulang setelah replace (pola Purchase Invoice).
+    """
     require_unposted(db_obj)
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Purchase Order dengan status {db_obj.status.value} tidak bisa diupdate")
@@ -404,10 +496,41 @@ def update_purchase_order(
     if ppic is not None:
         db_obj.ppic = ppic
 
+    # === Update ASAHI #002 — PIC Gudang pada update header ===
+    if pic_gudang is not None:
+        db_obj.pic_gudang = pic_gudang.strip() or None
+    if pic_gudang_telepon is not None:
+        db_obj.pic_gudang_telepon = pic_gudang_telepon.strip() or None
+
+    # === Update ASAHI #002 — replace detail (SO/jenis per baris ikut terganti) ===
+    if details is not None:
+        _assert_po_details_replaceable(db, db_obj)
+        _validate_po_detail_refs(db, details)
+        db_obj.details.clear()
+        db.flush()
+        for d in details:
+            db_obj.details.append(
+                PurchaseOrderDetail(
+                    barang_id=d["barang_id"],
+                    harga=Decimal(str(d["harga"])),
+                    qty=int(d["qty"]),
+                    diskon=safe_decimal(d.get("diskon")),
+                    # Update ASAHI #002: .get() + safe_decimal — client boleh tidak
+                    # mengirim sub_total (exclude_unset men-drop default 0);
+                    # refresh_totals menghitung ulang nilai finalnya.
+                    sub_total=safe_decimal(d.get("sub_total")),
+                    satuan_id=d.get("satuan_id"),
+                    sales_order_id=d.get("sales_order_id"),
+                    jenis_pembelian=(d.get("jenis_pembelian") or "").strip() or None,
+                )
+            )
+        db.flush()
+
     # Fix diskon global: hitung ulang total bila diskon_global/ppn/pilihan
     # pajak (PPh23/PPN) diubah — sebelumnya total lama (stale) tetap
     # tersimpan meski persen berubah.
-    if diskon_global is not None or ppn is not None or ppn_applicable is not None or pph23_applicable is not None or pph23 is not None:
+    # Update ASAHI #002: total juga dihitung ulang setelah replace detail.
+    if details is not None or diskon_global is not None or ppn is not None or ppn_applicable is not None or pph23_applicable is not None or pph23 is not None:
         from app.services.document_totals import refresh_totals
         refresh_totals(db_obj)
 

@@ -315,6 +315,14 @@ ROLE_TEMPLATES = {
             'master.supplier.view', 'master.supplier.create', 'master.supplier.edit',
             'master.supplier.export', 'master.supplier.import',
             'master.barang.view', 'master.gudang.view',
+            # Update ASAHI #002 — form PO: satuan & syarat bayar dibutuhkan form
+            # pesanan (pre-existing: tanpa ini form PO gagal memuat untuk Staf
+            # Pembelian — Promise.all di order-document-form 403).
+            'master.satuan.view', 'master.syarat_bayar.view',
+            # Update ASAHI #002 — tracking item PO ke SO per baris: Staf Pembelian
+            # perlu membaca daftar SO (dropdown "Keterangan SO" di form PO).
+            # Sama seperti ENGINEERING_STAFF (update #001, form ROP).
+            'sales.sales_order.view',
             'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view',
             'inventory.stock.view',
             'dashboard.operational.view',

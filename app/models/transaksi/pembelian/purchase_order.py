@@ -6,6 +6,16 @@ from app.models.base import BaseMixin
 from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 
 
+# === Update ASAHI #002 — kategori dasar belanja per baris PO ===
+# Menjawab "belanja barang ini untuk apa" — dasar tracking dari PO hingga
+# posting COA (tujuan posting ditentukan saat invoice/penerimaan):
+#   CONSUMABLE → bahan habis pakai (persediaan bahan pembantu / beban)
+#   PROJECT    → kebutuhan project/SO tertentu (persediaan bahan baku / WIP)
+#   ASSET      → aset tetap (daftar & menyusut lewat modul Aset Tetap)
+#   ATK        → alat tulis kantor (beban administrasi)
+JENIS_PEMBELIAN_VALUES = ("CONSUMABLE", "PROJECT", "ASSET", "ATK")
+
+
 class PurchaseOrder(BaseModel, BaseMixin):
     __tablename__ = "purchase_order"
 
@@ -52,6 +62,13 @@ class PurchaseOrder(BaseModel, BaseMixin):
     alamat_pengiriman_id = Column(UUID(as_uuid=True), ForeignKey("alamat_pengiriman.id", name="fk_po_alamat_pengiriman", ondelete="SET NULL"), nullable=True, index=True)
     alamat_pengiriman = Column(Text, nullable=True)  # snapshot: "<prefix>\n<nama>"
     ppic = Column(Boolean, nullable=False, default=False)
+
+    # === Update ASAHI #002 — PIC Gudang (snapshot, kolom Pengiriman PO) ===
+    # Terisi otomatis dari master alamat pengiriman saat gudang dipilih di
+    # form (bisa disunting manual). Disimpan sebagai snapshot agar cetakan
+    # PO lama tidak berubah ketika PIC di master diganti.
+    pic_gudang = Column(String(100), nullable=True)
+    pic_gudang_telepon = Column(String(50), nullable=True)
 
     # Relationships
     supplier = relationship("Supplier")

@@ -102,6 +102,9 @@ def create_purchase_order(
             # === Update ASAHI #3 — alamat pengiriman (wajib) + PPIC ===
             alamat_pengiriman_id=data_in.alamat_pengiriman_id,
             ppic=data_in.ppic,
+            # === Update ASAHI #002 — PIC Gudang (snapshot; None → dari master) ===
+            pic_gudang=data_in.pic_gudang,
+            pic_gudang_telepon=data_in.pic_gudang_telepon,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id)
@@ -181,11 +184,14 @@ def update_purchase_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update data Purchase Order (header only).
+    """Update data Purchase Order (header + opsional replace detail).
 
-    Field header (termasuk currency, syarat_bayar_id, alamat pengiriman, dan
-    PPIC — update ASAHI #3) diteruskan ke service; details diabaikan agar
-    tidak memicu HTTP 500 (update bersifat header-only).
+    Field header (termasuk currency, syarat_bayar_id, alamat pengiriman,
+    PPIC — update ASAHI #3, dan PIC Gudang — update ASAHI #002) diteruskan ke
+    service. ``details`` (update ASAHI #002) kini DIDUKUNG: mengganti seluruh
+    baris barang termasuk relasi SO per baris & jenis pembelian — hanya
+    untuk PO DRAFT yang belum ditaut penerimaan/invoice/retur; total
+    dihitung ulang server setelah replace.
     """
     item = svc.get_purchase_order_by_id(db, po_id)
     if not item:

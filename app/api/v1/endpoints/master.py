@@ -2323,6 +2323,9 @@ def create_alamat_pengiriman(
         prefix=data_in.prefix.strip(),
         nama=data_in.nama.strip(),
         is_aktif=data_in.is_aktif,
+        # === Update ASAHI #002 — PIC Gudang ===
+        pic_nama=(data_in.pic_nama or "").strip() or None,
+        pic_telepon=(data_in.pic_telepon or "").strip() or None,
     )
     db.add(row)
     db.commit()
@@ -2347,6 +2350,10 @@ def update_alamat_pengiriman(
         payload["prefix"] = payload["prefix"].strip()
     if "nama" in payload and payload["nama"] is not None:
         payload["nama"] = payload["nama"].strip()
+    # === Update ASAHI #002 — PIC Gudang: normalisasi string kosong → None ===
+    for pic_key in ("pic_nama", "pic_telepon"):
+        if pic_key in payload and payload[pic_key] is not None:
+            payload[pic_key] = payload[pic_key].strip() or None
 
     for key, value in payload.items():
         setattr(row, key, value)

@@ -601,6 +601,9 @@ class AlamatPengirimanBase(BaseSchema):
     prefix: str = Field(min_length=1, max_length=200)
     nama: str = Field(min_length=1, max_length=200)
     is_aktif: bool = True
+    # === Update ASAHI #002 — PIC Gudang (opsional) ===
+    pic_nama: Optional[str] = Field(default=None, max_length=100)
+    pic_telepon: Optional[str] = Field(default=None, max_length=50)
 
 
 class AlamatPengirimanCreate(AlamatPengirimanBase):
@@ -611,6 +614,9 @@ class AlamatPengirimanUpdate(BaseSchema):
     prefix: Optional[str] = Field(default=None, min_length=1, max_length=200)
     nama: Optional[str] = Field(default=None, min_length=1, max_length=200)
     is_aktif: Optional[bool] = None
+    # === Update ASAHI #002 — PIC Gudang (opsional) ===
+    pic_nama: Optional[str] = Field(default=None, max_length=100)
+    pic_telepon: Optional[str] = Field(default=None, max_length=50)
 
 
 class AlamatPengirimanResponse(AlamatPengirimanBase):

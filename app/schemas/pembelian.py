@@ -87,16 +87,32 @@ class PurchaseOrderDetailBase(BaseSchema):
     sub_total: Decimal = Decimal("0")
     # Phase B — UOM on detail
     satuan_id: Optional[UUID] = None
+    # === Update ASAHI #002 — tracking item PO ke SO + kategori belanja ===
+    # Opsional: barang umum/consumable tidak terikat SO. Satu PO bisa memuat
+    # baris dari beberapa SO berbeda (relasi per baris, bukan per dokumen).
+    sales_order_id: Optional[UUID] = None
+    # Dasar belanja: CONSUMABLE / PROJECT / ASSET / ATK — penentu tujuan
+    # posting COA saat invoice/penerimaan di-posting (divalidasi di service).
+    jenis_pembelian: Optional[str] = None
 
 
 class PurchaseOrderDetailCreate(PurchaseOrderDetailBase):
     pass
 
 
+class SalesOrderMiniResponse(BaseSchema):
+    """SO ringkas untuk nested di baris PO (Update ASAHI #002 — kolom Ket. SO)."""
+    id: UUID
+    no_pesanan: str
+    pelanggan_nama: Optional[str] = None
+
+
 class PurchaseOrderDetailResponse(PurchaseOrderDetailBase):
     id: UUID
     barang: Optional[BarangSimpleResponse] = None
     satuan: Optional[SatuanSimpleResponse] = None  # Phase B
+    # === Update ASAHI #002 — nested SO untuk kolom "Keterangan SO" ===
+    sales_order: Optional[SalesOrderMiniResponse] = None
 
 
 # ==========================================
@@ -125,6 +141,11 @@ class PurchaseOrderBase(BaseSchema):
     # PurchaseOrderCreate meng-override jadi WAJIB (pilih satu saat input PO).
     alamat_pengiriman_id: Optional[UUID] = None
     ppic: bool = False
+    # === Update ASAHI #002 — PIC Gudang (kolom Pengiriman PO) ===
+    # None = biarkan backend mengisi snapshot dari master alamat pengiriman;
+    # string kosong = sengaja dikosongkan (tetap disimpan apa adanya).
+    pic_gudang: Optional[str] = None
+    pic_gudang_telepon: Optional[str] = None
 
 
 class PurchaseOrderCreate(PurchaseOrderBase):
@@ -152,6 +173,9 @@ class PurchaseOrderUpdate(BaseSchema):
     # === Update ASAHI #3 — alamat pengiriman (gudang tujuan) + PPIC ===
     alamat_pengiriman_id: Optional[UUID] = None
     ppic: Optional[bool] = None
+    # === Update ASAHI #002 — PIC Gudang ===
+    pic_gudang: Optional[str] = None
+    pic_gudang_telepon: Optional[str] = None
     # Phase B — support detail update
     details: Optional[List[PurchaseOrderDetailCreate]] = None
 
@@ -170,6 +194,9 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     supplier_name_snapshot: Optional[str] = None  # Phase B
     # === Update ASAHI #3 — snapshot teks alamat pengiriman untuk cetak PO ===
     alamat_pengiriman: Optional[str] = None
+    # === Update ASAHI #002 — snapshot PIC Gudang untuk cetak PO ===
+    pic_gudang: Optional[str] = None
+    pic_gudang_telepon: Optional[str] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
