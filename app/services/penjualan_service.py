@@ -1363,7 +1363,7 @@ def post_sales_invoice(db: Session, inv, created_by):
     # diposting ke akun tsb; sisanya ke setting PENDAPATAN_PENJUALAN.
     # Diskon global (invoice-level) dikurangkan dari akun default supaya
     # total kredit pendapatan == dasar_pajak (jurnal tetap balance).
-    default_rev_id = get_akun_id_or_raise(db, KEY_PENDAPATAN_PENJUALAN, context=f"INV {no_invoice}")
+    default_rev_id = get_akun_id_or_raise(db, KEY_PENDAPATAN_PENJUALAN, context=no_invoice)
     revenue_by_akun: dict = {}
     line_discount_total = Decimal("0")
     for d in inv.details:
@@ -1410,7 +1410,7 @@ def post_sales_invoice(db: Session, inv, created_by):
         entries.append(
             JurnalEntryItem(
                 akun_perkiraan_id=get_akun_id_or_raise(
-                    db, KEY_PPN_KELUARAN, context=f"INV {no_invoice}"
+                    db, KEY_PPN_KELUARAN, context=no_invoice
                 ),
                 kredit=total_ppn,
                 keterangan=f"PPN INV {no_invoice}",
@@ -1423,7 +1423,7 @@ def post_sales_invoice(db: Session, inv, created_by):
         entries.append(
             JurnalEntryItem(
                 akun_perkiraan_id=get_akun_id_or_raise(
-                    db, KEY_PENDAPATAN_ANGKUT, context=f"INV {no_invoice}"
+                    db, KEY_PENDAPATAN_ANGKUT, context=no_invoice
                 ),
                 kredit=total_biaya_tambahan,
                 keterangan=f"Biaya tambahan INV {no_invoice}",
@@ -1438,7 +1438,7 @@ def post_sales_invoice(db: Session, inv, created_by):
         entries.append(
             JurnalEntryItem(
                 akun_perkiraan_id=get_akun_id_or_raise(
-                    db, KEY_PPH23_DIBAYAR_DIMUKA, context=f"INV {no_invoice}"
+                    db, KEY_PPH23_DIBAYAR_DIMUKA, context=no_invoice
                 ),
                 debit=total_pph23,
                 keterangan=f"PPh23 dipotong pelanggan INV {no_invoice}",

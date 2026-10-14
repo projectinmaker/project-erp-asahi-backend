@@ -10,6 +10,7 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 from app.models.master.setting_akun import SettingAkun
 
 
@@ -143,6 +144,28 @@ CRITICAL_KEYS = [
 ]
 
 
+# === ASAHI #006 — Fallback auto-configure setting akun ===
+# Masalah: key seperti PPH23_DIBAYAR_DIMUKA hanya pernah dibuat oleh seeder
+# legacy phase3 (desain COA format lama 150100002) yang tidak pernah
+# dijalankan otomatis — sehingga fitur Invoice Penjualan dengan PPh23 aktif
+# gagal di database yang tidak punya entri itu, dengan pesan minta menjalankan
+# seeder yang bahkan tidak relevan dengan COA v2.
+# Solusi: mapping kandidat akun pengganti per key. Saat setting belum ada,
+# kandidat dicocokkan berurutan (kode akun → nama eksak → nama ilike) dengan
+# filter akun DETAIL + allow_system_posting + aktif. Bila ketemu, baris
+# setting dibuat OTOMATIS (auto_configure_missing) — baik saat startup
+# (ensure_fallback_settings) maupun lazy saat transaksi butuh (get_akun_id_or_raise).
+# Setting yang SUDAH ada tidak pernah diubah oleh mekanisme ini.
+SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
+    # PPh 23 Dibayar di Muka — COA v2 kode 116003 (legacy 150100002 / 150.100.002)
+    KEY_PPH23_DIBAYAR_DIMUKA: {
+        "kode": ["116003", "150100002", "150.100.002"],
+        "nama_exact": ["PPh 23 Dibayar di Muka", "PPh 23 Dibayar Dimuka"],
+        "nama_like": ["%pph 23 dibayar%"],
+    },
+}
+
+
 # Simple in-memory cache (per process lifecycle)
 _cache: dict[str, Optional[UUID]] = {}
 
@@ -167,6 +190,81 @@ def get_akun_id(db: Session, key: str) -> Optional[UUID]:
     return _cache.get(key)
 
 
+def _find_fallback_akun(db: Session, key: str) -> Optional[UUID]:
+    """Cari akun kandidat untuk key setting yang belum dikonfigurasi.
+
+    Urutan pencocokan: kode akun → nama eksak → nama ilike.
+    Hanya akun DETAIL + allow_system_posting + aktif yang lolos, supaya
+    tidak salah mengambil akun GROUP / header / akun utang pajak.
+    """
+    spec = SETTING_KEY_FALLBACK_CANDIDATES.get(key)
+    if not spec:
+        return None
+    base_q = db.query(AkunPerkiraan).filter(
+        AkunPerkiraan.tingkat == TingkatAkun.DETAIL,
+        AkunPerkiraan.allow_system_posting.is_(True),
+        AkunPerkiraan.active.is_(True),
+    )
+    for kode in spec.get("kode", []):
+        akun = base_q.filter(AkunPerkiraan.kode == kode).first()
+        if akun:
+            return akun.id
+    for nama in spec.get("nama_exact", []):
+        akun = base_q.filter(AkunPerkiraan.nama == nama).first()
+        if akun:
+            return akun.id
+    for pattern in spec.get("nama_like", []):
+        akun = base_q.filter(AkunPerkiraan.nama.ilike(pattern)).first()
+        if akun:
+            return akun.id
+    return None
+
+
+def auto_configure_missing(db: Session, key: str) -> Optional[UUID]:
+    """Auto-configure setting `key` bila belum ada dan kandidat ditemukan.
+
+    Perilaku:
+    - Setting yang SUDAH ada tidak pernah diubah (return id-nya saja).
+    - Baris setting baru di-add + flush() mengikuti transaksi pemanggil
+      (tidak commit di sini) — aman di-rollback bersama transaksi gagal.
+    - Cache in-memory langsung di-update supaya get_akun_id() melihatnya.
+    """
+    if not _cache:
+        _load_all_settings(db)
+    if _cache.get(key):
+        return _cache[key]
+    akun_id = _find_fallback_akun(db, key)
+    if not akun_id:
+        return None
+    label = KNOWN_SETTING_LABELS.get(key, key)
+    db.add(SettingAkun(key=key, label=label, akun_perkiraan_id=akun_id))
+    db.flush()
+    _cache[key] = akun_id
+    logger.debug(f"Setting akun '{key}' auto-configured ke akun {akun_id}")
+    return akun_id
+
+
+def ensure_fallback_settings(db: Session) -> list[str]:
+    """Coba auto-configure semua key yang punya kandidat fallback.
+
+    Dipanggil dari startup hook aplikasi (idempotent). COMMIT dilakukan
+    oleh pemanggil.
+    Return: list key yang BENAR-BENAR baru dikonfigurasi (yang sudah ada
+    di-skip, supaya log tidak berisik).
+    """
+    configured: list[str] = []
+    for key in SETTING_KEY_FALLBACK_CANDIDATES:
+        sudah = _cache.get(key) if _cache else None
+        if not sudah:
+            _load_all_settings(db)
+            sudah = _cache.get(key)
+        if sudah:
+            continue
+        if auto_configure_missing(db, key):
+            configured.append(key)
+    return configured
+
+
 def get_akun_id_or_raise(db: Session, key: str, context: str = "") -> UUID:
     """Ambil UUID akun perkiraan, raise ValueError jika tidak ditemukan.
 
@@ -174,18 +272,26 @@ def get_akun_id_or_raise(db: Session, key: str, context: str = "") -> UUID:
         key: Kunci setting (misal 'PENDAPATAN_PENJUALAN')
         context: Keterangan tambahan untuk error message
 
+    ASAHI #006: bila belum dikonfigurasi, coba auto-configure dulu via
+    kandidat fallback COA (mis. PPH23_DIBAYAR_DIMUKA → akun 116003) baru
+    raise. Pesan error mengarahkan ke menu Pengaturan → Setting Akun,
+    bukan lagi ke seeder legacy phase3 yang tidak relevan dgn COA v2.
+
     Return:
         UUID akun_perkiraan
 
     Raises:
-        ValueError: Jika akun belum di-configure
+        ValueError: Jika akun belum di-configure dan tidak ada kandidat
     """
     akun_id = get_akun_id(db, key)
     if not akun_id:
+        akun_id = auto_configure_missing(db, key)
+    if not akun_id:
         ctx = f" ({context})" if context else ""
         raise ValueError(
-            f"Setting akun '{key}' belum di-configure. "
-            f"Jalankan 'python3 -m app.seed.phase3_setting_akun_seed' dulu.{ctx}"
+            f"Setting akun '{key}' belum di-configure dan tidak ditemukan "
+            f"kandidat akun otomatis di COA. Konfigurasikan melalui menu "
+            f"Pengaturan \u2192 Setting Akun (key: {key}).{ctx}"
         )
     return akun_id
 

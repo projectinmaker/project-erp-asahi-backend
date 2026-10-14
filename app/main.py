@@ -55,6 +55,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:  # noqa: BLE001 — jangan blok startup bila seed gagal
         logger.warning(f"RBAC v2 seed dilewati: {exc}")
 
+    # ASAHI #006 — auto-configure setting akun yang belum dikonfigurasi via
+    # kandidat fallback COA (mis. PPH23_DIBAYAR_DIMUKA → akun 116003 untuk
+    # Invoice Penjualan dengan PPh23). Idempotent; setting yang sudah ada
+    # tidak pernah diubah.
+    try:
+        from app.database import SessionLocal
+        from app.services.setting_akun_service import ensure_fallback_settings
+        with SessionLocal() as db_sess:
+            configured = ensure_fallback_settings(db_sess)
+            db_sess.commit()
+            if configured:
+                logger.info(f"✓ Setting akun auto-configured: {', '.join(configured)}")
+    except Exception as exc:  # noqa: BLE001 — jangan blok startup bila gagal
+        logger.warning(f"Setting akun auto-configure dilewati: {exc}")
+
     # M-03 — sync snapshot saldo kas/bank master dari GL (pengganti migrasi
     # backfill; idempotent & self-healing tiap startup).
     try:
