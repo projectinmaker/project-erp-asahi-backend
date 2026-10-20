@@ -212,11 +212,10 @@ def cancel_sales_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Sales Order — non-destruktif bila sudah diposting.
+    """Hapus permanen Sales Order (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
+    Dokumen + rincian + dokumen terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -334,11 +333,10 @@ def cancel_sales_invoice(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Sales Invoice — non-destruktif bila sudah diposting.
+    """Hapus permanen Sales Invoice (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -446,11 +444,10 @@ def cancel_sales_retur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Sales Retur — non-destruktif bila sudah diposting.
+    """Hapus permanen Sales Retur (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -613,11 +610,10 @@ def cancel_pengiriman(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Pengiriman Barang — non-destruktif bila sudah diposting.
+    """Hapus permanen Pengiriman Barang (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -841,11 +837,10 @@ def cancel_penawaran(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penawaran — non-destruktif bila sudah diposting.
+    """Hapus permanen Penawaran (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
+    Dokumen + rincian + biaya tambahan dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -985,11 +980,10 @@ def cancel_tukar_faktur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Tukar Faktur — non-destruktif bila sudah diposting.
+    """Hapus permanen Tukar Faktur (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
+    Dokumen + rincian dihapus dari database (tanpa jurnal/stok — tidak ada
+    efek samping); jejak lengkap tersimpan di log dokumen terhapus (Histori).
     """
     try:
         return cancel_document(

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy import text, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -8,6 +8,12 @@ from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 
 class PurchaseRetur(BaseModel, BaseMixin):
     __tablename__ = "purchase_retur"
+
+    # === Update AUD-12 — dimensi perusahaan (default ASAHI via migration cp14;
+    # kolom nullable + server_default agar baris lama/single-company aman) ===
+    company_id = Column(UUID(as_uuid=True), ForeignKey("organization_unit.id"),
+                        nullable=True,
+                        server_default=text("'0e9f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b'"))
 
     no_retur = Column(String(30), unique=True, nullable=False, index=True)
     gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)
@@ -19,13 +25,6 @@ class PurchaseRetur(BaseModel, BaseMixin):
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
     total_ppn = Column(Numeric(18, 2), default=0, nullable=False)
     grand_total = Column(Numeric(18, 2), default=0, nullable=False)
-    # === AUD-12 (update #05) — pembalikan PPh 23 oleh retur ===
-    # Flag & tarif DISALIN dari PI sumber saat create (bukan input user).
-    # total_pph23 di-cap sisa pph23 PI; grand_total retur NET-of-PPh23 sehingga
-    # jurnal retur membalik Cr HUTANG_PPH23 (213002) posting PI (AUD-09).
-    pph23_applicable = Column(Boolean, nullable=False, default=False, server_default="false")
-    pph23 = Column(Numeric(5, 2), default=2, nullable=False, server_default="2")
-    total_pph23 = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
     auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Phase E: deprecated
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
     keterangan = Column(Text, nullable=True)

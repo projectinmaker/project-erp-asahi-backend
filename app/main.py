@@ -70,6 +70,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:  # noqa: BLE001 — jangan blok startup bila gagal
         logger.warning(f"Setting akun auto-configure dilewati: {exc}")
 
+    # === Update AUD-17 — warning startup bila setting akun kritis belum
+    # lengkap (PPN/pendapatan/retur dsb) supaya admin tahu sebelum transaksi
+    # ber-PPN gagal posting. ===
+    try:
+        from app.database import SessionLocal
+        from app.services.setting_akun_service import check_critical_settings
+        with SessionLocal() as db_sess:
+            missing = check_critical_settings(db_sess)
+            if missing:
+                logger.warning(
+                    f"⚠ Setting akun kritis BELUM dikonfigurasi: {', '.join(missing)} "
+                    "— posting jurnal terkait akan gagal sampai dikonfigurasi "
+                    "(Pengaturan → Setting Akun)."
+                )
+            else:
+                logger.info("✓ Semua setting akun kritis terkonfigurasi")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Check critical settings dilewati: {exc}")
+
+    # === Update AUD-12 — pastikan perusahaan default ada (self-healing,
+    # idempotent). Jurnal & dokumen baru otomatis terikat perusahaan ini. ===
+    try:
+        from app.database import SessionLocal
+        from app.services.organization_service import ensure_default_company
+        with SessionLocal() as db_sess:
+            created = ensure_default_company(db_sess)
+            db_sess.commit()
+            if created:
+                logger.info("✓ Perusahaan default ASAHI dibuat (multi-company foundation)")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Ensure default company dilewati: {exc}")
+
     # M-03 — sync snapshot saldo kas/bank master dari GL (pengganti migrasi
     # backfill; idempotent & self-healing tiap startup).
     try:
@@ -166,7 +198,9 @@ def create_application() -> FastAPI:
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         """Handle semua uncaught exceptions"""
-        logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        # AUD-17 fix: f-string menyebabkan loguru .format() crash bila pesan
+        # exception memuat kurung kurawal (mis. repr dict) — pakai placeholder.
+        logger.error("Unhandled exception {}: {}", request.url.path, exc, exc_info=True)
         return JSONResponse(
             status_code=500,
             content={

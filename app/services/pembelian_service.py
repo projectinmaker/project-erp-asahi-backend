@@ -44,8 +44,6 @@ from app.services.setting_akun_service import (
     KEY_PPN_MASUKAN,
     KEY_RETUR_PEMBELIAN,
     KEY_BEBAN_ANGKUT_PEMBELIAN,
-    # AUD-09 (update #04) — Cr Hutang PPh 23 saat posting PI ber-PPh23
-    KEY_HUTANG_PPH23,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
@@ -570,6 +568,7 @@ def get_purchase_invoice_list(
     supplier_id: Optional[UUID] = None,
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
+    company_id: Optional[UUID] = None,
 ) -> Tuple[List[PurchaseInvoice], int]:
     """Ambil daftar purchase invoice dengan filter & pagination."""
     query = db.query(PurchaseInvoice).options(
@@ -581,6 +580,10 @@ def get_purchase_invoice_list(
         joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.satuan),
         joinedload(PurchaseInvoice.biaya_tambahan),
     )
+
+    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
+    if company_id is not None:
+        query = query.filter(PurchaseInvoice.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"
@@ -640,12 +643,6 @@ def create_purchase_invoice(
     syarat_bayar_id=None,
     # Update #7 (B-06): link invoice ke Purchase Order sumber (opsional).
     purchase_order_id: UUID | None = None,
-    # === AUD-09 (update #04) — PPh 23 pada Purchase Invoice ===
-    # pph23_applicable=True → grand_total NET + Cr Hutang PPh 23 saat posting;
-    # hutang supplier tercatat bersih sejak invoice. Default false = perilaku
-    # lama (PPh 23 hanya dicatat saat pelunasan, hutang bruto).
-    pph23: Decimal = Decimal("2"),
-    pph23_applicable: bool = False,
 ) -> PurchaseInvoice:
     """Buat PurchaseInvoice baru beserta detail + biaya tambahan."""
     try:
@@ -660,10 +657,9 @@ def create_purchase_invoice(
         sub_total, total_diskon = _hitung_total_detail_with_diskon(details_data)
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        # === AUD-09 (update #04) — PPh 23 opsional di PI (mirror SI/PO) ===
-        total_ppn, total_pph23, grand_total = _hitung_grand_total(
-            sub_total, total_diskon, ppn, total_biaya_tambahan,
-            pph23_pct=pph23, pph23_applicable=pph23_applicable,
+        # Invoice pembelian belum mendukung pilihan PPh23 (default PPN aktif).
+        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
+            sub_total, total_diskon, ppn, total_biaya_tambahan
         )
 
         # Generate nomor form (invoice pembelian)
@@ -682,12 +678,9 @@ def create_purchase_invoice(
             alamat=alamat,
             diskon_global=diskon_global,
             ppn=ppn,
-            pph23=pph23,
-            pph23_applicable=pph23_applicable,
             sub_total=sub_total,
             total_diskon=total_diskon,
             total_ppn=total_ppn,
-            total_pph23=total_pph23,
             total_biaya_tambahan=total_biaya_tambahan,
             grand_total=grand_total,
             auto_post_jurnal=auto_post_jurnal,
@@ -763,9 +756,6 @@ def update_purchase_invoice(
     details: list | None = None,
     # Update #7 (B-06): link/ubah PO sumber saat invoice masih draft.
     purchase_order_id: UUID | None = None,
-    # === AUD-09 (update #04) — PPh 23 PI (draft only; require_unposted) ===
-    pph23: Optional[Decimal] = None,
-    pph23_applicable: Optional[bool] = None,
 ) -> PurchaseInvoice:
     """Update data purchase invoice (field header + opsional replace detail)."""
     require_unposted(db_obj)
@@ -784,11 +774,6 @@ def update_purchase_invoice(
         db_obj.diskon_global = diskon_global
     if ppn is not None:
         db_obj.ppn = ppn
-    # === AUD-09 (update #04) — PPh 23 PI (hanya draft; guard di atas) ===
-    if pph23 is not None:
-        db_obj.pph23 = pph23
-    if pph23_applicable is not None:
-        db_obj.pph23_applicable = pph23_applicable
     if keterangan is not None:
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
@@ -982,12 +967,6 @@ def create_purchase_retur(
         from app.services.document_totals import refresh_totals
         db.flush()
         refresh_totals(retur)
-        # === AUD-12 (update #05) — derive PPh23 retur dari PI sumber ===
-        # Flag & tarif disalin dari PI (bila ada); total_pph23 di-cap sisa
-        # PPh23 PI; grand_total NET-of-PPh23. Di-apply ulang saat posting.
-        from app.services.settlement_service import apply_retur_pph23
-        apply_retur_pph23(db, retur, retur.purchase_invoice)
-        grand_total = retur.grand_total
         if purchase_invoice_id is not None:
             retur.purchase_invoice_id = purchase_invoice_id
             from app.services.settlement_service import validate_return
@@ -1511,19 +1490,6 @@ def post_purchase_invoice(db: Session, inv, created_by):
 
     entries.append(JurnalEntryItem(akun_perkiraan_id=supplier.akun_hutang_id,
                                   kredit=grand_total, keterangan=f"Utang PINV {no_form}"))
-    # === AUD-09 (update #04) — PPh 23 tercatat SEJAK invoice ===
-    # grand_total sudah NET (dasar + PPN + biaya − total_pph23); supaya jurnal
-    # balance, Cr Hutang PPh 23 (213002) untuk selisihnya — PPh 23 supplier
-    # kini membentuk hutang pajak sejak posting PI, bukan menunggu pelunasan.
-    total_pph23 = inv.total_pph23 or Decimal("0")
-    if total_pph23 > 0:
-        entries.append(JurnalEntryItem(
-            akun_perkiraan_id=get_akun_id_or_raise(
-                db, KEY_HUTANG_PPH23, context=f"PINV {no_form}"
-            ),
-            kredit=total_pph23,
-            keterangan=f"Hutang PPh 23 PINV {no_form}",
-        ))
     if total_ppn > 0:
         entries.insert(
             1,
@@ -1597,16 +1563,11 @@ def post_purchase_retur(db: Session, retur, created_by):
     no_retur = retur.no_retur
     sub_total = retur.sub_total
     total_ppn = retur.total_ppn
-    # === AUD-12 (update #05) — finalisasi PPh23 retur sebelum jurnal ===
-    # Idempotent: dihitung ulang dari primitif + di-cap sisa PPh23 PI
-    # (retur lain non-DIBATALKAN atas PI yang sama ikut dihitung).
-    from app.services.settlement_service import apply_retur_pph23
-    total_pph23 = apply_retur_pph23(db, retur, retur.purchase_invoice)
-    grand_total = retur.grand_total  # NET-of-PPh23
+    grand_total = retur.grand_total
     if not supplier.akun_hutang_id:
         raise ValueError("Mapping akun akun_hutang_id belum diisi; posting dibatalkan")
     entries = [
-        # Debit: Utang Dagang (net-of-PPh23 — konsisten booking PI AUD-09)
+        # Debit: Utang Dagang
         JurnalEntryItem(
             akun_perkiraan_id=control_account(db, retur.purchase_invoice) if retur.purchase_invoice else supplier.akun_hutang_id,
             debit=grand_total,
@@ -1629,20 +1590,6 @@ def post_purchase_retur(db: Session, retur, created_by):
                 ),
                 kredit=total_ppn,
                 keterangan=f"PPN Retur {no_retur}",
-            )
-        )
-    # === AUD-12 (update #05) — balik Cr Hutang PPh 23 posting PI (AUD-09) ===
-    # Retur atas PI ber-PPh23 membalik porsi hutang pajak (213002) sehingga
-    # hutang supplier turun net & 213002 ikut turun proporsional (tanpa ini:
-    # Dr utang bruto > sisa hutang net → retur penuh PI ber-PPh23 selalu gagal).
-    if total_pph23 > 0:
-        entries.append(
-            JurnalEntryItem(
-                akun_perkiraan_id=get_akun_id_or_raise(
-                    db, KEY_HUTANG_PPH23, context=f"Retur {no_retur}"
-                ),
-                debit=total_pph23,
-                keterangan=f"Balik hutang PPh23 retur {no_retur}",
             )
         )
 

@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy import text, Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -37,21 +37,21 @@ class StatusTransaksi(str, enum.Enum):
 JENIS_TRANSAKSI_PELUNASAN_INVOICE = "PELUNASAN_INVOICE"
 JENIS_TRANSAKSI_LAINNYA = "TRANSAKSI_LAINNYA"
 JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI = "BELUM_TERIDENTIFIKASI"
-# === AUD-11 (update #04) — jenis khusus pelunasan hutang pajak ===
-# Pembayaran pajak (PPh 21/23/29/Final, dll): akun lawan HARUS akun hutang
-# pajak (system_account_type=TAX_PAYABLE, group 213000). Akun pajak TIDAK
-# lagi boleh dipakai lewat Transaksi Lainnya (alur tunggal + monitoring).
-JENIS_TRANSAKSI_PELUNASAN_PAJAK = "PELUNASAN_PAJAK"
 JENIS_TRANSAKSI_KAS = (
     JENIS_TRANSAKSI_PELUNASAN_INVOICE,
     JENIS_TRANSAKSI_LAINNYA,
     JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI,
-    JENIS_TRANSAKSI_PELUNASAN_PAJAK,
 )
 
 
 class PembayaranKas(BaseModel, BaseMixin):
     __tablename__ = "pembayaran_kas"
+
+    # === Update AUD-12 — dimensi perusahaan (default ASAHI via migration cp14;
+    # kolom nullable + server_default agar baris lama/single-company aman) ===
+    company_id = Column(UUID(as_uuid=True), ForeignKey("organization_unit.id"),
+                        nullable=True,
+                        server_default=text("'0e9f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b'"))
 
     no_bukti = Column(String(30), unique=True, nullable=False, index=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)

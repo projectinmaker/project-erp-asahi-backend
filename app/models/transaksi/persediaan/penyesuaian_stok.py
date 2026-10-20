@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Text, Integer, Numeric, Date, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy import text, Column, String, Text, Integer, Numeric, Date, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -14,6 +14,12 @@ class TipePenyesuaian(str, enum.Enum):
 
 class PenyesuaianStok(BaseModel, BaseMixin):
     __tablename__ = "penyesuaian_stok"
+
+    # === Update AUD-12 — dimensi perusahaan (default ASAHI via migration cp14;
+    # kolom nullable + server_default agar baris lama/single-company aman) ===
+    company_id = Column(UUID(as_uuid=True), ForeignKey("organization_unit.id"),
+                        nullable=True,
+                        server_default=text("'0e9f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b'"))
 
     no_adj = Column(String(30), unique=True, nullable=False, index=True)
     gudang_id = Column(UUID(as_uuid=True), ForeignKey("gudang.id"), nullable=True)

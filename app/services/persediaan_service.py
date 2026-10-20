@@ -57,8 +57,7 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
        - 'WIP' / 'Dalam Proses'      -> PERSEDIAAN_WIP
        - 'Barang Jadi' / 'JADI'      -> PERSEDIAAN_BARANG_JADI
        - 'Bahan Pembantu' / 'PEMBANTU' -> PERSEDIAAN_BAHAN_PEMBANTU
-       - lainnya                      -> ValueError (AUD2-B2b: minta pemetaan
-         eksplisit — jangan salah klasifikasi HPP diam-diam)
+       - lainnya                      -> PERSEDIAAN_BAHAN_BAKU (dengan warning)
 
     Catatan:
     - Mapping per-barang (Tahap 1) bersifat opsional; barang lama yang belum
@@ -116,14 +115,11 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
     elif "BAHAN PEMBANTU" in nama_upper or "PEMBANTU" in nama_upper:
         key = sa_cfg.KEY_PERSEDIAAN_BAHAN_PEMBANTU
     else:
-        # AUD2-B2b — jangan di-default diam-diam ke bahan baku (salah klasifikasi
-        # HPP/persediaan tanpa terlihat). Minta pemetaan eksplisit.
-        raise ValueError(
-            f"Kategori '{barang.kategori.nama}' (barang {barang.kode}) tidak dikenali "
-            "pemetaan akun persediaan. Petakan akun persediaan di master barang, "
-            "isi item_type yang sesuai, atau ganti nama kategori ke pola yang "
-            "dikenali (BAHAN BAKU / WIP / BARANG JADI / BAHAN PEMBANTU)."
+        logger.warning(
+            f"Kategori '{barang.kategori.nama}' tidak dikenali untuk mapping persediaan, "
+            f"default ke PERSEDIAAN_BAHAN_BAKU"
         )
+        key = sa_cfg.KEY_PERSEDIAAN_BAHAN_BAKU
 
     return sa_cfg.get_akun_id_or_raise(db, key, f"Barang {barang.kode} ({barang.kategori.nama})")
 

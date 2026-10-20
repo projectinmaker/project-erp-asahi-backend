@@ -271,11 +271,10 @@ def cancel_penyesuaian(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penyesuaian Stok — non-destruktif bila sudah diposting.
+    """Hapus permanen Penyesuaian Stok (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit. Stok yang sudah bergerak tetap ditolak (guard).
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -397,11 +396,10 @@ def cancel_pemindahan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Pemindahan Barang — non-destruktif bila sudah diposting.
+    """Hapus permanen Pemindahan Barang (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit. Stok yang sudah bergerak tetap ditolak (guard).
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -555,11 +553,10 @@ def cancel_permintaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Permintaan Barang — non-destruktif bila sudah diposting.
+    """Hapus permanen Permintaan Barang (hard delete).
 
-    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
-    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
-    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
+    Dokumen + rincian dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(

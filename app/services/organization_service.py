@@ -6,6 +6,52 @@ KINDS = dict(zip(FIELDS, ('COMPANY','BRANCH','DEPARTMENT','COST_CENTER','PROJECT
 PARENTS = {'COMPANY': (), 'BRANCH': ('COMPANY',), 'DEPARTMENT': ('COMPANY','BRANCH'),
            'COST_CENTER': ('COMPANY','BRANCH','DEPARTMENT'), 'PROJECT': ('COMPANY','BRANCH','DEPARTMENT')}
 
+# === Update AUD-12 — perusahaan default (foundation multi-company) ===
+# Identitas deterministik migration cp0000000014 — dipakai server_default
+# kolom company_id dokumen transaksi & self-healing bila baris terhapus.
+DEFAULT_COMPANY_CODE = 'ASAHI'
+DEFAULT_COMPANY_NAME = 'PT Asahi Sukses Industri'
+DEFAULT_COMPANY_UUID = '0e9f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b'
+
+_default_company_cache = None
+
+
+def get_default_company_id(db):
+    """UUID perusahaan default ASAHI (cache per-process; self-healing).
+
+    Dipakai auto_posting_jurnal agar jurnal baru minimal terikat satu
+    perusahaan, dan lifespan startup untuk memastikan unit default ada.
+    """
+    global _default_company_cache
+    if _default_company_cache is not None:
+        return _default_company_cache
+    unit = (db.query(OrganizationUnit)
+            .filter_by(kind='COMPANY', code=DEFAULT_COMPANY_CODE)
+            .first())
+    if unit is None:
+        from uuid import UUID as _UUID
+        unit = OrganizationUnit(
+            id=_UUID(DEFAULT_COMPANY_UUID),
+            kind='COMPANY', code=DEFAULT_COMPANY_CODE,
+            name=DEFAULT_COMPANY_NAME, status='AKTIF',
+        )
+        db.add(unit)
+        db.flush()
+    _default_company_cache = unit.id
+    return unit.id
+
+
+def ensure_default_company(db) -> bool:
+    """Lifespan hook — True bila unit baru dibuat (self-healing)."""
+    global _default_company_cache
+    existing = (db.query(OrganizationUnit)
+                .filter_by(kind='COMPANY', code=DEFAULT_COMPANY_CODE).first())
+    if existing is not None:
+        _default_company_cache = existing.id
+        return False
+    get_default_company_id(db)
+    return True
+
 
 def values(obj):
     return {key: getattr(obj, key, None) for key in FIELDS}
@@ -91,16 +137,11 @@ def assign_document(db, kind, document_id, data, expected_version, user):
         raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengedit draft')
     require_unposted(obj)
     from app.services.penutupan_periode_service import validate_periode_not_closed
-    # AUD-17: guard periode mengikuti perusahaan TARGET (dimensi baru yang
-    # di-assign) bila ada, else perusahaan dokumen saat ini.
-    from app.services.organization_service import validate as _validate_org
-    normalized_pre = _validate_org(db, data)
-    validate_periode_not_closed(db, obj.tanggal,
-                                company_id=normalized_pre.get('company_id'))
+    validate_periode_not_closed(db, obj.tanggal)
     workflow = wf.find_workflow(db, obj)
     if (workflow.version if workflow else 0) != expected_version:
         raise HTTPException(409, 'Versi dokumen berubah; muat ulang workflow')
-    normalized = normalized_pre
+    normalized = validate(db, data)
     row = db.query(DocumentOrganization).filter_by(document_id=document_id).first()
     if row and row.document_type != kind:
         raise ValueError('ID dokumen organisasi ambigu')

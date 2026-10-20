@@ -1,4 +1,4 @@
-from sqlalchemy import Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
+from sqlalchemy import text, Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -16,6 +16,12 @@ class InvoiceType(str, __import__('enum').Enum):
 class PurchaseInvoice(BaseModel, BaseMixin):
     __tablename__ = "purchase_invoice"
 
+    # === Update AUD-12 — dimensi perusahaan (default ASAHI via migration cp14;
+    # kolom nullable + server_default agar baris lama/single-company aman) ===
+    company_id = Column(UUID(as_uuid=True), ForeignKey("organization_unit.id"),
+                        nullable=True,
+                        server_default=text("'0e9f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b'"))
+
     no_form = Column(String(30), unique=True, nullable=False, index=True)
     no_faktur = Column(String(50), nullable=False)
     tanggal = Column(DateTime(timezone=True), nullable=False)
@@ -27,15 +33,6 @@ class PurchaseInvoice(BaseModel, BaseMixin):
     alamat = Column(Text, nullable=True)
     diskon_global = Column(Numeric(5, 2), default=0, nullable=True)
     ppn = Column(Numeric(5, 2), default=11, nullable=False)
-    # === AUD-09 (update #04) — PPh 23 pada Purchase Invoice ===
-    # Mirror sales_invoice/purchase_order (cp0000000004): potongan PPh 23 atas
-    # jasa/pembelian dari supplier dicatat SEJAK INVOICE — saat posting,
-    # hutang supplier dicatat NET (grand_total sudah dikurangi total_pph23)
-    # dan Cr Hutang PPh 23 terbentuk otomatis. PI lama (applicable=false)
-    # mempertahankan perilaku lama: PPh 23 hanya muncul saat pelunasan.
-    pph23 = Column(Numeric(5, 2), default=2, nullable=False)
-    pph23_applicable = Column(Boolean, default=False, nullable=False)
-    total_pph23 = Column(Numeric(18, 2), default=0, nullable=False)
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
     total_diskon = Column(Numeric(18, 2), default=0, nullable=False)
     total_ppn = Column(Numeric(18, 2), default=0, nullable=False)
