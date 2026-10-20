@@ -20,24 +20,8 @@ def _total_by_header(db, header, date_from, date_to=None):
     return sum((r['total'] for r in _saldo_per_akun_list(db, header, date_from, date_to)), gl.ZERO)
 
 
-def _merge_rows(opening, movement):
-    """AUD-15 — gabung saldo awal tahun buku + mutasi (per akun)."""
-    out = {}
-    for key, row in opening.items():
-        out[key] = {'account': row['account'], 'debit': row['debit'], 'kredit': row['kredit']}
-    for key, row in movement.items():
-        if key in out:
-            out[key]['debit'] += row['debit']
-            out[key]['kredit'] += row['kredit']
-        else:
-            out[key] = {'account': row['account'], 'debit': row['debit'], 'kredit': row['kredit']}
-    return out
-
-
-def get_laba_rugi(db, date_from, date_to, tahun_buku=None):
-    # AUD-15: mode tahun buku mengecualikan jurnal saldo awal (P&L tidak
-    # terpengaruh — SA hanya akun neraca — tapi konsisten dengan mode lain).
-    rows = gl.totals(db, date_from, date_to, performance=True, fiscal_year=tahun_buku)
+def get_laba_rugi(db, date_from, date_to):
+    rows = gl.totals(db, date_from, date_to, performance=True)
     # M-02: klasifikasi per akun (level presentasi), bukan per header COA saja:
     # - PENDAPATAN dengan report_group OTHER_INCOME (421xxx bunga/sewa/selisih kurs)
     #   → grup "pendapatan_lain" (pendapatan lain-lain), bukan pendapatan usaha.
@@ -75,15 +59,9 @@ def get_laba_rugi(db, date_from, date_to, tahun_buku=None):
             'laba_bersih': operating + totals['total_pendapatan_lain']}
 
 
-def get_neraca_saldo(db, date_from, date_to, tahun_buku=None):
-    # AUD-15: mode tahun buku — saldo awal periode = set SA-{tahun}, bukan
-    # seluruh histori jurnal sebelum tanggal (buku dipotong per tahun).
-    if tahun_buku is not None:
-        opening = gl.fiscal_opening_totals(db, tahun_buku)
-        movements = gl.totals(db, date_from, date_to, fiscal_year=tahun_buku)
-    else:
-        opening = gl.totals(db, before=date_from)
-        movements = gl.totals(db, date_from, date_to)
+def get_neraca_saldo(db, date_from, date_to):
+    opening = gl.totals(db, before=date_from)
+    movements = gl.totals(db, date_from, date_to)
     items = []
     for key in sorted(opening.keys() | movements.keys(), key=lambda k: (movements.get(k) or opening[k])['account'].kode):
         row = movements.get(key) or opening[key]
@@ -104,15 +82,8 @@ def get_neraca_saldo(db, date_from, date_to, tahun_buku=None):
             'total_saldo_kredit': sum((r['saldo_kredit'] for r in items), gl.ZERO)}
 
 
-def get_neraca(db, tanggal, tahun_buku=None):
-    # AUD-15: mode tahun buku — saldo = saldo awal tahun (SA-{tahun}) +
-    # mutasi tahun s/d tanggal; jurnal tahun sebelumnya tidak dihitung.
-    if tahun_buku is not None:
-        opening = gl.fiscal_opening_totals(db, tahun_buku)
-        movement = gl.totals(db, end=tanggal, fiscal_year=tahun_buku)
-        rows = _merge_rows(opening, movement)
-    else:
-        rows = gl.totals(db, end=tanggal)
+def get_neraca(db, tanggal):
+    rows = gl.totals(db, end=tanggal)
     groups = {name: gl.header_items(rows, header) for name, header in
               (('aset', gl.HeaderCOA.AKTIVA), ('kewajiban', gl.HeaderCOA.KEWAJIBAN), ('ekuitas', gl.HeaderCOA.MODAL))}
     unclosed = gl.profit(rows)
@@ -159,20 +130,16 @@ def get_umur_hutang(db, as_of):
     return aging(db, 'hutang', as_of)
 
 
-def get_buku_besar(db, akun_id, date_from, date_to, tahun_buku=None):
+def get_buku_besar(db, akun_id, date_from, date_to):
     account = db.get(gl.Account, akun_id)
     if account is None:
         raise ValueError('Akun tidak ditemukan')
     sign = 1 if account.saldo_normal == 'DEBIT' else -1
-    if tahun_buku is not None:
-        # AUD-15: saldo awal = set SA-{tahun} (bukan histori sebelum tanggal)
-        opening = sign * gl.net(gl.fiscal_opening_totals(db, tahun_buku).get(akun_id))
-    else:
-        opening = sign * gl.net(gl.totals(db, before=date_from).get(akun_id))
+    opening = sign * gl.net(gl.totals(db, before=date_from).get(akun_id))
     q = db.query(gl.Line, gl.Journal).join(gl.Journal, gl.Journal.id == gl.Line.jurnal_umum_id).filter(gl.Line.akun_perkiraan_id == akun_id)
     # m-10: urutkan tanggal ASC lalu kronologi posting (created_at/id) ASC supaya
     # baris terakhir adalah transaksi terakhir periode (saldo berjalan konsisten).
-    rows = gl.posted(db, q, date_from, date_to, fiscal_year=tahun_buku).order_by(
+    rows = gl.posted(db, q, date_from, date_to).order_by(
         gl.Journal.tanggal, gl.Journal.created_at, gl.Journal.id, gl.Line.id).all()
     balance, debit, credit, items = opening, gl.ZERO, gl.ZERO, []
     for line, journal in rows:
@@ -361,3 +328,227 @@ def validate_reports(db, date_from, date_to):
     return {'periode': gl.period(date_from, date_to), 'valid': not invalid and not any(checks.values()),
             'checks': checks, 'jurnal_tidak_valid': invalid, 'klasifikasi_arus_kas_lengkap': cash['klasifikasi_lengkap'],
             'jumlah_jurnal_belum_diklasifikasi': cash['jumlah_jurnal_belum_diklasifikasi']}
+
+
+# ==========================================
+# Update AUD-17 — Rekap Pajak PPN & PPh 23
+# ==========================================
+
+from app.models import PurchaseInvoice, SalesRetur as _SalesRetur, PurchaseRetur as _PurchaseRetur
+from app.models import PenerimaanKas as _PenerimaanKas, PembayaranKas as _PembayaranKas
+from app.models import PaymentAllocation as _PaymentAllocation
+from app.models.transaksi.kas_bank.kas_identifikasi import (
+    KasIdentifikasi as _KasIdentifikasi,
+    KasIdentifikasiRincian as _KasIdentifikasiRincian,
+)
+from app.models import Pelanggan as _Pelanggan, Supplier as _Supplier, JurnalUmum as _JurnalUmum
+
+
+def _tax_day(value):
+    """Tanggal lokal (Asia/Jakarta) tanpa waktu — untuk baris rekap pajak."""
+    return gl.local_datetime(value).date() if value is not None else None
+from sqlalchemy import or_ as _or_
+
+
+def _active_tax_documents(db, model, date_from, date_to):
+    """Dokumen pajak efektif: posted (ber-jurnal POSTED) dan belum dibatalkan
+    (tidak punya jurnal pembalik POSTED — pola settlement_service.active_documents),
+    dalam rentang tanggal. Scope perusahaan (AUD-12) diterapkan bila ada."""
+    from sqlalchemy.orm import aliased as _aliased
+    reversal = _aliased(_JurnalUmum)
+    query = (
+        db.query(model)
+        .join(_JurnalUmum, model.jurnal_umum_id == _JurnalUmum.id)
+        .filter(_JurnalUmum.status == 'POSTED')
+        .filter(model.tanggal >= date_from, model.tanggal <= date_to)
+        .filter(~db.query(reversal.id)
+                .filter(reversal.reversal_of_id == _JurnalUmum.id,
+                        reversal.status == 'POSTED').exists())
+    )
+    scope = gl._report_scope(db) if hasattr(gl, '_report_scope') else None
+    company_id = (scope or {}).get('company_id') if scope else None
+    if company_id is not None and hasattr(model, 'company_id'):
+        query = query.filter(model.company_id == company_id)
+    return query.order_by(model.tanggal, model.id).all()
+
+
+def get_rekap_ppn(db, date_from, date_to):
+    """Rekap PPN per masa pajak — DPP & PPN keluaran (SI), masukan (PI),
+    beserta koreksi retur penjualan/pembelian. Dokumen dibatalkan (jurnal
+    dibalik) otomatis dikecualikan."""
+    def _dpp(obj):
+        ppn = obj.total_ppn or gl.ZERO
+        return (obj.grand_total or gl.ZERO) - ppn
+
+    rincian = []
+    for inv in _active_tax_documents(db, SalesInvoice, date_from, date_to):
+        rincian.append({
+            'tanggal': _tax_day(inv.tanggal), 'no_dokumen': inv.no_invoice,
+            'pihak': inv.pelanggan.nama if inv.pelanggan else None,
+            'jenis': 'KELUARAN', 'dpp': _dpp(inv), 'ppn': inv.total_ppn or gl.ZERO,
+        })
+    for inv in _active_tax_documents(db, PurchaseInvoice, date_from, date_to):
+        rincian.append({
+            'tanggal': _tax_day(inv.tanggal), 'no_dokumen': inv.no_form,
+            'pihak': inv.supplier.nama if inv.supplier else None,
+            'jenis': 'MASUKAN', 'dpp': _dpp(inv), 'ppn': inv.total_ppn or gl.ZERO,
+        })
+    for r in _active_tax_documents(db, _SalesRetur, date_from, date_to):
+        rincian.append({
+            'tanggal': _tax_day(r.tanggal), 'no_dokumen': r.no_retur,
+            'pihak': r.pelanggan.nama if getattr(r, 'pelanggan', None) else None,
+            'jenis': 'RETUR_KELUARAN', 'dpp': -_dpp(r), 'ppn': -(r.total_ppn or gl.ZERO),
+        })
+    for r in _active_tax_documents(db, _PurchaseRetur, date_from, date_to):
+        rincian.append({
+            'tanggal': _tax_day(r.tanggal), 'no_dokumen': r.no_retur,
+            'pihak': r.supplier.nama if getattr(r, 'supplier', None) else None,
+            'jenis': 'RETUR_MASUKAN', 'dpp': -_dpp(r), 'ppn': -(r.total_ppn or gl.ZERO),
+        })
+    rincian.sort(key=lambda x: (x['tanggal'], x['no_dokumen']))
+
+    masa_map = {}
+    for row in rincian:
+        masa = f"{row['tanggal'].year:04d}-{row['tanggal'].month:02d}"
+        m = masa_map.setdefault(masa, {
+            'masa': masa, 'dpp_keluaran': gl.ZERO, 'ppn_keluaran': gl.ZERO,
+            'dpp_masukan': gl.ZERO, 'ppn_masukan': gl.ZERO,
+            'dpp_retur_keluaran': gl.ZERO, 'ppn_retur_keluaran': gl.ZERO,
+            'dpp_retur_masukan': gl.ZERO, 'ppn_retur_masukan': gl.ZERO, 'ppn_neto': gl.ZERO,
+        })
+        jenis = row['jenis'].lower()  # keluaran / masukan / retur_keluaran / retur_masukan
+        m[f'dpp_{jenis}'] += row['dpp']
+        m[f'ppn_{jenis}'] += row['ppn']
+
+    ringkasan = []
+    total = {
+        'masa': 'TOTAL', 'dpp_keluaran': gl.ZERO, 'ppn_keluaran': gl.ZERO,
+        'dpp_masukan': gl.ZERO, 'ppn_masukan': gl.ZERO,
+        'dpp_retur_keluaran': gl.ZERO, 'ppn_retur_keluaran': gl.ZERO,
+        'dpp_retur_masukan': gl.ZERO, 'ppn_retur_masukan': gl.ZERO, 'ppn_neto': gl.ZERO,
+    }
+    for masa in sorted(masa_map):
+        m = masa_map[masa]
+        m['ppn_neto'] = m['ppn_keluaran'] - m['ppn_masukan']
+        ringkasan.append(m)
+        for k in total:
+            if k != 'masa':
+                total[k] += m[k]
+    return {
+        'periode': {'dari': _tax_day(date_from).isoformat(), 'sampai': _tax_day(date_to).isoformat()},
+        'ringkasan_masa': ringkasan,
+        'rincian': rincian,
+        'total': total,
+    }
+
+
+def get_rekap_pph23(db, date_from, date_to):
+    """Rekap PPh 23 per pihak — dua sisi:
+    - DIPOTONG_DARI_KITA (AR): pelanggan memotong PPh23 dari pembayaran kita (Dr 116003).
+    - KITA_POTONG (AP): kita memotong PPh23 dari pembayaran supplier (Cr 213002).
+    Sumber: alokasi pelunasan (payment_allocation) + identifikasi kas (rincian)."""
+    from app.models import SalesInvoice as _SI, PurchaseInvoice as _PI
+
+    scope = gl._report_scope(db) if hasattr(gl, '_report_scope') else None
+    company_id = (scope or {}).get('company_id') if scope else None
+
+    # --- sumber 1: alokasi pelunasan (penerimaan AR / pembayaran AP) ---
+    # Iterasi alokasi ber-pph23 lalu validasi efektivitas dokumen kas sumber
+    # (posted + tanpa jurnal pembalik) dan rentang tanggal.
+    d0, d1 = _tax_day(date_from), _tax_day(date_to)
+    rows = []
+    for a in (db.query(_PaymentAllocation)
+              .filter(_PaymentAllocation.pph23 > 0).all()):
+        if a.penerimaan_id is not None:
+            kas = db.get(_PenerimaanKas, a.penerimaan_id)
+        elif a.pembayaran_id is not None:
+            kas = db.get(_PembayaranKas, a.pembayaran_id)
+        else:
+            continue
+        if kas is None or kas.jurnal_umum_id is None:
+            continue
+        jrn = db.get(_JurnalUmum, kas.jurnal_umum_id)
+        if jrn is None or jrn.status != 'POSTED':
+            continue
+        reversed_ = (db.query(_JurnalUmum.id)
+                     .filter(_JurnalUmum.reversal_of_id == jrn.id,
+                             _JurnalUmum.status == 'POSTED').first())
+        if reversed_:
+            continue  # dokumen kas dibatalkan → alokasi non-efektif
+        tgl = _tax_day(kas.tanggal)
+        if not (d0 <= tgl <= d1):
+            continue
+        if company_id is not None and getattr(kas, 'company_id', None) != company_id:
+            continue  # scope perusahaan (AUD-12)
+        if a.penerimaan_id is not None:
+            pihak = db.get(_Pelanggan, kas.pelanggan_id) if getattr(kas, 'pelanggan_id', None) else None
+            sisi, no_bukti = 'DIPOTONG_DARI_KITA', kas.no_bukti
+            inv = db.get(_SI, a.sales_invoice_id) if a.sales_invoice_id else None
+            no_inv = inv.no_invoice if inv else None
+        else:
+            pihak = db.get(_Supplier, kas.supplier_id) if getattr(kas, 'supplier_id', None) else None
+            sisi, no_bukti = 'KITA_POTONG', kas.no_bukti
+            inv = db.get(_PI, a.purchase_invoice_id) if a.purchase_invoice_id else None
+            no_inv = inv.no_form if inv else None
+        rows.append({
+            'tanggal': tgl, 'pihak': pihak.nama if pihak else None,
+            'npwp': (pihak.npwp if pihak else None),
+            'no_bukti': no_bukti, 'no_invoice': no_inv,
+            'dasar': a.nilai or gl.ZERO, 'pph23': a.pph23 or gl.ZERO,
+            'sumber': 'PELUNASAN', 'sisi': sisi,
+        })
+
+    # --- sumber 2: identifikasi kas (rincian PIUTANG / HUTANG) ---
+    q = (db.query(_KasIdentifikasiRincian)
+         .join(_KasIdentifikasi, _KasIdentifikasiRincian.identifikasi_id == _KasIdentifikasi.id)
+         .filter(_KasIdentifikasiRincian.pph23 > 0)
+         .filter(_KasIdentifikasi.tanggal >= date_from, _KasIdentifikasi.tanggal <= date_to))
+    for r in q.all():
+        ident = db.get(_KasIdentifikasi, r.identifikasi_id)
+        if ident is None:
+            continue
+        tgl = _tax_day(ident.tanggal)
+        if not (d0 <= tgl <= d1):
+            continue
+        if ident.jenis == 'PIUTANG':
+            pihak = db.get(_Pelanggan, ident.pelanggan_id) if ident.pelanggan_id else None
+            sisi = 'DIPOTONG_DARI_KITA'
+            inv = db.get(_SI, r.sales_invoice_id) if r.sales_invoice_id else None
+            no_inv = inv.no_invoice if inv else None
+        elif ident.jenis == 'HUTANG':
+            pihak = db.get(_Supplier, ident.supplier_id) if ident.supplier_id else None
+            sisi = 'KITA_POTONG'
+            inv = db.get(_PI, r.purchase_invoice_id) if r.purchase_invoice_id else None
+            no_inv = inv.no_form if inv else None
+        else:
+            continue
+        rows.append({
+            'tanggal': tgl, 'pihak': pihak.nama if pihak else None,
+            'npwp': (pihak.npwp if pihak else None),
+            'no_bukti': ident.no_bukti, 'no_invoice': no_inv,
+            'dasar': r.nilai or gl.ZERO, 'pph23': r.pph23 or gl.ZERO,
+            'sumber': 'IDENTIFIKASI', 'sisi': sisi,
+        })
+
+    rows.sort(key=lambda x: (x['tanggal'], x['no_bukti'] or ''))
+
+    # agregasi per pihak + sisi
+    agg = {}
+    for r in rows:
+        key = (r['pihak'] or '(tanpa nama)', r['npwp'] or '', r['sisi'])
+        a = agg.setdefault(key, {'pihak': r['pihak'], 'npwp': r['npwp'], 'sisi': r['sisi'],
+                                 'total_dasar': gl.ZERO, 'total_pph23': gl.ZERO})
+        a['total_dasar'] += r['dasar']
+        a['total_pph23'] += r['pph23']
+    per_pihak = sorted(agg.values(), key=lambda a: (a['sisi'], a['pihak'] or ''))
+
+    total_dari_kita = sum((r['pph23'] for r in rows if r['sisi'] == 'DIPOTONG_DARI_KITA'), gl.ZERO)
+    total_kita_potong = sum((r['pph23'] for r in rows if r['sisi'] == 'KITA_POTONG'), gl.ZERO)
+
+    return {
+        'periode': {'dari': _tax_day(date_from).isoformat(), 'sampai': _tax_day(date_to).isoformat()},
+        'rincian': rows,
+        'per_pihak': per_pihak,
+        'total_dipotong_dari_kita': total_dari_kita,
+        'total_kita_potong': total_kita_potong,
+    }

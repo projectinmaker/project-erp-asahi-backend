@@ -22,8 +22,7 @@ from app.schemas.laporan import (
     RekonsiliasiPersediaanResponse,
     RekonsiliasiPersediaanRingkasanResponse,
     AuditTransaksiPersediaanResponse,
-    PajakPpnResponse,
-    PajakPph23Response,
+    RekapPpnResponse, RekapPph23Response,
 )
 from app.services import laporan_service
 from app.services import rekonsiliasi_persediaan_service
@@ -35,27 +34,6 @@ router = APIRouter(dependencies=[Depends(report_scope)])
 
 
 # ==========================================
-# AUD-17 — DAFTAR PERUSAHAAN (untuk filter laporan)
-# ==========================================
-@router.get("/companies")
-def list_companies(
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """AUD-17 (update #05) — daftar perusahaan aktif untuk filter laporan.
-
-    Dipakai dropdown "Perusahaan" di halaman laporan/dashboard/jurnal.
-    Mapping izin: reports.financial.view (sama dengan laporan keuangan).
-    """
-    from app.models.organization import OrganizationUnit
-    rows = (db.query(OrganizationUnit)
-            .filter(OrganizationUnit.kind == "COMPANY",
-                    OrganizationUnit.status == "AKTIF")
-            .order_by(OrganizationUnit.name).all())
-    return [{"id": str(r.id), "code": r.code, "name": r.name} for r in rows]
-
-
-# ==========================================
 # LAPORAN KEUANGAN
 # ==========================================
 
@@ -63,7 +41,6 @@ def list_companies(
 def get_neraca_saldo(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
-    tahun_buku: Optional[int] = Query(None, alias="tahunBuku", description="AUD-15: mode tahun buku (saldo awal = SA-{tahun})"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -76,7 +53,7 @@ def get_neraca_saldo(
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
-    return laporan_service.get_neraca_saldo(db, date_from, date_to, tahun_buku=tahun_buku)
+    return laporan_service.get_neraca_saldo(db, date_from, date_to)
 
 
 @router.get("/perubahan-modal", response_model=PerubahanModalResponse)
@@ -102,7 +79,6 @@ def get_perubahan_modal(
 def get_laba_rugi(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
-    tahun_buku: Optional[int] = Query(None, alias="tahunBuku", description="AUD-15: mode tahun buku"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -115,13 +91,12 @@ def get_laba_rugi(
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
-    return laporan_service.get_laba_rugi(db, date_from, date_to, tahun_buku=tahun_buku)
+    return laporan_service.get_laba_rugi(db, date_from, date_to)
 
 
 @router.get("/neraca", response_model=NeracaResponse)
 def get_neraca(
     tanggal: str = Query(..., description="Tanggal posisi neraca (YYYY-MM-DD)"),
-    tahun_buku: Optional[int] = Query(None, alias="tahunBuku", description="AUD-15: mode tahun buku (saldo = SA-{tahun} + mutasi tahun)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -131,7 +106,7 @@ def get_neraca(
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
 
-    return laporan_service.get_neraca(db, dt, tahun_buku=tahun_buku)
+    return laporan_service.get_neraca(db, dt)
 
 
 @router.get("/arus-kas", response_model=ArusKasResponse)
@@ -214,7 +189,6 @@ def get_buku_besar(
     akun_id: UUID = Query(..., description="ID Akun Perkiraan"),
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
-    tahun_buku: Optional[int] = Query(None, alias="tahunBuku", description="AUD-15: mode tahun buku (saldo awal = SA-{tahun})"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -520,129 +494,43 @@ def get_accounting_health_endpoint(
 
 
 # ==========================================
-# === AUD-07 (update #04) — REKAP PAJAK ===
-# PPN Keluaran/Masukan & PPh 23 per periode + export xlsx.
+# Update AUD-17 — Rekap Pajak PPN & PPh 23
 # ==========================================
-@router.get("/pajak/ppn", response_model=PajakPpnResponse)
+
+@router.get("/rekap-ppn", response_model=RekapPpnResponse)
 def get_rekap_ppn(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Rekap PPN per periode — keluaran (SI + retur penjualan) vs masukan
-    (PI + retur pembelian) dari jurnal POSTED, plus ringkasan per masa pajak."""
-    from app.services import pajak_service
+    """Rekap PPN per masa pajak: DPP & PPN Keluaran (SI), Masukan (PI),
+    koreksi retur — dokumen dibatalkan otomatis dikecualikan (reversal-aware)."""
     try:
-        d_from = datetime.strptime(dari, "%Y-%m-%d").date()
-        d_to = datetime.strptime(sampai, "%Y-%m-%d").date()
-        if d_from > d_to:
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
             raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
-    return pajak_service.get_rekap_ppn(db, d_from, d_to)
+    return laporan_service.get_rekap_ppn(db, date_from, date_to)
 
 
-@router.get("/pajak/pph23", response_model=PajakPph23Response)
+@router.get("/rekap-pph23", response_model=RekapPph23Response)
 def get_rekap_pph23(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
     sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Rekap PPh 23 per periode — dipotong pihak lain (pelanggan memotong
-    penjualan kita), dipotong dari supplier (kita memotong), plus accrual
-    per invoice (SI ber-PPh23 / PI ber-PPh23 AUD-09), dengan bukti potong &
-    masa pajak (AUD-08)."""
-    from app.services import pajak_service
+    """Rekap PPh 23 per pihak: dipotong pelanggan dari kita (Dibayar di Muka)
+    vs dipotong kita dari supplier (Hutang PPh 23) — sumber pelunasan &
+    identifikasi kas, reversal-aware."""
     try:
-        d_from = datetime.strptime(dari, "%Y-%m-%d").date()
-        d_to = datetime.strptime(sampai, "%Y-%m-%d").date()
-        if d_from > d_to:
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        if date_from > date_to:
             raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
-    return pajak_service.get_rekap_pph23(db, d_from, d_to)
-
-
-@router.get("/pajak/ppn/export")
-def export_rekap_ppn(
-    dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
-    sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Export rekap PPN ke .xlsx — data sama dengan GET /pajak/ppn."""
-    from app.services import pajak_service
-    from app.services import excel_service
-    from fastapi.responses import StreamingResponse
-    try:
-        d_from = datetime.strptime(dari, "%Y-%m-%d").date()
-        d_to = datetime.strptime(sampai, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
-    data = pajak_service.get_rekap_ppn(db, d_from, d_to)
-
-    rows = []
-    for label, items in (("KELUARAN", data["keluaran"]), ("MASUKAN", data["masukan"])):
-        for r in items:
-            rows.append([label, r["tanggal"].date() if r["tanggal"] else None,
-                         r["no_dokumen"] or "-", r["jenis"], r["pihak"] or "-",
-                         r["dpp"], r["ppn"]])
-    wb = excel_service.workbook_from_rows(
-        headers=["Jenis", "Tanggal", "No Dokumen", "Tipe", "Pihak", "DPP", "PPN"],
-        rows=rows, sheet="Rekap PPN",
-        decimal_columns={5, 6}, date_columns={1},
-    )
-    return StreamingResponse(
-        excel_service.workbook_to_stream(wb),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="rekap-ppn-{d_from:%Y%m%d}-{d_to:%Y%m%d}.xlsx"'},
-    )
-
-
-@router.get("/pajak/pph23/export")
-def export_rekap_pph23(
-    dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
-    sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Export rekap PPh 23 (bukti potong) ke .xlsx — data sama dengan
-    GET /pajak/pph23."""
-    from app.services import pajak_service
-    from app.services import excel_service
-    from fastapi.responses import StreamingResponse
-    try:
-        d_from = datetime.strptime(dari, "%Y-%m-%d").date()
-        d_to = datetime.strptime(sampai, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
-    data = pajak_service.get_rekap_pph23(db, d_from, d_to)
-
-    rows = []
-    for label, items in (
-        ("DIPOTONG PIHAK LAIN (pelanggan)", data["dipotong_pihak_lain"]),
-        ("DIPOTONG DARI SUPPLIER (kita potong)", data["dipotong_dari_supplier"]),
-        ("ACCRUAL INVOICE PENJUALAN", data["pph23_invoice_penjualan"]),
-        ("RETUR PENJUALAN (pembalikan — AUD-12)", data["pph23_retur_penjualan"]),
-        ("ACCRUAL INVOICE PEMBELIAN", data["pph23_invoice_pembelian"]),
-        ("RETUR PEMBELIAN (pembalikan — AUD-12)", data["pph23_retur_pembelian"]),
-    ):
-        for r in items:
-            rows.append([label, r["tanggal"].date() if r["tanggal"] else None,
-                         r["no_dokumen"] or "-", r.get("no_invoice") or "-",
-                         r["pihak"] or "-", r.get("nilai"), r["pph23"],
-                         r.get("no_bukti_potong") or "-", r.get("masa_pajak") or "-",
-                         r.get("sumber") or "-"])
-    wb = excel_service.workbook_from_rows(
-        headers=["Kategori", "Tanggal", "No Dokumen", "No Invoice", "Pihak",
-                 "Nilai", "PPh 23", "No Bukti Potong", "Masa Pajak", "Sumber"],
-        rows=rows, sheet="Rekap PPh23",
-        decimal_columns={5, 6}, date_columns={1},
-    )
-    return StreamingResponse(
-        excel_service.workbook_to_stream(wb),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="rekap-pph23-{d_from:%Y%m%d}-{d_to:%Y%m%d}.xlsx"'},
-    )
+    return laporan_service.get_rekap_pph23(db, date_from, date_to)

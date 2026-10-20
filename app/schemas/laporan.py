@@ -3,7 +3,7 @@ from uuid import UUID
 Schemas untuk Laporan/Reporting.
 """
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import List, Optional
 
@@ -405,70 +405,65 @@ class AuditTransaksiPersediaanResponse(BaseSchema):
 
 
 # ==========================================
-# === AUD-07 (update #04) — Rekap Pajak ===
+# Update AUD-17 — Rekap Pajak PPN & PPh 23
 # ==========================================
-class PajakPpnBaris(BaseSchema):
-    """Satu dokumen pajak PPN (faktur/retur) dari jurnal POSTED."""
-    tanggal: datetime
-    no_jurnal: str
-    no_dokumen: Optional[str] = None
-    jenis: str  # FAKTUR_KELUARAN | RETUR_PENJUALAN | FAKTUR_MASUKAN | RETUR_PEMBELIAN | LAINNYA
+
+class RekapPpnItem(BaseSchema):
+    """Satu baris dokumen pajak (faktur/retur) dalam rekap PPN."""
+    tanggal: date
+    no_dokumen: str
     pihak: Optional[str] = None
-    dpp: Optional[Decimal] = None
-    ppn: Decimal = Decimal("0")  # bertanda: retur mengurangi sisi masing-masing
+    jenis: str  # KELUARAN | MASUKAN | RETUR_KELUARAN | RETUR_MASUKAN
+    dpp: Decimal = Decimal("0")
+    ppn: Decimal = Decimal("0")
 
 
-class PajakPpnPerMasa(BaseSchema):
-    masa_pajak: str  # YYYY-MM
-    keluaran: Decimal = Decimal("0")
-    masukan: Decimal = Decimal("0")
-    netto: Decimal = Decimal("0")
+class RekapPpnMasaItem(BaseSchema):
+    """Agregasi rekap PPN per masa pajak (YYYY-MM)."""
+    masa: str
+    dpp_keluaran: Decimal = Decimal("0")
+    ppn_keluaran: Decimal = Decimal("0")
+    dpp_masukan: Decimal = Decimal("0")
+    ppn_masukan: Decimal = Decimal("0")
+    dpp_retur_keluaran: Decimal = Decimal("0")
+    ppn_retur_keluaran: Decimal = Decimal("0")
+    dpp_retur_masukan: Decimal = Decimal("0")
+    ppn_retur_masukan: Decimal = Decimal("0")
+    ppn_neto: Decimal = Decimal("0")  # ppn_keluaran - ppn_masukan (neto koreksi retur)
 
 
-class PajakPpnResponse(BaseSchema):
-    """Rekap PPN per periode (keluaran vs masukan + per masa pajak)."""
+class RekapPpnResponse(BaseSchema):
     periode: Periode
-    keluaran: List[PajakPpnBaris] = []
-    total_keluaran: Decimal = Decimal("0")
-    masukan: List[PajakPpnBaris] = []
-    total_masukan: Decimal = Decimal("0")
-    ppn_netto: Decimal = Decimal("0")  # masukan - keluaran; positif = lebih bayar
-    per_masa: List[PajakPpnPerMasa] = []
-    akun: dict = {}
+    ringkasan_masa: List[RekapPpnMasaItem] = []
+    rincian: List[RekapPpnItem] = []
+    total: RekapPpnMasaItem | None = None
 
 
-class PajakPph23Baris(BaseSchema):
-    """Satu potongan PPh 23 (bukti potong / accrual invoice)."""
-    tanggal: datetime
-    no_dokumen: Optional[str] = None
+class RekapPph23Item(BaseSchema):
+    """Satu baris pemotongan PPh 23 (dari pelunasan / identifikasi kas)."""
+    tanggal: date
+    pihak: Optional[str] = None
+    npwp: Optional[str] = None
+    no_bukti: str  # no dokumen kas / identifikasi
     no_invoice: Optional[str] = None
-    pihak: Optional[str] = None
-    nilai: Optional[Decimal] = None
+    dasar: Decimal = Decimal("0")
     pph23: Decimal = Decimal("0")
-    no_bukti_potong: Optional[str] = None  # AUD-08
-    masa_pajak: Optional[str] = None
-    sumber: Optional[str] = None  # PELUNASAN | IDENTIFIKASI | INVOICE
+    sumber: str  # PELUNASAN | IDENTIFIKASI
+    sisi: str  # DIPOTONG_DARI_KITA (AR) | KITA_POTONG (AP)
 
 
-class PajakPph23PerMasa(BaseSchema):
-    masa_pajak: str
-    dipotong_pihak_lain: Decimal = Decimal("0")
-    dipotong_dari_supplier: Decimal = Decimal("0")
+class RekapPph23PihakItem(BaseSchema):
+    """Agregasi PPh 23 per pihak (untuk rekap bukti potong e-Bupot)."""
+    pihak: Optional[str] = None
+    npwp: Optional[str] = None
+    sisi: str
+    total_dasar: Decimal = Decimal("0")
+    total_pph23: Decimal = Decimal("0")
 
 
-class PajakPph23Response(BaseSchema):
-    """Rekap PPh 23 per periode."""
+class RekapPph23Response(BaseSchema):
     periode: Periode
-    dipotong_pihak_lain: List[PajakPph23Baris] = []
-    total_dipotong_pihak_lain: Decimal = Decimal("0")
-    dipotong_dari_supplier: List[PajakPph23Baris] = []
-    total_dipotong_dari_supplier: Decimal = Decimal("0")
-    pph23_invoice_penjualan: List[PajakPph23Baris] = []
-    total_pph23_invoice_penjualan: Decimal = Decimal("0")
-    pph23_retur_penjualan: List[PajakPph23Baris] = []  # AUD-12: netting (nilai negatif)
-    total_pph23_retur_penjualan: Decimal = Decimal("0")
-    pph23_invoice_pembelian: List[PajakPph23Baris] = []
-    total_pph23_invoice_pembelian: Decimal = Decimal("0")
-    pph23_retur_pembelian: List[PajakPph23Baris] = []  # AUD-12: netting (nilai negatif)
-    total_pph23_retur_pembelian: Decimal = Decimal("0")
-    per_masa: List[PajakPph23PerMasa] = []
+    rincian: List[RekapPph23Item] = []
+    per_pihak: List[RekapPph23PihakItem] = []
+    total_dipotong_dari_kita: Decimal = Decimal("0")  # akun PPh23 Dibayar di Muka (116003)
+    total_kita_potong: Decimal = Decimal("0")  # akun Hutang PPh23 (213002)

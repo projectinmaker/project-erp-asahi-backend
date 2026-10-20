@@ -2,14 +2,6 @@
 
 Digunakan oleh semua modul transaksi saat auto-posting jurnal.
 Caching per-request untuk menghindari query berulang.
-
-Catatan dimensi perusahaan (AUD2-B4): ``setting_akun`` memang lintas-
-perusahaan di fase 1 arsitektur multi-company (lihat migration
-``cp0000000014_company_dimension`` — master & setting akun per-perusahaan
-ditangguhkan ke fase 2 bersama enforcement & binding user). Selama hanya ada
-satu perusahaan aktif, konfigurasi global ini aman; migrasi ke per-perusahaan
-menjadi tugas fase 2 (kolom company_id + unique key per perusahaan + resolver
-berdimensi).
 """
 
 from typing import Optional
@@ -157,64 +149,24 @@ KNOWN_SETTING_LABELS = {
     KEY_KAS_PENAMPUNG_PEMBAYARAN: "Pembayaran Kas Belum Teridentifikasi (Penampung AP)",
 }
 
-# Mapping key -> himpunan system_account_type yang DITERIMA (validasi
-# konfigurasi saat PUT /master/setting-akun). Akun tujuan yang memiliki
-# system_account_type WAJIB termatch salah satu nilai di himpunan key;
-# akun legacy tanpa system_account_type (kolom NULL) tetap diizinkan agar
-# COA lama tidak terkunci konfigurasi.
-#
-# AUD2-B3-lanjutan — kini mencakup juga key P&L (pendapatan/retur/PPN/PPh23/
-# pembelian/HPP/beban/potongan/selisih/kas). Sebelum lanjutan ini cek tipe
-# hanya aktif untuk 10 key kontrol/persediaan, sehingga skenario asli temuan
-# audit B3-utama — "setting pendapatan diarahkan ke akun beban" — masih
-# diterima; kini ditolak 400 dengan pesan tipe yang diharapkan.
+# Mapping key -> expected system_account_type (untuk validasi konfigurasi)
+# Kalau user set key PIUTANG_USAHA ke akun yang bukan AR_CONTROL, service bisa
+# warning (tidak fatal, supaya flexible).
 SETTING_KEY_TO_SYSTEM_ACCOUNT_TYPE = {
-    # — kontrol AR/AP & persediaan & ekuitas (sejak fix B3 awal) —
-    KEY_PIUTANG_USAHA: {"AR_CONTROL"},
-    KEY_HUTANG_USAHA: {"AP_CONTROL"},
-    KEY_BANK_CLEARING: {"BANK_CLEARING"},
-    KEY_HPP_PRODUK_JADI: {"COGS_FINISHED_GOODS"},
-    KEY_LABA_RUGI_TAHUN_BERJALAN: {"CURRENT_EARNINGS"},
-    KEY_LABA_DITAHAN: {"RETAINED_EARNINGS"},
-    KEY_PERSEDIAAN_BAHAN_BAKU: {"INVENTORY_RAW"},
-    KEY_PERSEDIAAN_BAHAN_PEMBANTU: {"INVENTORY_AUX"},
-    KEY_PERSEDIAAN_WIP: {"INVENTORY_WIP"},
-    KEY_PERSEDIAAN_BARANG_JADI: {"INVENTORY_FINISHED"},
-    # — key P&L (AUD2-B3-lanjutan) —
-    KEY_PENDAPATAN_PENJUALAN: {"SALES"},
-    KEY_RETUR_PENJUALAN: {"SALES"},
-    KEY_PPN_KELUARAN: {"VAT_OUTPUT"},
-    KEY_PPN_MASUKAN: {"VAT_INPUT"},
-    KEY_PPH23_DIBAYAR_DIMUKA: {"PREPAID_TAX"},
-    KEY_HUTANG_PPH23: {"TAX_PAYABLE"},
-    KEY_PEMBELIAN: {"LEGACY_COGS_PURCHASE", "COGS_FINISHED_GOODS"},
-    KEY_RETUR_PEMBELIAN: {"LEGACY_COGS_PURCHASE"},
-    KEY_HPP_PENJUALAN: {"LEGACY_COGS_PURCHASE", "COGS_FINISHED_GOODS"},
-    KEY_BEBAN_ANGKUT_PEMBELIAN: {
-        "LEGACY_COGS_PURCHASE", "ADMIN_EXPENSE", "SELLING_EXPENSE",
-        "OTHER_EXPENSE", "FACTORY_OVERHEAD",
-    },
-    KEY_BEBAN_TRANSFER_BANK: {"ADMIN_EXPENSE", "SELLING_EXPENSE", "OTHER_EXPENSE"},
-    KEY_BEBAN_ADMIN: {"ADMIN_EXPENSE", "OTHER_EXPENSE"},
-    KEY_PENDAPATAN_ANGKUT: {"SALES", "OTHER_INCOME"},
-    KEY_POTONGAN_HUTANG: {"OTHER_INCOME"},
-    KEY_SELISIH_PERSEDIAAN: {"OTHER_INCOME", "OTHER_EXPENSE"},
-    # KAS_PENAMPUNG_* sengaja TIDAK dipetakan: penampung bisa ber-liability
-    # atau asset tergantung arah; PENERIMAAN_DALAM_PROSES punya validator
-    # khusus (validate_grni_account). KAS_DAN_SETARA_KAS juga TIDAK
-    # dipetakan — dia penunjuk ROOT (lihat pengecualian DETAIL di
-    # validate_setting_account), bukan akun tujuan posting.
+    KEY_PIUTANG_USAHA: "AR_CONTROL",
+    KEY_HUTANG_USAHA: "AP_CONTROL",
+    KEY_BANK_CLEARING: "BANK_CLEARING",
+    KEY_HPP_PRODUK_JADI: "COGS_FINISHED_GOODS",
+    KEY_LABA_RUGI_TAHUN_BERJALAN: "CURRENT_EARNINGS",
+    KEY_LABA_DITAHAN: "RETAINED_EARNINGS",
+    KEY_PERSEDIAAN_BAHAN_BAKU: "INVENTORY_RAW",
+    KEY_PERSEDIAAN_BAHAN_PEMBANTU: "INVENTORY_AUX",
+    KEY_PERSEDIAAN_WIP: "INVENTORY_WIP",
+    KEY_PERSEDIAAN_BARANG_JADI: "INVENTORY_FINISHED",
 }
 
 # Key-key yang WAJIB di-configure agar auto-posting jurnal Sales/Purchase
 # (Order, Invoice, Retur) tidak gagal. Dipakai untuk startup check.
-#
-# AUD2-B2 — hanya key yang BENAR-BENAR dipakai jalur posting yang dianggap
-# kritis. Key lama yang dulu ikut terdaftar padahal tidak pernah dibaca
-# mesin posting (BANK_CLEARING, LABA_RUGI_TAHUN_BERJALAN, LABA_DITAHAN)
-# dikeluarkan agar "check kritis" tidak menyesatkan (tekanan konfigurasi
-# untuk fitur yang belum berjalan). KEY_HPP_PRODUK_JADI tetap kritis karena
-# dipakai resolve HPP barang jadi (persediaan_service).
 CRITICAL_KEYS = [
     KEY_PENDAPATAN_PENJUALAN,
     KEY_PPN_KELUARAN,
@@ -222,18 +174,12 @@ CRITICAL_KEYS = [
     KEY_PEMBELIAN,
     KEY_PPN_MASUKAN,
     KEY_RETUR_PEMBELIAN,
+    # === ASAHI COA Revisi v2 — keys yang wajib di-configure ===
+    KEY_BANK_CLEARING,
     KEY_HPP_PRODUK_JADI,
+    KEY_LABA_RUGI_TAHUN_BERJALAN,
+    KEY_LABA_DITAHAN,
 ]
-
-# Key cadangan (reserved — bukan kritikal): didefinisikan agar baris setting
-# yang sudah ada tetap valid dan dapat dikonfigurasi, namun BELUM dibaca
-# mesin posting:
-# - BANK_CLEARING  : transfer bank diposting langsung D kas tujuan / K kas
-#   asal (satu jurnal, kedua kaki atomik) — akun clearing 111200 disiapkan
-#   untuk pola dua-tahap bila kelak dibutuhkan (in-transit antar bank).
-# - LABA_DITAHAN   : tujuan transfer laba saat year-end closing (fase
-#   berikutnya; penutupan bulanan saat ini ke LABA_RUGI_TAHUN_BERJALAN).
-# - BEBAN_ADMIN    : belum memiliki modul pemakai.
 
 
 # === ASAHI #006 — Fallback auto-configure setting akun ===
@@ -472,61 +418,3 @@ def check_critical_settings(db: Session) -> list[str]:
     if not _cache:
         _load_all_settings(db)
     return [key for key in CRITICAL_KEYS if not _cache.get(key)]
-
-
-# ============================================================
-# AUD2-B3 — Validasi save-time akun tujuan setting
-# ============================================================
-def validate_setting_account(db: Session, key: str, akun_id: UUID) -> AkunPerkiraan:
-    """Validasi akun tujuan saat MENYIMPAN setting (PUT /master/setting-akun).
-
-    Dulu salah konfigurasi (mis. akun HEADER / akun tidak aktif / akun tipe
-    tak cocok) diterima tanpa peringatan dan baru ketahuan saat transaksi
-    BERIKUTNYA gagal posting. Validasi ini membuat kesalahan gagal CEPAT di
-    layar Setting Akun, dengan aturan yang selaras guard posting
-    (``posting_service.validate_entries``):
-
-    1. Akun ditemukan.
-    2. Tingkat DETAIL — posting menolak HEADER/GROUP (rule 4). SATU
-       pengecualian: ``KAS_DAN_SETARA_KAS`` adalah penunjuk ROOT (dipakai
-       ``_get_kas_detail_coa_ids`` untuk mencari descendant DETAIL lewat
-       recursive CTE — seeding-nya menunjuk GROUP 111000), jadi boleh
-       HEADER/GROUP/DETAIL.
-    3. Akun aktif (``active`` bukan False dan ``status`` AKTIF — rule 5).
-    4. ``system_account_type`` merupakan salah satu tipe yang diterima untuk
-       key tersebut (``SETTING_KEY_TO_SYSTEM_ACCOUNT_TYPE``) — divalidasi HANYA
-       bila kedua sisi terisi (akun legacy tanpa system_account_type dibiarkan
-       lewat agar tetap fleksibel). Sejak AUD2-B3-lanjutan, cakupan kini
-       mencakup key P&L: menunjuk PENDAPATAN_PENJUALAN ke akun bertipe beban
-       ditolak di sini (menutup skenario asli temuan audit B3-utama).
-
-    Raise ``ValueError`` dengan pesan siap-tampilkan.
-    Return objek AkunPerkiraan yang lolos validasi.
-    """
-    akun = db.get(AkunPerkiraan, akun_id)
-    if akun is None:
-        raise ValueError(f"Akun tidak ditemukan (id: {akun_id}).")
-    if (key != KEY_KAS_DAN_SETARA_KAS
-            and akun.tingkat != TingkatAkun.DETAIL):
-        # KAS_DAN_SETARA_KAS dikecualikan: key tersebut adalah penunjuk ROOT
-        # untuk recursive-CTE descendant kas (dropdown kas-bank & sync akun
-        # kas di master.py), bukan akun tujuan posting — seeder memang
-        # mengisinya dengan GROUP 111000 "Kas dan Setara Kas".
-        raise ValueError(
-            f"Akun {akun.kode} ({akun.nama}) bertingkat {getattr(akun.tingkat, 'value', akun.tingkat)} — "
-            "setting akun hanya boleh menunjuk akun DETAIL (bukan HEADER/GROUP)."
-        )
-    if akun.active is False or akun.status not in (None, "AKTIF"):
-        raise ValueError(
-            f"Akun {akun.kode} ({akun.nama}) tidak aktif — setting harus menunjuk akun aktif."
-        )
-    expected = SETTING_KEY_TO_SYSTEM_ACCOUNT_TYPE.get(key)
-    if (expected and akun.system_account_type
-            and akun.system_account_type not in expected):
-        raise ValueError(
-            f"Akun {akun.kode} ({akun.nama}) bertipe system_account_type="
-            f"{akun.system_account_type}, sedangkan key '{key}' mengharapkan "
-            f"salah satu dari: {', '.join(sorted(expected))}. Pilih akun dengan "
-            "tipe yang sesuai (atau akun legacy tanpa tipe khusus)."
-        )
-    return akun
