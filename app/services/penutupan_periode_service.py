@@ -29,59 +29,30 @@ def _get_periode_bounds(tahun: int, bulan: int) -> Tuple[datetime, datetime]:
     return month_bounds(tahun, bulan)
 
 
-def is_periode_closed(db: Session, tanggal: datetime, company_id=None) -> bool:
-    """Cek apakah tanggal jatuh di periode yang sudah ditutup (company-aware).
-
-    AUD-17 (update #05): penutupan bisa GLOBAL (company_id NULL → mengunci
-    semua perusahaan) atau khusus satu perusahaan. Aturan:
-    - ``company_id`` terisi (jurnal/dokumen milik perusahaan C) → terkunci
-      bila ada baris DITUTUP utk (tahun, bulan, C) ATAU (tahun, bulan, NULL).
-    - ``company_id`` None (tanpa perusahaan) → hanya terkunci baris global
-      (tahun, bulan, NULL).
-    """
+def is_periode_closed(db: Session, tanggal: datetime) -> bool:
+    """Cek apakah tanggal jatuh di periode yang sudah ditutup."""
     from app.services.reporting_ledger import local_datetime
     tanggal = local_datetime(tanggal)
     tahun = tanggal.year
     bulan = tanggal.month
-    query = db.query(PenutupanPeriode).filter(
-        PenutupanPeriode.tahun == tahun,
-        PenutupanPeriode.bulan == bulan,
-        PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+    record = (
+        db.query(PenutupanPeriode)
+        .filter(
+            PenutupanPeriode.tahun == tahun,
+            PenutupanPeriode.bulan == bulan,
+            PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+        )
+        .first()
     )
-    if company_id is not None:
-        from sqlalchemy import or_
-        query = query.filter(or_(
-            PenutupanPeriode.company_id == company_id,
-            PenutupanPeriode.company_id.is_(None),
-        ))
-    else:
-        query = query.filter(PenutupanPeriode.company_id.is_(None))
-    return query.first() is not None
+    return record is not None
 
 
-# Sentinel: company tidak diberikan eksplisit → resolve dari konteks posting
-# aktif (db.info['posting_company'], di-set workflow/decorator saat posting).
-_AUTO = object()
-
-
-def resolve_company(db: Session, company_id=_AUTO):
-    if company_id is _AUTO:
-        company_id = db.info.get('posting_company') if db is not None else None
-    return company_id
-
-
-def validate_periode_not_closed(db: Session, tanggal: datetime, context: str = "", company_id=_AUTO):
-    """Raise ValueError jika tanggal jatuh di periode yang sudah ditutup.
-
-    AUD-17: ``company_id`` eksplisit None = cek global saja; tanpa argumen
-    (AUTO) = resolve dari konteks posting ``db.info['posting_company']``.
-    """
-    company = resolve_company(db, company_id)
-    if is_periode_closed(db, tanggal, company):
+def validate_periode_not_closed(db: Session, tanggal: datetime, context: str = ""):
+    """Raise ValueError jika tanggal jatuh di periode yang sudah ditutup."""
+    if is_periode_closed(db, tanggal):
         ctx = f" ({context})" if context else ""
-        ctxt = "" if company is None else f" (perusahaan {company})"
         raise ValueError(
-            f"Periode {tanggal.strftime('%B %Y')} sudah ditutup{ctxt}. "
+            f"Periode {tanggal.strftime('%B %Y')} sudah ditutup. "
             f"Tidak bisa melakukan posting.{ctx}"
         )
 
@@ -96,13 +67,8 @@ def get_periode_list(
     status: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
-    company_id: Optional[UUID] = None,
 ) -> Tuple[List[PenutupanPeriode], int]:
-    """Ambil daftar penutupan periode dengan filter & pagination.
-
-    AUD-17: ``company_id`` terisi → hanya baris milik perusahaan tsb (plus
-    baris global bila None berarti tampilkan semua). Kosong → semua baris.
-    """
+    """Ambil daftar penutupan periode dengan filter & pagination."""
     query = db.query(PenutupanPeriode).options(
         joinedload(PenutupanPeriode.closer),
         joinedload(PenutupanPeriode.reopener),
@@ -113,10 +79,6 @@ def get_periode_list(
         query = query.filter(PenutupanPeriode.tahun == tahun)
     if status:
         query = query.filter(PenutupanPeriode.status == status)
-    if company_id is not None:
-        from sqlalchemy import or_
-        query = query.filter(or_(PenutupanPeriode.company_id == company_id,
-                                 PenutupanPeriode.company_id.is_(None)))
 
     total = query.count()
     data = query.order_by(PenutupanPeriode.tahun.desc(), PenutupanPeriode.bulan.desc()).offset(skip).limit(limit).all()
@@ -127,26 +89,6 @@ def get_periode_list(
 # TUTUP PERIODE
 # ============================================================
 
-def _validate_company_unit(db: Session, company_id: Optional[UUID]) -> None:
-    """AUD-17: pastikan unit company valid (kind COMPANY, AKTIF)."""
-    if company_id is None:
-        return
-    from app.models.organization import OrganizationUnit
-    unit = db.get(OrganizationUnit, company_id)
-    if unit is None or unit.kind != 'COMPANY':
-        raise ValueError('Perusahaan (companyId) tidak ditemukan atau bukan jenis COMPANY')
-    if unit.status != 'AKTIF':
-        raise ValueError('Perusahaan (companyId) tidak aktif')
-
-
-def _company_scope_filter(query, model, company_id: Optional[UUID]):
-    """Filter baris milik scope company: exact (C) untuk operasi scope C;
-    untuk scope global (None) hanya baris global."""
-    if company_id is not None:
-        return query.filter(model.company_id == company_id)
-    return query.filter(model.company_id.is_(None))
-
-
 @atomic_accounting_write
 def tutup_periode(
     db: Session,
@@ -155,17 +97,12 @@ def tutup_periode(
     user_id: UUID,
     keterangan: Optional[str] = None,
     with_closing_entry: bool = True,
-    company_id: Optional[UUID] = None,
 ) -> PenutupanPeriode:
-    """Tutup periode (tahun/bulan) — global (company NULL) atau per perusahaan.
-
-    AUD-17 (update #05): ``company_id`` terisi → menutup buku khusus
-    perusahaan tsb (jurnal penutupan & laba/rugi dihitung hanya dari jurnal
-    perusahaan itu); NULL → perilaku lama (global, semua dimensi).
+    """Tutup periode (tahun/bulan).
 
     1. Validasi: bulan 1-12, bukan bulan sekarang (harus sudah lewat)
-    2. Validasi: periode belum ditutup (scope company atau global)
-    3. Hitung laba/rugi periode (scoped)
+    2. Validasi: periode belum ditutup
+    3. Hitung laba/rugi periode
     4. (Opsional) Buat jurnal penutupan: zero-out PENDAPATAN/HPP/BEBAN, net ke LABA_RUGI_BERJALAN
        ⚠️  Jurnal HARUS dibuat SEBELUM status di-set DITUTUP, karena
           auto_posting_jurnal() punya period guard yang menolak posting ke periode tertutup.
@@ -175,8 +112,6 @@ def tutup_periode(
     # Validasi bulan
     if bulan < 1 or bulan > 12:
         raise ValueError(f"Bulan harus 1-12, diberikan: {bulan}")
-
-    _validate_company_unit(db, company_id)
 
     from app.services.reporting_ledger import JAKARTA
     now = datetime.now(JAKARTA)
@@ -190,59 +125,39 @@ def tutup_periode(
             f"Periode {tahun}-{bulan:02d}, sekarang {current_year}-{current_month:02d}."
         )
 
-    # Cek apakah sudah ada record untuk periode ini (scope company)
-    existing = _company_scope_filter(
-        db.query(PenutupanPeriode).filter(
-            PenutupanPeriode.tahun == tahun, PenutupanPeriode.bulan == bulan),
-        PenutupanPeriode, company_id).first()
+    # Cek apakah sudah ada record untuk periode ini
+    existing = (
+        db.query(PenutupanPeriode)
+        .filter(PenutupanPeriode.tahun == tahun, PenutupanPeriode.bulan == bulan)
+        .first()
+    )
     if existing and existing.status == StatusPeriode.DITUTUP.value:
         raise ValueError(f"Periode {tahun}-{bulan:02d} sudah ditutup.")
-    if company_id is not None:
-        global_closed = db.query(PenutupanPeriode).filter(
-            PenutupanPeriode.tahun == tahun, PenutupanPeriode.bulan == bulan,
-            PenutupanPeriode.company_id.is_(None),
-            PenutupanPeriode.status == StatusPeriode.DITUTUP.value).first()
-        if global_closed:
-            raise ValueError(
-                f"Periode {tahun}-{bulan:02d} sudah ditutup GLOBAL (mengunci semua "
-                f"perusahaan) — penutupan perusahaan ini tidak diperlukan."
-            )
 
     # Hitung batas periode
     date_from, date_to = _get_periode_bounds(tahun, bulan)
 
-    # AUD-17: scope komputasi (laba/rugi + jurnal penutupan) per perusahaan
-    # via report_scope; konteks posting_company untuk lookup setting akun.
-    previous_scope = db.info.get('report_scope')
-    db.info['posting_company'] = company_id
-    if company_id is not None:
-        db.info['report_scope'] = {'company_id': company_id}
-    try:
-        # Hitung laba/rugi: PENDAPATAN - HPP - BEBAN (scoped)
-        pendapatan = _saldo_per_akun_list(db, HeaderCOA.PENDAPATAN, date_from, date_to)
-        hpp = _saldo_per_akun_list(db, HeaderCOA.HPP, date_from, date_to)
-        beban = _saldo_per_akun_list(db, HeaderCOA.BEBAN, date_from, date_to)
+    # Hitung laba/rugi: PENDAPATAN - HPP - BEBAN
+    pendapatan = _saldo_per_akun_list(db, HeaderCOA.PENDAPATAN, date_from, date_to)
+    hpp = _saldo_per_akun_list(db, HeaderCOA.HPP, date_from, date_to)
+    beban = _saldo_per_akun_list(db, HeaderCOA.BEBAN, date_from, date_to)
 
-        total_pendapatan = sum((i["total"] for i in pendapatan), Decimal("0"))
-        total_hpp = sum((i["total"] for i in hpp), Decimal("0"))
-        total_beban = sum((i["total"] for i in beban), Decimal("0"))
+    total_pendapatan = sum((i["total"] for i in pendapatan), Decimal("0"))
+    total_hpp = sum((i["total"] for i in hpp), Decimal("0"))
+    total_beban = sum((i["total"] for i in beban), Decimal("0"))
 
-        laba_rugi = total_pendapatan - total_hpp - total_beban
+    laba_rugi = total_pendapatan - total_hpp - total_beban
 
-        # ⚠️  STEP 4a: Buat jurnal penutupan DULU, sebelum status DITUTUP.
-        jurnal_penutupan_id = None
-        if with_closing_entry:
-            try:
-                jurnal_penutupan_id = _close_by_organization(
-                    db, tahun, bulan, date_from, date_to, user_id, company_id=company_id)
-            except Exception as e:
-                raise ValueError(f"Jurnal penutupan gagal dibuat: {e}") from e
-    finally:
-        if previous_scope is not None:
-            db.info['report_scope'] = previous_scope
-        else:
-            db.info.pop('report_scope', None)
-        db.info.pop('posting_company', None)
+    # ⚠️  STEP 4a: Buat jurnal penutupan DULU, sebelum status DITUTUP.
+    #     auto_posting_jurnal() punya period guard yang menolak posting
+    #     ke periode yang sudah DITUTUP. Jika kita set DITUTUP dulu,
+    #     jurnal penutupan akan selalu gagal.
+    jurnal_penutupan_id = None
+    if with_closing_entry:
+        try:
+            jurnal_penutupan_id = _close_by_organization(db, tahun, bulan, date_from, date_to, user_id)
+        except Exception as e:
+            raise ValueError(f"Jurnal penutupan gagal dibuat: {e}") from e
 
     # STEP 4b: Baru set status DITUTUP
     if existing:
@@ -266,16 +181,14 @@ def tutup_periode(
             closed_at=now,
             created_by=user_id,
             jurnal_penutupan_id=jurnal_penutupan_id,
-            company_id=company_id,
         )
         db.add(pp)
         db.flush()
 
     db.commit()
     db.refresh(pp)
-    scope_label = 'global' if company_id is None else f'perusahaan {company_id}'
     logger.info(
-        f"Periode {tahun}-{bulan:02d} ({scope_label}) ditutup | laba_rugi={laba_rugi} | "
+        f"Periode {tahun}-{bulan:02d} ditutup | laba_rugi={laba_rugi} | "
         f"closing_entry={'YA' if jurnal_penutupan_id else 'TIDAK'}"
     )
     return pp
@@ -357,15 +270,24 @@ def _create_closing_entry(
         logger.info(f"Tidak ada jurnal penutupan untuk {tahun}-{bulan:02d} (semua saldo P&L = 0)")
         return None
 
-    # 4. Net ke LABA_RUGI_TAHUN_BERJALAN (322000)
-    # AUD-14 (update #04) — bug fix: sebelumnya memakai KEY_LABA_RUGI_BERJALAN
-    # (key legacy yang tidak pernah di-seed di DB → tutup periode dgn P&L ≠ 0
-    # selalu gagal ValueError runtime). Key kanonik COA v2 adalah
-    # KEY_LABA_RUGI_TAHUN_BERJALAN (LABA_RUGI_TAHUN_BERJALAN → 322000).
-    akun_lrb_id = sa_cfg.get_akun_id_or_raise(db, sa_cfg.KEY_LABA_RUGI_TAHUN_BERJALAN, f"Penutupan {tahun}-{bulan:02d}")
+    # 4. Net ke LABA_RUGI_BERJALAN — AUD2-B2: resolve key legacy lebih dulu,
+    #    lalu key COA v2 LABA_RUGI_TAHUN_BERJALAN (akun 322000, barisnya
+    #    ter-seed di COA v2; sebelumnya key v2 ini TIDAK PERNAH dibaca siapa
+    #    pun sehingga penutupan akan gagal di DB tanpa baris legacy).
+    akun_lrb_id = (
+        sa_cfg.get_setting_akun_id_optional(db, sa_cfg.KEY_LABA_RUGI_BERJALAN)
+        or sa_cfg.get_setting_akun_id_optional(db, sa_cfg.KEY_LABA_RUGI_TAHUN_BERJALAN)
+    )
+    if not akun_lrb_id:
+        raise ValueError(
+            "Setting akun laba/rugi berjalan belum di-configure — konfigurasikan "
+            "LABA_RUGI_TAHUN_BERJALAN (COA v2: akun 322000) melalui menu "
+            "Pengaturan → Setting Akun."
+        )
     retained = db.get(AkunPerkiraan, akun_lrb_id)
     if retained is None or retained.header != HeaderCOA.MODAL:
-        raise ValueError('Setting LABA_RUGI_BERJALAN harus menunjuk akun MODAL')
+        raise ValueError('Akun laba/rugi berjalan harus bertipe MODAL (ekuitas) — '
+                         'periksa konfigurasi LABA_RUGI_TAHUN_BERJALAN / LABA_RUGI_BERJALAN.')
     if laba_rugi > 0:
         # Laba: kredit LabaRugiBerjalan
         entries.append(JurnalEntryItem(
@@ -435,12 +357,8 @@ def _validate_reopen_authorization(user) -> None:
         )
 
 
-def _validate_sequential_reopen(db: Session, tahun: int, bulan: int, company_id=None) -> None:
+def _validate_sequential_reopen(db: Session, tahun: int, bulan: int) -> None:
     """Cek apakah tidak ada periode setelah (tahun, bulan) yang masih DITUTUP.
-
-    AUD-17: scope perusahaan — baris yang dianggap hanya milik scope
-    (company C atau global NULL); penutupan perusahaan LAIN tidak memblokir
-    pembukaan scope ini.
 
     Sesuai Master Roadmap §25:
         "Sequential reopen"
@@ -458,7 +376,6 @@ def _validate_sequential_reopen(db: Session, tahun: int, bulan: int, company_id=
         db: SQLAlchemy Session
         tahun: tahun periode yang akan di-reopen
         bulan: bulan periode yang akan di-reopen
-        company_id: scope perusahaan (None = global)
 
     Raises:
         ValueError kalau ada periode setelahnya yang masih DITUTUP
@@ -467,8 +384,8 @@ def _validate_sequential_reopen(db: Session, tahun: int, bulan: int, company_id=
     after_tahun = tahun + (1 if bulan == 12 else 0)
     after_bulan = 1 if bulan == 12 else bulan + 1
 
-    # Cari periode DITUTUP setelah (tahun, bulan) — scope company/global
-    query = (
+    # Cari periode DITUTUP setelah (tahun, bulan)
+    later_closed = (
         db.query(PenutupanPeriode)
         .filter(
             PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
@@ -478,12 +395,9 @@ def _validate_sequential_reopen(db: Session, tahun: int, bulan: int, company_id=
                 ((PenutupanPeriode.tahun == tahun) & (PenutupanPeriode.bulan > bulan))
             ),
         )
+        .order_by(PenutupanPeriode.tahun.desc(), PenutupanPeriode.bulan.desc())
+        .first()
     )
-    from sqlalchemy import or_
-    query = query.filter(or_(PenutupanPeriode.company_id.is_(None),
-                             PenutupanPeriode.company_id == company_id))
-    later_closed = query.order_by(
-        PenutupanPeriode.tahun.desc(), PenutupanPeriode.bulan.desc()).first()
 
     if later_closed:
         raise ValueError(
@@ -502,14 +416,8 @@ def buka_periode(
     user_id: UUID,
     alasan: Optional[str] = None,
     user=None,
-    company_id: Optional[UUID] = None,
 ) -> PenutupanPeriode:
-    """Buka kembali periode yang sudah ditutup (global atau scope perusahaan).
-
-    AUD-17: ``company_id`` terisi → membuka baris penutupan perusahaan tsb;
-    jurnal penutupan CL-{tahun}-{bulan} milik perusahaan itulah yang dibalik
-    (idempotent terhadap pembalik existing). NULL → perilaku lama (global:
-    semua jurnal penutupan periode dibalik).
+    """Buka kembali periode yang sudah ditutup.
 
     Phase 8 — Sesuai Master Roadmap §25:
         - "Reopen reason + authorization" — wajib alasan + user harus manajer/admin
@@ -520,8 +428,6 @@ def buka_periode(
     """
     if bulan < 1 or bulan > 12:
         raise ValueError(f"Bulan harus 1-12, diberikan: {bulan}")
-
-    _validate_company_unit(db, company_id)
 
     # === Phase 8: Enforce authorization (manager/admin only) ===
     if user is not None:
@@ -534,29 +440,27 @@ def buka_periode(
             "Contoh: 'Koreksi jurnal periode sebelumnya', 'Adjustment audit', dll."
         )
 
-    pp = _company_scope_filter(
-        db.query(PenutupanPeriode).filter(
+    pp = (
+        db.query(PenutupanPeriode)
+        .filter(
             PenutupanPeriode.tahun == tahun,
             PenutupanPeriode.bulan == bulan,
             PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
-        ),
-        PenutupanPeriode, company_id).first()
+        )
+        .first()
+    )
     if not pp:
         raise ValueError(f"Periode {tahun}-{bulan:02d} tidak ditemukan atau tidak dalam status DITUTUP.")
 
-    # === Phase 8: Enforce sequential reopen (AUD-17: per scope company) ===
-    _validate_sequential_reopen(db, tahun, bulan, company_id)
+    # === Phase 8: Enforce sequential reopen ===
+    _validate_sequential_reopen(db, tahun, bulan)
 
     now = datetime.now(timezone.utc)
     pp.status = StatusPeriode.DIBUKA.value
     db.flush()
     closing_journals = db.query(JurnalUmum).filter(
         JurnalUmum.ref_module == RefModule.PENUTUPAN_PERIODE,
-        JurnalUmum.ref_no == f"CL-{tahun}-{bulan:02d}", JurnalUmum.reversal_of_id.is_(None))
-    # AUD-17: scope perusahaan → hanya jurnal penutupan milik perusahaan itu.
-    if company_id is not None:
-        closing_journals = closing_journals.filter(JurnalUmum.company_id == company_id)
-    closing_journals = closing_journals.all()
+        JurnalUmum.ref_no == f"CL-{tahun}-{bulan:02d}", JurnalUmum.reversal_of_id.is_(None)).all()
     identifiers = {j.id for j in closing_journals}
     if pp.jurnal_penutupan_id:
         identifiers.add(pp.jurnal_penutupan_id)
@@ -568,8 +472,7 @@ def buka_periode(
 
     db.commit()
     db.refresh(pp)
-    scope_label = 'global' if company_id is None else f'perusahaan {company_id}'
-    logger.info(f"Periode {tahun}-{bulan:02d} ({scope_label}) dibuka kembali oleh user {user_id} | alasan: {alasan}")
+    logger.info(f"Periode {tahun}-{bulan:02d} dibuka kembali oleh user {user_id} | alasan: {alasan}")
     return pp
 
 
@@ -713,21 +616,13 @@ def get_periode_status(db: Session, tahun: int, bulan: int) -> Optional[dict]:
     }
 
 
-def _close_by_organization(db, tahun, bulan, date_from, date_to, user_id, company_id=None):
-    """Close each exact dimension tuple, retaining balanced branch/project journals.
-
-    AUD-17: ``company_id`` terisi → hanya tuple jurnal perusahaan tsb yang
-    di-zero-out (penutupan buku perusahaan); None → semua tuple (global).
-    """
+def _close_by_organization(db, tahun, bulan, date_from, date_to, user_id):
+    """Close each exact dimension tuple, retaining balanced branch/project journals."""
     from app.models.organization import FIELDS
     from app.services import reporting_ledger as gl
     columns = [getattr(JurnalUmum, field) for field in FIELDS]
     groups = db.query(*columns).filter(JurnalUmum.status == StatusJurnal.POSTED,
         JurnalUmum.tanggal >= date_from, JurnalUmum.tanggal <= date_to).distinct().all() or [tuple(None for _ in FIELDS)]
-    if company_id is not None:
-        # Penutupan per perusahaan: hanya tuple milik perusahaan itu
-        # (tuple tanpa perusahaan = buku global, ditutup penutupan global).
-        groups = [g for g in groups if g[0] == company_id] or [tuple(company_id, *(None for _ in FIELDS[1:]))]
     first = None
     previous_scope = db.info.pop('report_scope', None)
     try:
@@ -748,316 +643,3 @@ def _close_by_organization(db, tahun, bulan, date_from, date_to, user_id, compan
         if previous_scope is not None:
             db.info['report_scope'] = previous_scope
     return first
-
-
-# ============================================================
-# AUD-14 (update #04) — CLOSING TAHUNAN
-# Transfer saldo LABA_RUGI_TAHUN_BERJALAN (322000) → LABA_DITAHAN (321000)
-# ============================================================
-from datetime import date as _date_mod  # noqa: E402
-from app.models.transaksi.penutupan_tahun import PenutupanTahun  # noqa: E402
-from app.services.reporting_ledger import JAKARTA  # noqa: E402
-
-YEAR_REF_NO = "CL-YEAR-{tahun}"
-
-
-def _year_end(tahun: int) -> datetime:
-    from app.services.reporting_ledger import day_end
-    return day_end(_date_mod(tahun, 12, 31))
-
-
-def _laba_berjalan_saldo_per_organisasi(db: Session, akun_lrb_id: UUID, sampai: datetime,
-                                        company_id: Optional[UUID] = None):
-    """Saldo (kredit − debit) akun 322000 per tuple dimensi organisasi s/d `sampai`.
-
-    Saldonya mencerminkan hasil jurnal penutupan bulanan (zero-out P&L per
-    bulan dialirkan ke 322000) + selisih lain yang menyentuh akun tsb.
-
-    AUD-17: ``company_id`` terisi → hanya tuple perusahaan tsb.
-    """
-    from app.models.organization import FIELDS
-    columns = [getattr(JurnalUmum, field) for field in FIELDS]
-    rows = (
-        db.query(
-            *columns,
-            func.coalesce(func.sum(JurnalDetail.kredit), 0)
-            - func.coalesce(func.sum(JurnalDetail.debit), 0),
-        )
-        .join(JurnalDetail, JurnalDetail.jurnal_umum_id == JurnalUmum.id)
-        .filter(
-            JurnalDetail.akun_perkiraan_id == akun_lrb_id,
-            JurnalUmum.status == StatusJurnal.POSTED,
-            JurnalUmum.tanggal <= sampai,
-            # Kecualikan jurnal transfer tahunan sendiri (idempotensi re-close)
-            JurnalUmum.ref_no != YEAR_REF_NO.format(tahun=sampai.year),
-        )
-    )
-    if company_id is not None:
-        rows = rows.filter(JurnalUmum.company_id == company_id)
-    rows = rows.group_by(*columns).all()
-    return rows
-
-
-def get_tahun_list(db: Session, company_id: Optional[UUID] = None) -> List[dict]:
-    """Daftar tahun buku + status penutupan (untuk UI Penutupan Periode).
-
-    AUD-17: scope perusahaan — record tahun & bulan DITUTUP yang dihitung
-    hanya milik scope (perusahaan C atau global NULL).
-    """
-    records = _company_scope_filter(
-        db.query(PenutupanTahun), PenutupanTahun, company_id).order_by(PenutupanTahun.tahun.desc()).all()
-    by_year = {r.tahun: r for r in records}
-    min_year = db.query(func.min(func.extract('year', JurnalUmum.tanggal))).scalar()
-    today = datetime.now(JAKARTA).date()
-    years = set(by_year.keys())
-    if min_year:
-        years.add(int(min_year))
-    years.add(today.year - 1)
-    from sqlalchemy import or_
-    scope_months = or_(PenutupanPeriode.company_id.is_(None),
-                       PenutupanPeriode.company_id == company_id)
-    result = []
-    for tahun in sorted((y for y in years if y), reverse=True):
-        rec = by_year.get(tahun)
-        # Status Desember (proxy: seluruh tahun harus DITUTUP sebelum tutup tahun)
-        months_closed = (
-            db.query(func.count(func.distinct(PenutupanPeriode.bulan)))
-            .filter(
-                PenutupanPeriode.tahun == tahun,
-                PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
-                PenutupanPeriode.bulan <= 12,
-                scope_months,
-            )
-            .scalar()
-        ) or 0
-        # camelCase — kontrak wire frontend (laporan penutupan periode)
-        result.append({
-            "tahun": tahun,
-            "status": rec.status if rec else "TERBUKA",
-            "labaRugi": str(rec.laba_rugi) if (rec and rec.laba_rugi is not None) else None,
-            "bulanDitutup": int(months_closed),
-            "semuaBulanDitutup": int(months_closed) == 12,
-            "keterangan": rec.keterangan if rec else None,
-            "companyId": str(rec.company_id) if rec and rec.company_id else None,
-            "closedAt": rec.closed_at.isoformat() if (rec and rec.closed_at) else None,
-            "reopenedAt": rec.reopened_at.isoformat() if (rec and rec.reopened_at) else None,
-            "jurnalPenutupanId": str(rec.jurnal_penutupan_id) if (rec and rec.jurnal_penutupan_id) else None,
-        })
-    return result
-
-
-@atomic_accounting_write
-def tutup_tahun(
-    db: Session,
-    tahun: int,
-    user_id: UUID,
-    keterangan: Optional[str] = None,
-    with_closing_entry: bool = True,
-    company_id: Optional[UUID] = None,
-) -> PenutupanTahun:
-    """Tutup tahun buku: transfer laba berjalan → laba ditahan (scope company).
-
-    AUD-17: ``company_id`` terisi → transfer hanya saldo 322000 milik tuple
-    perusahaan tsb & record tahun per perusahaan; NULL → global (semua tuple).
-
-    Guard:
-    1. Tahun harus sudah berlalu (bukan tahun berjalan/masa depan).
-    2. Ke-12 bulan tahun tsb sudah DITUTUP (scope: global ATAU perusahaan ini).
-    3. Tahun belum ditutup (status DITUTUP ditolak).
-    4. Jurnal transfer dibuat SEBELUM flag DITUTUP — dan karena Desember
-       sudah terkunci, jurnal penutupan tahunan memakai bypass
-       ``allow_closed_period`` (hanya untuk RefModule.PENUTUPAN_PERIODE).
-    """
-    now = datetime.now(JAKARTA)
-    if tahun >= now.year:
-        raise ValueError(
-            f"Tidak bisa menutup tahun buku yang belum berakhir "
-            f"(tahun {tahun}, sekarang {now.year})."
-        )
-    _validate_company_unit(db, company_id)
-    existing = _company_scope_filter(
-        db.query(PenutupanTahun).filter(PenutupanTahun.tahun == tahun),
-        PenutupanTahun, company_id).first()
-    if existing and existing.status == "DITUTUP":
-        raise ValueError(f"Tahun buku {tahun} sudah ditutup.")
-
-    # AUD-17: cek 12 bulan DITUTUP per scope (global atau perusahaan ini).
-    from sqlalchemy import or_
-    month_scope = or_(PenutupanPeriode.company_id.is_(None),
-                      PenutupanPeriode.company_id == company_id)
-    closed_months = {row[0] for row in (
-        db.query(PenutupanPeriode.bulan).filter(
-            PenutupanPeriode.tahun == tahun,
-            PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
-            month_scope).distinct().all())}
-    if len(closed_months) < 12:
-        open_months = [b for b in range(1, 13) if b not in closed_months]
-        raise ValueError(
-            f"Semua 12 bulan tahun {tahun} harus DITUTUP sebelum tutup tahun "
-            f"(baru {len(closed_months)}/12; belum: bulan {open_months})."
-        )
-
-    year_end = _year_end(tahun)
-    jurnal_penutupan_id = None
-    laba_rugi_total = Decimal("0")
-
-    if with_closing_entry:
-        akun_lrb_id = sa_cfg.get_akun_id_or_raise(db, sa_cfg.KEY_LABA_RUGI_TAHUN_BERJALAN, f"Tutup tahun {tahun}")
-        akun_ld_id = sa_cfg.get_akun_id_or_raise(db, sa_cfg.KEY_LABA_DITAHAN, f"Tutup tahun {tahun}")
-        for akun_id, label in ((akun_lrb_id, "Laba (Rugi) Tahun Berjalan"), (akun_ld_id, "Laba (Rugi) Ditahan")):
-            akun = db.get(AkunPerkiraan, akun_id)
-            if akun is None or akun.header != HeaderCOA.MODAL:
-                raise ValueError(f"Setting akun untuk {label} harus menunjuk akun MODAL")
-
-        from app.models.organization import FIELDS
-        first = None
-        # AUD-17: scope perusahaan → hanya tuple perusahaan tsb yang ditransfer.
-        for group in _laba_berjalan_saldo_per_organisasi(db, akun_lrb_id, year_end, company_id=company_id):
-            org = dict(zip(FIELDS, group[:-1]))
-            saldo_kredit = group[-1]
-            if saldo_kredit == 0:
-                continue
-            laba_rugi_total += saldo_kredit
-            saldo_abs = abs(saldo_kredit)
-            if saldo_kredit > 0:
-                # Laba: D 322000 (nol-kan laba berjalan) / K 321000 (tahan laba)
-                entries = [
-                    JurnalEntryItem(akun_perkiraan_id=akun_lrb_id, debit=saldo_abs,
-                                    keterangan=f"Transfer laba tahun {tahun}"),
-                    JurnalEntryItem(akun_perkiraan_id=akun_ld_id, kredit=saldo_abs,
-                                    keterangan=f"Laba ditahan tahun {tahun}"),
-                ]
-            else:
-                # Rugi: D 321000 / K 322000
-                entries = [
-                    JurnalEntryItem(akun_perkiraan_id=akun_ld_id, debit=saldo_abs,
-                                    keterangan=f"Tutup rugi tahun {tahun}"),
-                    JurnalEntryItem(akun_perkiraan_id=akun_lrb_id, kredit=saldo_abs,
-                                    keterangan=f"Rugi tahun {tahun} ditahan"),
-                ]
-            jurnal = auto_posting_jurnal(
-                db=db,
-                ref_module=RefModule.PENUTUPAN_PERIODE,
-                ref_no=YEAR_REF_NO.format(tahun=tahun),
-                entries=entries,
-                keterangan=f"Jurnal Penutupan Tahun {tahun} | Laba/Rugi: {saldo_kredit}",
-                tanggal=year_end,
-                created_by=user_id,
-                status=StatusJurnal.POSTED,
-                allow_inactive_accounts=True,
-                organization=org,
-                allow_closed_period=True,  # AUD-14 — Desember sudah terkunci
-            )
-            first = first or jurnal.id
-        jurnal_penutupan_id = first
-    else:
-        # Tanpa closing entry: laba/rugi tahun = saldo 322000 (informasional)
-        try:
-            from app.services import setting_akun_service as _cfg
-            lid = _cfg.get_setting_akun_id_optional(db, _cfg.KEY_LABA_RUGI_TAHUN_BERJALAN)
-            if lid:
-                saldo = (
-                    db.query(func.coalesce(func.sum(JurnalDetail.kredit), 0)
-                             - func.coalesce(func.sum(JurnalDetail.debit), 0))
-                    .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
-                    .filter(JurnalDetail.akun_perkiraan_id == lid,
-                            JurnalUmum.status == StatusJurnal.POSTED,
-                            JurnalUmum.tanggal <= year_end)
-                    .scalar()
-                )
-                laba_rugi_total = saldo or Decimal("0")
-        except Exception:  # noqa: BLE001
-            laba_rugi_total = Decimal("0")
-
-    if existing:
-        rec = existing
-        rec.status = "DITUTUP"
-        rec.laba_rugi = laba_rugi_total
-        rec.keterangan = keterangan
-        rec.closed_by = user_id
-        rec.closed_at = now
-        rec.reopened_by = None
-        rec.reopened_at = None
-        rec.reopen_alasan = None
-        rec.jurnal_penutupan_id = jurnal_penutupan_id
-    else:
-        rec = PenutupanTahun(
-            tahun=tahun,
-            status="DITUTUP",
-            laba_rugi=laba_rugi_total,
-            keterangan=keterangan,
-            closed_by=user_id,
-            closed_at=now,
-            created_by=user_id,
-            jurnal_penutupan_id=jurnal_penutupan_id,
-            company_id=company_id,
-        )
-        db.add(rec)
-    db.flush()
-    db.commit()
-    db.refresh(rec)
-    scope_label = 'global' if company_id is None else f'perusahaan {company_id}'
-    logger.info(
-        f"Tahun buku {tahun} ({scope_label}) ditutup | laba_rugi={laba_rugi_total} | "
-        f"closing_entry={'YA' if jurnal_penutupan_id else 'TIDAK'}"
-    )
-    return rec
-
-
-@atomic_accounting_write
-def buka_tahun(
-    db: Session,
-    tahun: int,
-    user_id: UUID,
-    alasan: Optional[str] = None,
-    user=None,
-    company_id: Optional[UUID] = None,
-) -> PenutupanTahun:
-    """Buka kembali tahun buku yang sudah ditutup (reversal jurnal transfer).
-
-    AUD-17: ``company_id`` terisi → membuka record tahun perusahaan tsb &
-    hanya jurnal transfer CL-YEAR milik perusahaan itu yang dibalik.
-
-    - Alasan wajib + hanya manajer/admin (pola buka_periode).
-    - Jurnal transfer CL-YEAR-{tahun} dibalik (audit trail tetap utuh);
-      jurnal pembalik bertanggal hari ini (periode terbuka).
-    - Bulan-bulan tetap DITUTUP — buka bulan tertentu lewat buka_periode
-      (urutan yang benar: buka tahun dulu, lalu buka bulan).
-    """
-    if user is not None:
-        _validate_reopen_authorization(user)
-    if not alasan or not alasan.strip():
-        raise ValueError("Alasan pembukaan kembali tahun buku wajib diisi.")
-
-    _validate_company_unit(db, company_id)
-    rec = _company_scope_filter(
-        db.query(PenutupanTahun).filter(
-            PenutupanTahun.tahun == tahun, PenutupanTahun.status == "DITUTUP"),
-        PenutupanTahun, company_id).first()
-    if not rec:
-        raise ValueError(f"Tahun buku {tahun} tidak ditemukan atau tidak dalam status DITUTUP.")
-
-    closing_journals = db.query(JurnalUmum).filter(
-        JurnalUmum.ref_module == RefModule.PENUTUPAN_PERIODE,
-        JurnalUmum.ref_no == YEAR_REF_NO.format(tahun=tahun),
-        JurnalUmum.reversal_of_id.is_(None),
-    )
-    if company_id is not None:
-        closing_journals = closing_journals.filter(JurnalUmum.company_id == company_id)
-    closing_journals = closing_journals.all()
-    identifiers = {j.id for j in closing_journals}
-    if rec.jurnal_penutupan_id:
-        identifiers.add(rec.jurnal_penutupan_id)
-    for identifier in sorted(identifiers, key=str):
-        reverse_journal(db, identifier, user_id, f"Buka kembali tahun buku {tahun}")
-
-    now_utc = datetime.now(timezone.utc)
-    rec.status = "DIBUKA"
-    rec.reopened_by = user_id
-    rec.reopened_at = now_utc
-    rec.reopen_alasan = alasan.strip()
-    db.flush()
-    db.commit()
-    db.refresh(rec)
-    logger.info(f"Tahun buku {tahun} dibuka kembali oleh {user_id} | alasan: {alasan}")
-    return rec

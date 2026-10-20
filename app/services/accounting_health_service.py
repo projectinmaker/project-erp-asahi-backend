@@ -28,8 +28,9 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
+from app.models.akun_perkiraan import AkunPerkiraan
 from app.models.transaksi.jurnal import JurnalUmum, StatusJurnal
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.services import setting_akun_service as sa_cfg
@@ -207,17 +208,25 @@ def get_accounting_health(
 # Helpers for individual reconciliation checks
 # ==========================================
 def _get_ar_ap_reconciliation(db: Session, jenis: str, as_of: datetime) -> Dict:
-    """Check AR Aging = AR GL or AP Aging = AP GL."""
+    """Check AR Aging = AR GL or AP Aging = AP GL.
+
+    AUD2-D3a — dua koreksi agar check tidak lagi menghasilkan MATCH palsu:
+    1. Sisi aging memakai key ``total`` per pihak (Σ sisa_tagihan) — key
+       ``sisa_tagihan`` hanya ada di rincian per invoice, sehingga pembacaan
+       lama selalu 0 (0 = 0 → "MATCH").
+    2. Sisi GL mengagregasi akun kontrol + SELURUH subledger per pihak di
+       bawahnya (tempat posting aktual menempel), bukan akun kontrol saja.
+    """
     try:
         from app.services.aging_service import aging
         aging_report = aging(db, "piutang" if jenis == "AR" else "hutang", as_of)
 
-        # Sum outstanding from aging
+        # Sum outstanding from aging — per pihak (key 'total' = Σ sisa_tagihan).
         total_outstanding = Decimal("0")
         for item in aging_report.get("items", []):
-            total_outstanding += Decimal(str(item.get("sisa_tagihan", 0)))
+            total_outstanding += Decimal(str(item.get("total", 0)))
 
-        # GL balance for AR/AP control accounts
+        # GL balance for AR/AP: kontrol + seluruh subledger di bawahnya.
         setting_key = sa_cfg.KEY_PIUTANG_USAHA if jenis == "AR" else sa_cfg.KEY_HUTANG_USAHA
         control_account_id = sa_cfg.get_akun_id(db, setting_key)
 
@@ -229,7 +238,7 @@ def _get_ar_ap_reconciliation(db: Session, jenis: str, as_of: datetime) -> Dict:
                 "detail": f"Setting {setting_key} belum di-configure",
             }
 
-        gl_balance = _get_gl_balance_for_account(db, control_account_id, as_of)
+        gl_balance = _get_gl_balance_ar_ap(db, control_account_id, as_of)
         # AR is DEBIT normal → positive; AP is KREDIT normal → positive = kredit - debit
         if jenis == "AR":
             gl_balance_positive = gl_balance  # debit - kredit
@@ -239,11 +248,26 @@ def _get_ar_ap_reconciliation(db: Session, jenis: str, as_of: datetime) -> Dict:
         selisih = total_outstanding - gl_balance_positive
         match = abs(selisih) < Decimal("0.01")
 
+        detail = (
+            f"Aging outstanding: {total_outstanding}, GL (kontrol + subledger): {gl_balance_positive}"
+        )
+        if not match:
+            # Reklasifikasi identifikasi/pelunasan yang tercatat SETELAH as_of
+            # mengurangi outstanding secara retroaktif (aging memakai tanggal
+            # efektif pembayaran; GL memakai tanggal jurnal) — beda waktu, bukan
+            # selisih data. Default as-of (hari berjalan ≥ semua jurnal) bebas
+            # dari artefak ini.
+            detail += (
+                ". Periksa jurnal identifikasi/pelunasan bertanggal SETELAH as-of "
+                "(reklasifikasi retroaktif) — bila tidak ada, selisih ini perlu "
+                "ditelusuri (subledger vs GL)."
+            )
+
         return {
             "name": f"{jenis} Aging vs GL",
             "status": "MATCH" if match else "MISMATCH",
             "selisih": str(selisih),
-            "detail": f"Aging outstanding: {total_outstanding}, GL balance: {gl_balance_positive}",
+            "detail": detail,
         }
     except Exception as e:
         # Rollback agar transaksi yang gagal tidak meracuni session
@@ -317,7 +341,17 @@ def _get_asset_register_reconciliation(db: Session, as_of: datetime) -> Dict:
 
 
 def _get_cash_bank_reconciliation(db: Session, as_of: datetime) -> Dict:
-    """Check Cash/Bank Ledger = Cash/Bank GL."""
+    """Check Cash/Bank Ledger = Cash/Bank GL.
+
+    AUD2-D3b — KasBankAkun.saldo disinkronkan pada saat posting untuk SEMUA
+    jurnal POSTED tanpa memandang tanggal jurnal (termasuk jurnal yang
+    bertanggal di masa depan), sedangkan GL dibatasi ``as_of``. Membandingkan
+    keduanya pada basis tanggal berbeda menghasilkan MISMATCH semu
+    (observasi live: 1.710.000). Check kini membandingkan master ledger vs
+    saldo GL atas himpunan jurnal yang SAMA (seluruh POSTED) — inilah yang
+    benar-benar divalidasi: sinkronisasi ledger kas vs buku besar. Angka
+    per ``as_of`` tetap tersedia di buku besar / neraca (basis GL murni).
+    """
     try:
         from app.models.master.kas_bank_akun import KasBankAkun
         cash_account_ids = [r[0] for r in db.query(KasBankAkun.akun_perkiraan_id).all() if r[0]]
@@ -330,23 +364,27 @@ def _get_cash_bank_reconciliation(db: Session, as_of: datetime) -> Dict:
                 "detail": "Tidak ada akun kas/bank di master",
             }
 
-        # KasBankAkun.saldo vs GL balance
+        # KasBankAkun.saldo vs GL balance — basis konsisten: seluruh jurnal POSTED.
         total_master_saldo = Decimal("0")
         for kb_id in cash_account_ids:
             kb = db.query(KasBankAkun).filter_by(akun_perkiraan_id=kb_id).first()
             if kb:
                 total_master_saldo += Decimal(str(kb.saldo or 0))
 
-        gl_balance = _get_gl_balance_multi_accounts(db, cash_account_ids, as_of)
+        gl_balance = _get_gl_balance_multi_accounts(db, cash_account_ids, None)
 
         selisih = total_master_saldo - gl_balance
         match = abs(selisih) < Decimal("0.01")
 
+        gl_as_of = _get_gl_balance_multi_accounts(db, cash_account_ids, as_of)
         return {
             "name": "Cash/Bank vs GL",
             "status": "MATCH" if match else "MISMATCH",
             "selisih": str(selisih),
-            "detail": f"Master saldo: {total_master_saldo}, GL: {gl_balance}",
+            "detail": (
+                f"Master saldo: {total_master_saldo}, GL (semua jurnal POSTED): {gl_balance}"
+                f"; GL per as-of {as_of.date()}: {gl_as_of}"
+            ),
         }
     except Exception as e:
         db.rollback()
@@ -428,7 +466,10 @@ def _get_equity_vs_bs_status(db: Session, date_from: datetime, date_to: datetime
 # GL balance helpers
 # ==========================================
 def _get_gl_balance_for_account(db: Session, akun_id: UUID, as_of: datetime) -> Decimal:
-    """Get GL balance (debit - kredit) for single account up to as_of."""
+    """Get GL balance (debit - kredit) for single account up to as_of.
+
+    ``as_of=None`` berarti tanpa batas tanggal (seluruh jurnal POSTED).
+    """
     row = (
         db.query(
             func.coalesce(func.sum(JurnalDetail.debit), 0),
@@ -438,15 +479,38 @@ def _get_gl_balance_for_account(db: Session, akun_id: UUID, as_of: datetime) -> 
         .filter(
             JurnalDetail.akun_perkiraan_id == akun_id,
             JurnalUmum.status == StatusJurnal.POSTED,
-            JurnalUmum.tanggal <= as_of,
         )
-        .first()
     )
+    if as_of is not None:
+        row = row.filter(JurnalUmum.tanggal <= as_of)
+    row = row.first()
     return Decimal(str(row[0] or 0)) - Decimal(str(row[1] or 0))
 
 
-def _get_gl_balance_multi_accounts(db: Session, akun_ids: List[UUID], as_of: datetime) -> Decimal:
-    """Get GL balance (debit - kredit) for multiple accounts up to as_of."""
+def _get_gl_balance_ar_ap(db: Session, control_account_id: UUID, as_of: datetime) -> Decimal:
+    """Saldo GL (debit - kredit) akun kontrol AR/AP + seluruh subledger bawahnya.
+
+    Posting piutang/hutang aktual menempel di akun subledger per pihak
+    (anak kontrol — induk_id / induk_kode menunjuk kontrol); akun kontrol
+    sendiri hanya menerima baris legacy langsung. Mengagregasi keduanya
+    mencegah "MATCH palsu 0=0" (AUD2-D3a).
+    """
+    account_ids = {control_account_id}
+    control = db.get(AkunPerkiraan, control_account_id)
+    if control is not None:
+        children = db.query(AkunPerkiraan.id).filter(
+            or_(AkunPerkiraan.induk_id == control_account_id,
+                AkunPerkiraan.induk_kode == control.kode)
+        ).all()
+        account_ids |= {r[0] for r in children}
+    return _get_gl_balance_multi_accounts(db, list(account_ids), as_of)
+
+
+def _get_gl_balance_multi_accounts(db: Session, akun_ids: List[UUID], as_of: Optional[datetime]) -> Decimal:
+    """Get GL balance (debit - kredit) for multiple accounts up to as_of.
+
+    ``as_of=None`` berarti tanpa batas tanggal (seluruh jurnal POSTED).
+    """
     if not akun_ids:
         return Decimal("0")
     row = (
@@ -458,8 +522,9 @@ def _get_gl_balance_multi_accounts(db: Session, akun_ids: List[UUID], as_of: dat
         .filter(
             JurnalDetail.akun_perkiraan_id.in_(akun_ids),
             JurnalUmum.status == StatusJurnal.POSTED,
-            JurnalUmum.tanggal <= as_of,
         )
-        .first()
     )
+    if as_of is not None:
+        row = row.filter(JurnalUmum.tanggal <= as_of)
+    row = row.first()
     return Decimal(str(row[0] or 0)) - Decimal(str(row[1] or 0))

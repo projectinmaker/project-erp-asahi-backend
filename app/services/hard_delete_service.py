@@ -107,6 +107,21 @@ def _status_value(obj):
 # GUARDS (tiru cancel_* lama, tanpa set status BATAL)
 # ============================================================
 
+def _active_payment_ids(db: Session, ar: bool):
+    """Subquery ID pembayaran aktif (jurnal POSTED tanpa jurnal pembalik).
+
+    Definisi identik dengan ``settlement_service.active_documents`` — sumber
+    kebenaran perhitungan outstanding — sehingga guard alokasi dan angka
+    tagihan selalu sependapat. AUD2-E1: baris alokasi milik pembayaran yang
+    SUDAH DIBATALKAN tidak lagi memblokir pembatalan invoice (residu lama
+    tetap inert untuk perhitungan outstanding, tapi tidak mengunci dokumen).
+    """
+    from app.services import settlement_service as settlement
+    from app.models import PenerimaanKas, PembayaranKas
+    payment_model = PenerimaanKas if ar else PembayaranKas
+    return settlement.active_documents(db, payment_model).scalar_subquery()
+
+
 def _apply_guards(db: Session, document_type: str, obj):
     status = _status_value(obj)
 
@@ -116,9 +131,15 @@ def _apply_guards(db: Session, document_type: str, obj):
             'Dokumen sudah mengubah stok — tidak dapat dihapus. Gunakan retur/penyesuaian stok.'
         )
 
-    # 2. Invoice dengan referensi silang (alokasi pelunasan / retur / penerimaan).
+    # 2. Invoice dengan referensi silang (alokasi pelunasan AKTIF / retur /
+    #    penerimaan). AUD2-E1: hanya alokasi milik pembayaran aktif yang
+    #    memblokir — baris residu milik pembayaran BATAL dibiarkan lewat
+    #    (outstanding sudah menghormati jurnal pembalik).
     if document_type == 'sales_invoice':
-        if db.query(PaymentAllocation.id).filter(PaymentAllocation.sales_invoice_id == obj.id).first():
+        if db.query(PaymentAllocation.id).filter(
+            PaymentAllocation.sales_invoice_id == obj.id,
+            PaymentAllocation.penerimaan_id.in_(_active_payment_ids(db, ar=True)),
+        ).first():
             raise ValueError(
                 'Invoice masih memiliki alokasi pelunasan aktif. '
                 'Hapus/batalkan dokumen pembayaran yang melunasinya terlebih dahulu.'
@@ -128,7 +149,10 @@ def _apply_guards(db: Session, document_type: str, obj):
                 'Invoice masih direferensikan retur penjualan. Hapus retur tersebut terlebih dahulu.'
             )
     if document_type == 'purchase_invoice':
-        if db.query(PaymentAllocation.id).filter(PaymentAllocation.purchase_invoice_id == obj.id).first():
+        if db.query(PaymentAllocation.id).filter(
+            PaymentAllocation.purchase_invoice_id == obj.id,
+            PaymentAllocation.pembayaran_id.in_(_active_payment_ids(db, ar=False)),
+        ).first():
             raise ValueError(
                 'Invoice masih memiliki alokasi pelunasan aktif. '
                 'Hapus/batalkan dokumen pembayaran yang melunasinya terlebih dahulu.'
@@ -289,7 +313,18 @@ def _delete_document(db: Session, document_type: str, obj, journal_id):
     """
     doc_id = obj.id
 
-    # 1. WorkflowEvent -> DocumentWorkflow.
+    # 1. Alokasi pelunasan inert milik invoice ini (guard sudah memastikan
+    #    tidak ada lagi alokasi milik pembayaran AKTIF — AUD2-E1) dibersihkan
+    #    agar penghapusan tidak menabrak FK payment_allocation dan tidak
+    #    meninggalkan baris yatim.
+    if document_type in ('sales_invoice', 'purchase_invoice'):
+        invoice_col = (PaymentAllocation.sales_invoice_id if document_type == 'sales_invoice'
+                       else PaymentAllocation.purchase_invoice_id)
+        db.query(PaymentAllocation).filter(invoice_col == doc_id).delete(
+            synchronize_session=False)
+        db.flush()
+
+    # 1b. WorkflowEvent -> DocumentWorkflow.
     wf = find_workflow(db, obj)
     if wf is not None:
         db.query(WorkflowEvent).filter(WorkflowEvent.workflow_id == wf.id).delete(

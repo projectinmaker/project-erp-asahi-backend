@@ -228,6 +228,19 @@ def report(db, start, end):
     operating |= {r.akun_perkiraan_id for r in db.query(SettingAkun).filter(SettingAkun.key.in_(
         ('PIUTANG_USAHA', 'HUTANG_USAHA', 'PPN_MASUKAN', 'PPN_KELUARAN', 'PEMBELIAN',
          'PERSEDIAAN_BAHAN_BAKU', 'PERSEDIAAN_WIP', 'PERSEDIAAN_BARANG_JADI', 'PERSEDIAAN_BAHAN_PEMBANTU'))).all()}
+    # AUD2-D2 — default OPERASIONAL utk akun yang secara bisnis merupakan arus
+    # operasional tapi tidak tertangkap heuristik di atas:
+    # - Akun penampung kas belum teridentifikasi (216001/117004/216000):
+    #   penerimaan/pembayaran yang belum diketahui pelanggan/supplier-nya —
+    #   umumnya dana dagang in-transit (setelah identifikasi, jurnal reklas
+    #   hanya memindah penampung ↔ piutang/hutang; sisi kas tidak berubah).
+    # - Akun PPh 23 pelunasan (PPH23_DIBAYAR_DIMUKA / HUTANG_PPH23): potongan
+    #   pajak yang melekat pada settlement piutang/hutang.
+    # Override ACCOUNT eksplisit tetap menang atas default ini.
+    operating |= {r.akun_perkiraan_id for r in db.query(SettingAkun).filter(SettingAkun.key.in_(
+        ('KAS_PENAMPUNG_PENERIMAAN', 'KAS_PENAMPUNG_PEMBAYARAN',
+         'KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI',
+         'PPH23_DIBAYAR_DIMUKA', 'HUTANG_PPH23'))).all()}
     sections = {name: {'items': [], 'total': gl.ZERO} for name in CATEGORIES}
 
     # Trace no_jurnal sumber untuk jurnal pembalik (batch, hindari N+1).
@@ -235,61 +248,12 @@ def report(db, start, end):
     reversal_map = dict(db.query(gl.Journal.id, gl.Journal.no_jurnal).filter(
         gl.Journal.id.in_(reversal_ids)).all()) if reversal_ids else {}
 
-    # === AUD-16 (update #04) — kandidat akun PEMBIAYAAN otomatis ===
-    # Temuan audit 7-c: PEMBIAYAAN tidak pernah terisi otomatis (pinjaman
-    # selalu jatuh ke BELUM_DIKLASIFIKASIAN sampai di-override manual).
-    # Aturan auto (tetap kalah oleh override ACCOUNT/JOURNAL):
-    #   - Header MODAL (setoran modal 310000, dividen 330000) → PEMBIAYAAN.
-    #   - Akun pinjaman/jangka panjang: subclass LIABILITY_NONCURRENT /
-    #     LONG_TERM_DEBT atau nama khas (hutang bank/leasing/afiliasi/jangka
-    #     panjang/pemegang saham/pembelian aset, bagian lancar KJP) → PEMBIAYAAN.
-    #   - Akun pajak (TAX_PAYABLE/PREPAID_TAX/VAT_*) & penampung kas belum
-    #     teridentifikasi → OPERASIONAL (settlement dgn PPh 23 tidak lagi
-    #     jatuh ke BELUM_DIKLASIFIKASIAN).
-    financing_subclasses = {'LIABILITY_NONCURRENT', 'LONG_TERM_DEBT', 'FINANCING'}
-    financing_name_patterns = (
-        '%hutang bank%', '%hutang leasing%', '%hutang afiliasi%',
-        '%hutang jangka panjang%', '%hutang pemegang saham%',
-        '%hutang pembelian aset%', '%bagian lancar%hutang jangka panjang%',
-        '%pinjaman%', '%modal disetor%', '%dividen%',
-    )
-    financing_codes = ('215000', '221000', '222000', '223000', '224000', '225000', '226000')
-    operating_system_types = {'TAX_PAYABLE', 'PREPAID_TAX', 'VAT_OUTPUT', 'VAT_INPUT',
-                              'OPENING_BALANCE_DIFF', 'TAX_RECEIVABLE'}
-
-    def _match_pattern(text, pattern):
-        """SQL-LIKE sederhana: '%a%b%' = semua fragmen muncul berurutan."""
-        value = (text or '').lower()
-        pos = 0
-        for part in pattern.split('%'):
-            if not part:
-                continue
-            idx = value.find(part, pos)
-            if idx < 0:
-                return False
-            pos = idx + len(part)
-        return True
-
     def category(account):
         explicit = overrides.get(('ACCOUNT', account.id))
         if explicit:
             return explicit
         if account.id in operating or account.header in gl.PROFIT:
             return 'OPERASIONAL'
-        # AUD-16 — akun pajak & penampung = operasional (bukan "belum")
-        system_type = (account.system_account_type or '').upper()
-        if (system_type in operating_system_types
-                or (account.kode or '') in ('216000', '216001', '216002', '117004')):
-            return 'OPERASIONAL'
-        # AUD-16 — modal & pinjaman = pembiayaan otomatis
-        subclass = (account.account_subclass or '').upper()
-        if (account.header == 'MODAL'
-                or system_type in ('PAID_IN_CAPITAL', 'RETAINED_EARNINGS',
-                                   'CURRENT_EARNINGS', 'DIVIDEND', 'CONTRA_EQUITY')
-                or subclass in financing_subclasses
-                or (account.kode or '').startswith(financing_codes)
-                or any(_match_pattern(account.nama, pat) for pat in financing_name_patterns)):
-            return 'PEMBIAYAAN'
         # Assets and liabilities also contain loans, deposits, advances, etc.
         # Do not infer their category from their COA header alone.
         return 'BELUM_DIKLASIFIKASIKAN'

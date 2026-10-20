@@ -141,10 +141,11 @@ def cancel_request_order_part(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Request Order Part (hard delete).
+    """Batalkan Request Order Part — non-destruktif bila sudah diposting.
 
-    Dokumen + baris item dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     item = svc.get_request_order_part_by_id(db, rop_id)
     if not item:

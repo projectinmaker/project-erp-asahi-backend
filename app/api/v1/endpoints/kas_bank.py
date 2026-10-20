@@ -201,10 +201,11 @@ def cancel_pembayaran(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Pembayaran Kas (hard delete).
+    """Batalkan Pembayaran Kas — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian + jurnal terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     try:
         return cancel_document(
@@ -318,10 +319,11 @@ def cancel_penerimaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Penerimaan Kas (hard delete).
+    """Batalkan Penerimaan Kas — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian + jurnal terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     try:
         return cancel_document(
@@ -426,10 +428,11 @@ def cancel_transfer(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Transfer Bank (hard delete).
+    """Batalkan Transfer Bank — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian + jurnal terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     try:
         return cancel_document(

@@ -271,10 +271,11 @@ def cancel_penyesuaian(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Penyesuaian Stok (hard delete).
+    """Batalkan Penyesuaian Stok — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit. Stok yang sudah bergerak tetap ditolak (guard).
     """
     try:
         return cancel_document(
@@ -396,10 +397,11 @@ def cancel_pemindahan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Pemindahan Barang (hard delete).
+    """Batalkan Pemindahan Barang — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit. Stok yang sudah bergerak tetap ditolak (guard).
     """
     try:
         return cancel_document(
@@ -553,10 +555,11 @@ def cancel_permintaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Permintaan Barang (hard delete).
+    """Batalkan Permintaan Barang — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     try:
         return cancel_document(

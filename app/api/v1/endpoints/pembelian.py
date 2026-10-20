@@ -213,10 +213,11 @@ def cancel_purchase_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Purchase Order (hard delete).
+    """Batalkan Purchase Order — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian dihapus dari database (guard: masih dirujuk dokumen lanjutan → tolak);
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     try:
         return cancel_document(
@@ -336,10 +337,11 @@ def cancel_purchase_invoice(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Purchase Invoice (hard delete).
+    """Batalkan Purchase Invoice — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian + jurnal terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     try:
         return cancel_document(
@@ -445,10 +447,11 @@ def cancel_purchase_retur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Purchase Retur (hard delete).
+    """Batalkan Purchase Retur — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian + jurnal terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit.
     """
     try:
         return cancel_document(
@@ -562,10 +565,11 @@ def cancel_penerimaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Penerimaan Barang (hard delete).
+    """Batalkan Penerimaan Barang — non-destruktif bila sudah diposting.
 
-    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT/belum ber-jurnal → hard delete (snapshot ke log dokumen terhapus,
+    modul Histori). Sudah diposting → jurnal pembalik + status BATAL/
+    DIBATALKAN; dokumen dan jurnal asli dipertahankan untuk audit. Stok yang sudah bergerak tetap ditolak (guard).
     """
     try:
         return cancel_document(

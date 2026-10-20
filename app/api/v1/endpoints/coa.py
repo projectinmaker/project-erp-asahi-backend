@@ -202,6 +202,17 @@ def create_coa(
                 detail=f"Kelas akun induk ({parent_class}) tidak kompatibel dengan kelas akun baru ({own_class}).",
             )
 
+    # === AUD2-A2-minor — konsistensi tingkat-vs-induk (mode legacy) ===
+    # Akun HEADER adalah root klasifikasi (1xxx-9xxx) — tidak boleh punya
+    # induk; jalur raw API tanpa validasi ini bisa membuat kombinasi hierarki
+    # aneh yang sebelumnya hanya ketahuan saat posting.
+    if not coa_in.type_code and coa_in.tingkat == TingkatAkun.HEADER and coa_in.induk_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Akun HEADER harus berada di root (tanpa akun induk). "
+            "Gunakan tingkat GROUP atau DETAIL untuk akun di bawah induk.",
+        )
+
     coa = coa_service.create_coa(db, coa_in=coa_in)
     return _coa_to_dict(coa, coa_service._get_jenis_kas_bank_for_coa(db, coa.id))
 
@@ -212,12 +223,11 @@ def create_coa(
 
 @router.get("/saldo-awal", response_model=SaldoAwalResponse)
 def get_saldo_awal(
-    tahun: Optional[int] = Query(None, description="AUD-15: baca set saldo awal tahun buku tertentu (SA-{tahun}); kosong = set aktif terbaru"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Cek dan ambil saldo awal yang sudah diset (opsional per tahun buku)."""
-    return coa_service.get_saldo_awal(db, tahun=tahun)
+    """Cek dan ambil saldo awal yang sudah diset."""
+    return coa_service.get_saldo_awal(db)
 
 
 @router.post("/saldo-awal", response_model=SaldoAwalResponse)
@@ -248,8 +258,7 @@ def save_saldo_awal(
     ]
 
     try:
-        return coa_service.save_saldo_awal(db, items, req.tanggal, current_user.id,
-                                           tahun=getattr(req, "tahun", None))
+        return coa_service.save_saldo_awal(db, items, req.tanggal, current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -21,8 +21,9 @@ Efek turunannya otomatis tanpa perubahan modul lain:
 - Outstanding piutang/hutang: ``settlement_service.active_documents`` sudah
   menghormati jurnal pembalik (reversal exists → dokumen non-aktif), jadi
   SI/PI yang dibatalkan otomatis keluar dari daftar tagihan outstanding.
-- Alokasi pelunasan yang menempel pada kas yang dibatalkan ikut non-aktif
-  (pembayaran/penerimaan sumbernya dibalik) → outstanding pulih.
+- Alokasi pelunasan yang menempel pada kas yang dibatalkan ikut dihapus
+  (AUD2-E1 — data turunan; jurnal pembalik tetap menjadi audit trail)
+  → outstanding pulih dan invoice terkait tidak terkunci residu alokasi.
 - Saldo kas/bank: ``auto_posting_jurnal`` menjalankan sync M-03 untuk akun
   yang tersentuh jurnal pembalik.
 - Perhitungan laporan (neraca saldo/laba rugi/neraca) membaca GL — jurnal
@@ -50,6 +51,7 @@ from app.services.hard_delete_service import (
 )
 from app.services.posting_service import reverse_journal
 from app.services.workflow_service import MODELS, find_workflow
+from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.models.transaksi.workflow import WorkflowEvent
 from app.services.accounting_control import accounting_lock
 
@@ -142,6 +144,20 @@ def _cancel_posted_document(db: Session, document_type: str, obj, user, reason: 
     # Jurnal pembalik — idempoten (bila pembalik sudah ada, dipakai ulang).
     reversal = reverse_journal(db, journal_id, getattr(user, 'id'), reason=full_reason)
 
+    # AUD2-E1 — bersihkan baris alokasi pelunasan milik pembayaran ini.
+    # Alokasi adalah data turunan ("draft children"): outstanding dihitung
+    # dari jurnal, dan guard identifikasi sudah memastikan tidak ada sesi
+    # identifikasi aktif yang menautkan dokumen ini. Tanpa pembersihan,
+    # baris residu akan memblokir pembatalan invoice terkait selamanya
+    # (pola yang sama dengan pembatalan sesi identifikasi yang menghapus
+    # alokasinya). Jurnal pembalik tetap utuh sebagai audit trail.
+    removed_allocations = 0
+    if document_type in ('penerimaan_kas', 'pembayaran_kas'):
+        payment_col = (PaymentAllocation.penerimaan_id if document_type == 'penerimaan_kas'
+                       else PaymentAllocation.pembayaran_id)
+        removed_allocations = db.query(PaymentAllocation).filter(
+            payment_col == obj.id).delete(synchronize_session=False)
+
     # Status dokumen → BATAL/DIBATALKAN (dokumen & jurnal asli dipertahankan).
     _set_status_cancelled(obj, target)
     _record_workflow_event(db, obj, user, str(status_before or ''), target, reason)
@@ -163,9 +179,12 @@ def _cancel_posted_document(db: Session, document_type: str, obj, user, reason: 
         'reversalJournalId': str(reversal.id),
         'reversalJournalNo': reversal.no_jurnal,
         'cancelledAt': datetime.now(timezone.utc).isoformat(),
+        'removedAllocations': removed_allocations,
         'message': (
             f'Dokumen {number} dibatalkan dengan jurnal pembalik {reversal.no_jurnal}. '
             f'Dokumen berstatus {target}; jurnal asli tetap tersimpan untuk audit.'
+            + (f' {removed_allocations} baris alokasi pelunasan turunannya dibersihkan.'
+               if removed_allocations else '')
         ),
     }
 

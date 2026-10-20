@@ -1642,32 +1642,12 @@ def _kas_bank_rows_with_gl_saldo(db: Session, rows) -> list:
 
 @router.get("/kas-bank-akun", response_model=list[KasBankAkunResponse])
 def get_kas_bank_akun_list(
-    company_id: Optional[UUID] = Query(None, alias="companyId",
-        description="AUD-17: filter akun milik perusahaan (plus akun GLOBAL)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    """Daftar akun kas/bank aktif (AUD-17: bisa difilter per perusahaan)."""
-    from sqlalchemy import or_
-    query = db.query(KasBankAkun).filter(KasBankAkun.status == "AKTIF")
-    if company_id is not None:
-        query = query.filter(or_(KasBankAkun.company_id == company_id,
-                                 KasBankAkun.company_id.is_(None)))
-    rows = query.order_by(KasBankAkun.nama).all()
+    rows = db.query(KasBankAkun).filter(KasBankAkun.status == "AKTIF").order_by(KasBankAkun.nama).all()
     # Saldo ditampilkan dari GL (jurnal POSTED) — master saldo legacy bisa 0/stale.
     return _kas_bank_rows_with_gl_saldo(db, rows)
-
-
-def _validate_kas_company(db: Session, company_id: Optional[UUID]) -> None:
-    """AUD-17: validasi unit company untuk kepemilikan akun kas/bank."""
-    if company_id is None:
-        return
-    from app.models.organization import OrganizationUnit
-    unit = db.get(OrganizationUnit, company_id)
-    if unit is None or unit.kind != "COMPANY" or unit.status != "AKTIF":
-        raise HTTPException(status_code=400,
-            detail="companyId tidak valid (harus unit COMPANY aktif)")
-
 
 @router.post("/kas-bank-akun", response_model=KasBankAkunResponse, status_code=status.HTTP_201_CREATED)
 def create_kas_bank_akun(
@@ -1675,7 +1655,6 @@ def create_kas_bank_akun(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    _validate_kas_company(db, getattr(data_in, "company_id", None))
     return master_service.create_master(db, KasBankAkun, data_in)
 
 @router.get("/kas-bank-akun/{kas_bank_akun_id}", response_model=KasBankAkunResponse)
@@ -1689,7 +1668,6 @@ def get_kas_bank_akun_detail(kas_bank_akun_id: UUID, db: Session = Depends(get_c
 def update_kas_bank_akun(kas_bank_akun_id: UUID, data_in: KasBankAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     item = master_service.get_master_by_id(db, KasBankAkun, kas_bank_akun_id)
     if not item: raise HTTPException(status_code=404, detail="Kas Bank Akun tidak ditemukan")
-    _validate_kas_company(db, getattr(data_in, "company_id", None))
     return master_service.update_master(db, item, data_in)
 
 @router.delete("/kas-bank-akun/{kas_bank_akun_id}", status_code=status.HTTP_200_OK)
@@ -1710,34 +1688,14 @@ def delete_kas_bank_akun(kas_bank_akun_id: UUID, db: Session = Depends(get_curre
 # ==========================================
 @router.get("/setting-akun", response_model=list[SettingAkunResponse])
 def get_setting_akun_list(
-    company_id: Optional[UUID] = Query(None, alias="companyId",
-        description="AUD-17: scope perusahaan — tampilkan baris GLOBAL + override perusahaan tsb"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    """Daftar setting akun (AUD-17: baris global + override per perusahaan)."""
-    query = db.query(SettingAkun)
-    if company_id is not None:
-        from sqlalchemy import or_
-        query = query.filter(or_(SettingAkun.company_id == company_id,
-                                 SettingAkun.company_id.is_(None)))
-    return query.order_by(SettingAkun.label, SettingAkun.company_id).all()
+    return db.query(SettingAkun).order_by(SettingAkun.label).all()
 
 @router.get("/setting-akun/{key}", response_model=SettingAkunResponse)
-def get_setting_akun_detail(
-    key: str,
-    company_id: Optional[UUID] = Query(None, alias="companyId",
-        description="AUD-17: baca override perusahaan (fallback global bila belum ada)"),
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user)):
-    """Detail setting akun — override perusahaan bila ada, fallback global."""
-    item = None
-    if company_id is not None:
-        item = db.query(SettingAkun).filter(
-            SettingAkun.key == key, SettingAkun.company_id == company_id).first()
-    if item is None:
-        item = db.query(SettingAkun).filter(
-            SettingAkun.key == key, SettingAkun.company_id.is_(None)).first()
+def get_setting_akun_detail(key: str, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
+    item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
     if not item: raise HTTPException(status_code=404, detail="Setting akun tidak ditemukan")
     return item
 
@@ -1745,48 +1703,35 @@ def get_setting_akun_detail(
 def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     from app.services.inventory_receipt_control import KEY, validate_grni_account
     from app.services import setting_akun_service
-    # AUD-05 (update #04): validasi tipe/arah akun target untuk SEMUA key
-    # (ada & aktif & header/saldo-normal/tingkat sesuai kontrak key) —
-    # sebelumnya hanya PENERIMAAN_DALAM_PROSES yang divalidasi.
+    # === AUD2-B3: validasi save-time untuk SEMUA key — salah konfigurasi
+    # (akun HEADER/GROUP, akun non-aktif, tipe tak cocok) ditolak di sini,
+    # bukan saat transaksi berikutnya gagal posting. ===
     try:
-        setting_akun_service.validate_setting_akun_target(db, key, data_in.akun_perkiraan_id)
+        setting_akun_service.validate_setting_account(db, key, data_in.akun_perkiraan_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # AUD-17 (update #05): company_id di body → override per perusahaan;
-    # kosong/None → baris GLOBAL (fallback semua perusahaan).
-    company_id = getattr(data_in, "company_id", None)
-    if company_id is not None:
-        from app.models.organization import OrganizationUnit
-        unit = db.get(OrganizationUnit, company_id)
-        if unit is None or unit.kind != "COMPANY" or unit.status != "AKTIF":
-            raise HTTPException(status_code=400,
-                detail="companyId tidak valid (harus unit COMPANY aktif)")
-    item = db.query(SettingAkun).filter(
-        SettingAkun.key == key,
-        SettingAkun.company_id == company_id if company_id is not None
-        else SettingAkun.company_id.is_(None)).first()
-    if key == KEY and item is None:
+        raise HTTPException(400, str(exc)) from exc
+    item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+    if key == KEY:
         try:
             validate_grni_account(db, data_in.akun_perkiraan_id)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        item = SettingAkun(key=KEY, label="Penerimaan Dalam Proses (GRNI)",
-                           akun_perkiraan_id=data_in.akun_perkiraan_id,
-                           company_id=company_id)
-        db.add(item)
-        db.commit()
-        db.refresh(item)
-        setting_akun_service.clear_cache()
-        return item
+        if item is None:
+            item = SettingAkun(key=KEY, label="Penerimaan Dalam Proses (GRNI)",
+                               akun_perkiraan_id=data_in.akun_perkiraan_id)
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            setting_akun_service.clear_cache()
+            return item
     if not item:
-        # Key belum ada di scope ini (mis. di-skip seeder, atau override
-        # perusahaan baru). Bila key dikenal sistem, buat barisan setting
-        # baru — agar bisa dikonfigurasi dari halaman Setting Akun.
+        # Key belum ada di DB (mis. di-skip seeder karena akun default legacy
+        # tidak ditemukan di COA v2). Bila key dikenal sistem, buat barisan
+        # setting baru — agar bisa dikonfigurasi dari halaman Setting Akun.
         label = setting_akun_service.KNOWN_SETTING_LABELS.get(key)
         if label:
             item = SettingAkun(key=key, label=label,
-                               akun_perkiraan_id=data_in.akun_perkiraan_id,
-                               company_id=company_id)
+                               akun_perkiraan_id=data_in.akun_perkiraan_id)
             db.add(item)
             db.commit()
             db.refresh(item)
@@ -1812,11 +1757,6 @@ def get_app_setting(key: str, db: Session = Depends(get_current_db), current_use
     if key == app_setting_service.KEY_METODE_VALUASI:
         # Selalu ada jawaban valid (default AVERAGE bila belum dikonfigurasi)
         return {"key": key, "value": app_setting_service.get_metode_valuasi(db)}
-    if key == app_setting_service.KEY_RATE_PPN:
-        # AUD-10 — selalu ada jawaban valid (default 11)
-        return {"key": key, "value": str(app_setting_service.get_rate_ppn(db))}
-    if key == app_setting_service.KEY_RATE_PPH23:
-        return {"key": key, "value": str(app_setting_service.get_rate_pph23(db))}
 
     item = db.query(AppSetting).filter(AppSetting.key == key).first()
     if not item:
@@ -1829,16 +1769,10 @@ def update_app_setting(key: str, data_in: AppSettingUpdate, db: Session = Depend
     """Update nilai setting aplikasi global."""
     from app.services import app_setting_service
 
-    dispatch = {
-        app_setting_service.KEY_METODE_VALUASI: app_setting_service.set_metode_valuasi,
-        app_setting_service.KEY_RATE_PPN: app_setting_service.set_rate_ppn,
-        app_setting_service.KEY_RATE_PPH23: app_setting_service.set_rate_pph23,
-    }
-    handler = dispatch.get(key)
-    if handler is None:
+    if key != app_setting_service.KEY_METODE_VALUASI:
         raise HTTPException(status_code=404, detail="Setting tidak ditemukan")
     try:
-        item = handler(db, data_in.value)
+        item = app_setting_service.set_metode_valuasi(db, data_in.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return item
@@ -2069,17 +2003,12 @@ def _get_kas_detail_coa_ids(db: Session) -> list[UUID]:
 
 @router.get("/kas-bank-dropdown", response_model=list[KasBankAkunResponse])
 def get_kas_bank_dropdown(
-    company_id: Optional[UUID] = Query(None, alias="companyId",
-        description="AUD-17: filter akun milik perusahaan (plus akun GLOBAL)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
     """
     Dropdown Kas/Bank Akun yang terhubung ke COA di bawah 'Kas dan Setara Kas'.
     Mencari semua akun DETAIL yang merupakan anak/cucu dari COA tersebut.
-
-    AUD-17: ``companyId`` terisi → hanya akun milik perusahaan tsb + akun
-    GLOBAL (tanpa perusahaan) — akun milik perusahaan lain disembunyikan.
 
     Catatan: hanya menampilkan COA yang SUDAH punya entry KasBankAkun. COA
     detail yang di-import manual tapi belum di-sync tidak akan muncul —
@@ -2089,15 +2018,10 @@ def get_kas_bank_dropdown(
     if not detail_ids:
         return []
 
-    query = db.query(KasBankAkun).filter(
+    rows = db.query(KasBankAkun).filter(
         KasBankAkun.akun_perkiraan_id.in_(detail_ids),
         KasBankAkun.status == "AKTIF",
-    )
-    if company_id is not None:
-        from sqlalchemy import or_
-        query = query.filter(or_(KasBankAkun.company_id == company_id,
-                                 KasBankAkun.company_id.is_(None)))
-    rows = query.order_by(KasBankAkun.nama).all()
+    ).order_by(KasBankAkun.nama).all()
     # Saldo dari GL — SummaryCard "Total Saldo Kas/Bank" di modul Kas & Bank
     # membaca field ini; master saldo legacy bisa 0/stale.
     return _kas_bank_rows_with_gl_saldo(db, rows)

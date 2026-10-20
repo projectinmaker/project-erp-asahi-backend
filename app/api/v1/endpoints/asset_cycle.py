@@ -41,10 +41,12 @@ def get_asset_event(event_id: UUID, db=Depends(get_current_db)):
 
 @router.post('/{event_id}/cancel')
 def cancel_asset_event(event_id: UUID, data: AssetCancel, db=Depends(get_current_db), user=Depends(get_current_user)):
-    """Hapus permanen Transaksi Aset (hard delete) — alasan WAJIB.
+    """Batalkan Transaksi Aset — alasan WAJIB; non-destruktif bila sudah diposting.
 
-    Event + snapshot state-nya dihapus; bila event POSTED (bukan yang terakhir
-    → ditolak). Jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    DRAFT → hard delete (snapshot ke log dokumen terhapus, modul Histori).
+    Event POSTED → jurnal pembalik + status BATAL; hanya boleh event terakhir
+    (state aset dipulihkan dari snapshot `sebelum`), dokumen & jurnal asli
+    tetap tersimpan untuk audit.
     """
     obj = get_asset_event(event_id, db)
     try:

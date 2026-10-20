@@ -57,7 +57,8 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
        - 'WIP' / 'Dalam Proses'      -> PERSEDIAAN_WIP
        - 'Barang Jadi' / 'JADI'      -> PERSEDIAAN_BARANG_JADI
        - 'Bahan Pembantu' / 'PEMBANTU' -> PERSEDIAAN_BAHAN_PEMBANTU
-       - lainnya                      -> PERSEDIAAN_BAHAN_BAKU (dengan warning)
+       - lainnya                      -> ValueError (AUD2-B2b: minta pemetaan
+         eksplisit — jangan salah klasifikasi HPP diam-diam)
 
     Catatan:
     - Mapping per-barang (Tahap 1) bersifat opsional; barang lama yang belum
@@ -115,11 +116,14 @@ def _get_akun_persediaan_id(db: Session, barang: Barang) -> UUID:
     elif "BAHAN PEMBANTU" in nama_upper or "PEMBANTU" in nama_upper:
         key = sa_cfg.KEY_PERSEDIAAN_BAHAN_PEMBANTU
     else:
-        logger.warning(
-            f"Kategori '{barang.kategori.nama}' tidak dikenali untuk mapping persediaan, "
-            f"default ke PERSEDIAAN_BAHAN_BAKU"
+        # AUD2-B2b — jangan di-default diam-diam ke bahan baku (salah klasifikasi
+        # HPP/persediaan tanpa terlihat). Minta pemetaan eksplisit.
+        raise ValueError(
+            f"Kategori '{barang.kategori.nama}' (barang {barang.kode}) tidak dikenali "
+            "pemetaan akun persediaan. Petakan akun persediaan di master barang, "
+            "isi item_type yang sesuai, atau ganti nama kategori ke pola yang "
+            "dikenali (BAHAN BAKU / WIP / BARANG JADI / BAHAN PEMBANTU)."
         )
-        key = sa_cfg.KEY_PERSEDIAAN_BAHAN_BAKU
 
     return sa_cfg.get_akun_id_or_raise(db, key, f"Barang {barang.kode} ({barang.kategori.nama})")
 
@@ -210,12 +214,17 @@ def get_penyesuaian_list(
     tipe: Optional[str] = None,
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
+    company_id: Optional[UUID] = None,
 ) -> Tuple[List[PenyesuaianStok], int]:
     """Ambil daftar penyesuaian stok dengan filter & pagination."""
     query = db.query(PenyesuaianStok).options(
         joinedload(PenyesuaianStok.barang),
         joinedload(PenyesuaianStok.creator),
     )
+
+    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
+    if company_id is not None:
+        query = query.filter(PenyesuaianStok.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"
@@ -510,15 +519,6 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
             )
         except Exception as e:
             raise ValueError(f"Jurnal penyesuaian stok gagal diposting: {e}") from e
-    elif not db_obj.auto_post_jurnal and db_obj.total > 0:
-        # AUD-06 (update #04): stok berubah TANPA jurnal — GL persediaan akan
-        # bergeser dari subledger. Tandai di log; anomali tetap terpantau di
-        # Laporan → Audit Persediaan (penyesuaian_tanpa_jurnal).
-        logger.warning(
-            f"Penyesuaian {db_obj.no_adj} ({db_obj.tipe.value}) disetujui TANPA jurnal "
-            f"(auto_post_jurnal=false, total={db_obj.total}) — nilai persediaan GL "
-            f"akan berbeda dari kartu stok"
-        )
 
     # 3. Set status + commit
     db_obj.status = StatusPersediaan.DISETUJUI
