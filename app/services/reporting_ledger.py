@@ -1,8 +1,8 @@
 """Shared posted-ledger queries. Business dates use Asia/Jakarta (UTC+07)."""
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone, date
 from calendar import monthrange
 from decimal import Decimal
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, and_
 from sqlalchemy.orm import aliased
 from app.models.akun_perkiraan import AkunPerkiraan as Account, HeaderCOA, TingkatAkun
 from app.models.detail.jurnal_detail import JurnalDetail as Line
@@ -45,8 +45,21 @@ def closing_condition():
                    select(original.id).where(original.ref_module == RefModule.PENUTUPAN_PERIODE)))
 
 
-def posted(db, query, start=None, end=None, before=None, performance=False):
+def posted(db, query, start=None, end=None, before=None, performance=False, fiscal_year=None):
     query = apply_scope(db, query, Journal).filter(Journal.status == StatusJurnal.POSTED)
+    # === AUD-15 (update #04) — mode tahun buku ===
+    # Mutasi periode hanya menghitung jurnal non-SALDO_AWAL mulai 1 Jan tahun
+    # buku; saldo awal tahun dibaca terpisah lewat fiscal_opening_totals()
+    # (jurnal SA-{tahun} milik tahun itu sendiri, bukan dihitung dua kali).
+    if fiscal_year is not None:
+        # Jurnal saldo awal + PEMBALIKNYA (bertanggal tahun buku saat replace)
+        # tidak dihitung sebagai mutasi — saldo awal tahun dibaca terpisah via
+        # fiscal_opening_totals (jurnal SA-{tahun} aktif terbaru).
+        query = query.filter(Journal.ref_module != RefModule.SALDO_AWAL)
+        sa_ids = select(Journal.id).where(Journal.ref_module == RefModule.SALDO_AWAL)
+        query = query.filter(~Journal.reversal_of_id.in_(sa_ids))
+        if start is None:
+            start = date(fiscal_year, 1, 1)
     if start is not None:
         query = query.filter(Journal.tanggal >= local_datetime(start))
     if end is not None:
@@ -63,12 +76,58 @@ def posted(db, query, start=None, end=None, before=None, performance=False):
     return query
 
 
-def totals(db, start=None, end=None, before=None, performance=False, header=None):
+def fiscal_opening_totals(db, tahun):
+    """AUD-15 — saldo awal tahun buku: baris jurnal SA-{tahun} aktif.
+
+    Aktif = POSTED dan belum dibalik jurnal pembaliknya. Legacy SA-INIT
+    (tanpa ref_no per tahun) tidak termasuk — mode tahun buku memang
+    memisahkan buku per tahun (SA-INIT tetap terbaca di mode kontinu).
+    """
+    reversal = aliased(Journal)
+    reversed_ids = select(reversal.reversal_of_id).where(
+        reversal.reversal_of_id.is_not(None), reversal.status == StatusJurnal.POSTED)
+    journal = (db.query(Journal)
+               .filter(Journal.ref_module == RefModule.SALDO_AWAL,
+                       Journal.ref_no == f"SA-{tahun}",
+                       Journal.status == StatusJurnal.POSTED,
+                       ~Journal.id.in_(reversed_ids))
+               .order_by(Journal.created_at.desc(), Journal.id)
+               .first())
+    if journal is None:
+        return {}
+    rows = (db.query(Account, func.sum(Line.debit), func.sum(Line.kredit))
+            .join(Line, Line.akun_perkiraan_id == Account.id)
+            .filter(Line.jurnal_umum_id == journal.id)
+            .group_by(Account.id).order_by(Account.kode).all())
+    return {a.id: {'account': a, 'debit': d or ZERO, 'kredit': k or ZERO} for a, d, k in rows}
+
+
+def available_fiscal_years(db):
+    """AUD-15 — daftar tahun yang punya set saldo awal (SA-{tahun} aktif)."""
+    reversal = aliased(Journal)
+    reversed_ids = select(reversal.reversal_of_id).where(
+        reversal.reversal_of_id.is_not(None), reversal.status == StatusJurnal.POSTED)
+    rows = (db.query(Journal.ref_no)
+            .filter(Journal.ref_module == RefModule.SALDO_AWAL,
+                    Journal.ref_no.like('SA-%'),
+                    Journal.status == StatusJurnal.POSTED,
+                    ~Journal.id.in_(reversed_ids))
+            .distinct().all())
+    years = []
+    for (ref,) in rows:
+        try:
+            years.append(int(str(ref).split('-')[1]))
+        except (ValueError, IndexError):
+            continue
+    return sorted(set(years), reverse=True)
+
+
+def totals(db, start=None, end=None, before=None, performance=False, header=None, fiscal_year=None):
     q = db.query(Account, func.sum(Line.debit), func.sum(Line.kredit)).join(
         Line, Line.akun_perkiraan_id == Account.id).join(Journal, Journal.id == Line.jurnal_umum_id)
     if header is not None:
         q = q.filter(Account.header == header)
-    q = posted(db, q, start, end, before, performance)
+    q = posted(db, q, start, end, before, performance, fiscal_year=fiscal_year)
     # Do not omit inactive accounts or corrupted non-detail history: validation exposes it.
     return {a.id: {'account': a, 'debit': d or ZERO, 'kredit': k or ZERO}
             for a, d, k in q.group_by(Account.id).order_by(Account.kode).all()}

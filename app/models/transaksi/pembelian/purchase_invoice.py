@@ -27,6 +27,15 @@ class PurchaseInvoice(BaseModel, BaseMixin):
     alamat = Column(Text, nullable=True)
     diskon_global = Column(Numeric(5, 2), default=0, nullable=True)
     ppn = Column(Numeric(5, 2), default=11, nullable=False)
+    # === AUD-09 (update #04) — PPh 23 pada Purchase Invoice ===
+    # Mirror sales_invoice/purchase_order (cp0000000004): potongan PPh 23 atas
+    # jasa/pembelian dari supplier dicatat SEJAK INVOICE — saat posting,
+    # hutang supplier dicatat NET (grand_total sudah dikurangi total_pph23)
+    # dan Cr Hutang PPh 23 terbentuk otomatis. PI lama (applicable=false)
+    # mempertahankan perilaku lama: PPh 23 hanya muncul saat pelunasan.
+    pph23 = Column(Numeric(5, 2), default=2, nullable=False)
+    pph23_applicable = Column(Boolean, default=False, nullable=False)
+    total_pph23 = Column(Numeric(18, 2), default=0, nullable=False)
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
     total_diskon = Column(Numeric(18, 2), default=0, nullable=False)
     total_ppn = Column(Numeric(18, 2), default=0, nullable=False)

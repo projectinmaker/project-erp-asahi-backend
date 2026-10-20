@@ -16,6 +16,11 @@ class AllocationInput(BaseSchema):
     # Potongan PPh 23 atas pembayaran: kas = nilai - diskon - pph23;
     # sisa tagihan tetap berkurang sebesar nilai penuh.
     pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    # === AUD-08 (update #04) — bukti potong (BUPTI) + masa pajak per faktur ===
+    # Opsional; dipakai untuk rekap pajak PPh 23 per masa (SPT Masa).
+    no_bukti_potong: Optional[str] = Field(default=None, max_length=50)
+    masa_pajak: Optional[str] = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
+                                       description="Masa pajak 'YYYY-MM', contoh '2026-10'")
 
 
 class AllocationUpdate(BaseSchema):

@@ -360,6 +360,17 @@ def hard_delete_document(db: Session, document_type: str, document_id: UUID,
     snapshot = _build_snapshot(db, document_type, obj)
     journal_id = obj.id if document_type == 'jurnal_umum' else getattr(obj, 'jurnal_umum_id', None)
 
+    # AUD-04 (update #04): kumpulkan akun GL yang tersentuh jurnal SEBELUM delete,
+    # agar snapshot saldo kas/bank bisa di-sync ulang pasca penghapusan.
+    affected_akun_ids = set()
+    if journal_id:
+        from app.models.detail.jurnal_detail import JurnalDetail
+        _journal_ids = [journal_id] + [r.id for r in _collect_reversal_journals(db, journal_id)]
+        for row in db.query(JurnalDetail.akun_perkiraan_id).filter(
+                JurnalDetail.jurnal_umum_id.in_(_journal_ids)).distinct().all():
+            if row[0] is not None:
+                affected_akun_ids.add(row[0])
+
     log = DeletedDocumentLog(
         document_type=document_type,
         document_id=obj.id,
@@ -374,6 +385,17 @@ def hard_delete_document(db: Session, document_type: str, document_id: UUID,
 
     try:
         _delete_document(db, document_type, obj, journal_id)
+        # AUD-04 (update #04): jurnal sudah terhapus pada titik ini — sync ulang
+        # snapshot kas_bank_akun.saldo dari GL supaya tidak stale (kegagalan sync
+        # tidak boleh menggagalkan penghapusan; flush-only, ikut commit caller).
+        if affected_akun_ids:
+            try:
+                from app.services.posting_service import sync_kas_bank_saldo
+                synced = sync_kas_bank_saldo(db, affected_akun_ids)
+                if synced:
+                    logger.info(f"Sync saldo kas/bank pasca hard-delete {number}: {synced} akun")
+            except Exception as sync_exc:  # noqa: BLE001
+                logger.warning(f"Sync saldo kas/bank dilewati (hard delete {number}): {sync_exc}")
         db.add(log)
         db.commit()
     except IntegrityError:

@@ -510,6 +510,15 @@ def approve_penyesuaian(db: Session, db_obj: PenyesuaianStok) -> PenyesuaianStok
             )
         except Exception as e:
             raise ValueError(f"Jurnal penyesuaian stok gagal diposting: {e}") from e
+    elif not db_obj.auto_post_jurnal and db_obj.total > 0:
+        # AUD-06 (update #04): stok berubah TANPA jurnal — GL persediaan akan
+        # bergeser dari subledger. Tandai di log; anomali tetap terpantau di
+        # Laporan → Audit Persediaan (penyesuaian_tanpa_jurnal).
+        logger.warning(
+            f"Penyesuaian {db_obj.no_adj} ({db_obj.tipe.value}) disetujui TANPA jurnal "
+            f"(auto_post_jurnal=false, total={db_obj.total}) — nilai persediaan GL "
+            f"akan berbeda dari kartu stok"
+        )
 
     # 3. Set status + commit
     db_obj.status = StatusPersediaan.DISETUJUI

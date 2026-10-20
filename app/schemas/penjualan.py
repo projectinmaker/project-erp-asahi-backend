@@ -121,7 +121,8 @@ class SalesOrderBase(BaseSchema):
     tanggal_pengiriman: Optional[datetime] = None  # label UI/cetak: "Target Pengiriman"
     alamat_pengiriman: Optional[str] = None
     diskon_global: Optional[Decimal] = Decimal("0")
-    ppn: Decimal = Decimal("11")
+    # AUD-10: None = pakai tarif global (RATE_PPN), di-resolve endpoint
+    ppn: Optional[Decimal] = None
     keterangan: Optional[str] = None
     # Phase B — deprecated, SO tidak boleh posting jurnal
     auto_post_jurnal: bool = False
@@ -224,12 +225,14 @@ class SalesInvoiceBase(BaseSchema):
     alamat_pengiriman: Optional[str] = None
     mata_uang: str = "IDR"
     diskon_global: Optional[Decimal] = Decimal("0")
-    ppn: Decimal = Decimal("11")
+    # AUD-10: None = pakai tarif global (RATE_PPN), di-resolve endpoint
+    ppn: Optional[Decimal] = None
     # === Update ASAHI — pilihan PPh23/PPN saat input SI (bisa keduanya,
     # salah satu, atau tidak sama sekali) ===
     ppn_applicable: bool = True
     pph23_applicable: bool = False
-    pph23: Decimal = Decimal("2")
+    # AUD-10: None = pakai tarif global (RATE_PPH23), di-resolve endpoint
+    pph23: Optional[Decimal] = None
     keterangan: Optional[str] = None
     auto_post_jurnal: bool = False
 
@@ -330,7 +333,8 @@ class SalesReturBase(BaseSchema):
     alamat_pengembalian: Optional[str] = None
     no_pengembalian: Optional[str] = None
     diskon_global: Optional[Decimal] = Decimal("0")
-    ppn: Decimal = Decimal("11")
+    # AUD-10: None = pakai tarif global (RATE_PPN), di-resolve endpoint
+    ppn: Optional[Decimal] = None
     keterangan: Optional[str] = None
     auto_post_jurnal: bool = False
 
@@ -563,7 +567,8 @@ class PenawaranBase(BaseSchema):
     customer_code: str | None = None
     mata_uang: str = "IDR"
     diskon_global: Decimal | None = Decimal("0")
-    ppn: Decimal = Decimal("11")
+    # AUD-10: None = pakai tarif global (RATE_PPN), di-resolve endpoint
+    ppn: Optional[Decimal] = None
 
 
 class PenawaranCreate(PenawaranBase):

@@ -460,7 +460,9 @@ def create_identifikasi_piutang(
     # Validasi invoice (milik pelanggan, posted-aktif, IDR, tanggal, nilai ≤
     # sisa tagihan, pph23 ≤ nilai) + akun kontrol dibekukan dari invoice.
     prep_data = [
-        {"invoice_id": r.get("sales_invoice_id"), "nilai": r.get("nilai"), "pph23": r.get("pph23")}
+        {"invoice_id": r.get("sales_invoice_id"), "nilai": r.get("nilai"), "pph23": r.get("pph23"),
+         # AUD-08 — bukti potong + masa pajak ikut tervalidasi di prepare()
+         "no_bukti_potong": r.get("no_bukti_potong"), "masa_pajak": r.get("masa_pajak")}
         for r in alokasi_data
     ]
     rows, _grouped = settlement_service.prepare(db, "piutang", pelanggan_id, tanggal, prep_data)
@@ -509,6 +511,8 @@ def create_identifikasi_piutang(
             nilai=r["nilai"],
             pph23=r["pph23"],
             sales_invoice_id=r["invoice_id"],
+            no_bukti_potong=r.get("no_bukti_potong"),   # AUD-08
+            masa_pajak=r.get("masa_pajak"),             # AUD-08
             keterangan=f"Piutang {pelanggan.nama}",
         ))
     db.flush()
@@ -561,6 +565,8 @@ def create_identifikasi_piutang(
             nilai=r["nilai"],
             akun_perkiraan_id=r["akun_perkiraan_id"],
             pph23=r["pph23"],
+            no_bukti_potong=r.get("no_bukti_potong"),   # AUD-08
+            masa_pajak=r.get("masa_pajak"),             # AUD-08
             terutang=r["terutang"],
             kas_identifikasi_id=identifikasi.id,
         ))
@@ -610,7 +616,9 @@ def create_identifikasi_hutang(
 
     prep_data = [
         {"invoice_id": r.get("purchase_invoice_id"), "nilai": r.get("nilai"),
-         "diskon": r.get("diskon"), "pph23": r.get("pph23")}
+         "diskon": r.get("diskon"), "pph23": r.get("pph23"),
+         # AUD-08 — bukti potong + masa pajak ikut tervalidasi di prepare()
+         "no_bukti_potong": r.get("no_bukti_potong"), "masa_pajak": r.get("masa_pajak")}
         for r in alokasi_data
     ]
     rows, _grouped = settlement_service.prepare(db, "hutang", supplier_id, tanggal, prep_data)
@@ -660,6 +668,8 @@ def create_identifikasi_hutang(
             diskon=r["diskon"],
             pph23=r["pph23"],
             purchase_invoice_id=r["invoice_id"],
+            no_bukti_potong=r.get("no_bukti_potong"),   # AUD-08
+            masa_pajak=r.get("masa_pajak"),             # AUD-08
             keterangan=f"Hutang {supplier.nama}",
         ))
     db.flush()
@@ -718,6 +728,8 @@ def create_identifikasi_hutang(
             akun_perkiraan_id=r["akun_perkiraan_id"],
             diskon=r["diskon"],
             pph23=r["pph23"],
+            no_bukti_potong=r.get("no_bukti_potong"),   # AUD-08
+            masa_pajak=r.get("masa_pajak"),             # AUD-08
             terutang=r["terutang"],
             kas_identifikasi_id=identifikasi.id,
         ))

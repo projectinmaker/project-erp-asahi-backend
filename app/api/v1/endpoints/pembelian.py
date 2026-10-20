@@ -4,6 +4,7 @@ PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang, LPPB.
 """
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional, Dict, Any
 from uuid import UUID
 
@@ -80,6 +81,9 @@ def create_purchase_order(
 ):
     """Buat Purchase Order baru."""
     try:
+        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
+        from app.services import app_setting_service
+        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=True)
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_purchase_order(
@@ -260,6 +264,9 @@ def create_purchase_invoice(
 ):
     """Buat Purchase Invoice baru (auto-generate no form + auto-post jurnal)."""
     try:
+        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
+        from app.services import app_setting_service
+        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=True)
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_purchase_invoice(
@@ -274,6 +281,9 @@ def create_purchase_invoice(
             alamat=data_in.alamat,
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,
+            # === AUD-09 (update #04) — PPh 23 opsional di PI ===
+            pph23=data_in.pph23 if data_in.pph23 is not None else Decimal("2"),
+            pph23_applicable=data_in.pph23_applicable,
             keterangan=data_in.keterangan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
@@ -381,6 +391,9 @@ def create_purchase_retur(
 ):
     """Buat Purchase Retur baru (auto-generate no retur + auto-post jurnal)."""
     try:
+        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
+        from app.services import app_setting_service
+        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
         details_data = [d.model_dump() for d in data_in.details]
         obj = svc.create_purchase_retur(
             db=db,

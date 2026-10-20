@@ -112,6 +112,9 @@ class KasIdentifikasiRincian(BaseModel, BaseMixin):
     purchase_invoice_id = Column(UUID(as_uuid=True), nullable=True)
     diskon = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
     pph23 = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    # === AUD-08 (update #04) — snapshot bukti potong & masa pajak ===
+    no_bukti_potong = Column(String(50), nullable=True)
+    masa_pajak = Column(String(7), nullable=True)
 
     # Relationships
     identifikasi = relationship("KasIdentifikasi", back_populates="rincian")

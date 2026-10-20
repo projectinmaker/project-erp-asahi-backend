@@ -16,7 +16,9 @@ from app.schemas.settlement import AllocationResponse
 
 
 # === Update #02 — jenis transaksi kas (lihat model JENIS_TRANSAKSI_KAS) ===
-JENIS_TRANSAKSI_KAS_VALUES = ("TRANSAKSI_LAINNYA", "BELUM_TERIDENTIFIKASI", "PELUNASAN_INVOICE")
+# AUD-11 (update #04): + PELUNASAN_PAJAK — pembayaran hutang pajak ke kas/bank
+# (akun lawan wajib akun hutang pajak 213xxx, divalidasi service).
+JENIS_TRANSAKSI_KAS_VALUES = ("TRANSAKSI_LAINNYA", "BELUM_TERIDENTIFIKASI", "PELUNASAN_INVOICE", "PELUNASAN_PAJAK")
 
 
 # ==========================================
@@ -217,6 +219,12 @@ class PenerimaanKasCreate(PenerimaanKasBase):
                 "(pilih pelanggan → invoice penjualan outstanding → nominal → posting), "
                 "bukan lewat payload penerimaan umum"
             )
+        # AUD-11 — pelunasan pajak adalah pengeluaran (modul Pembayaran saja)
+        if jenis == "PELUNASAN_PAJAK":
+            raise ValueError(
+                "Jenis 'Pelunasan Pajak' hanya tersedia di modul Pembayaran "
+                "(kas keluar untuk membayar hutang pajak)"
+            )
         if jenis not in JENIS_TRANSAKSI_KAS_VALUES:
             raise ValueError(
                 f"Jenis transaksi tidak dikenal: {self.jenis_transaksi} "
@@ -342,6 +350,9 @@ class IdentifikasiPiutangAlokasiCreate(BaseSchema):
     sales_invoice_id: UUID
     nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    # === AUD-08 (update #04) — bukti potong + masa pajak per faktur ===
+    no_bukti_potong: Optional[str] = Field(default=None, max_length=50)
+    masa_pajak: Optional[str] = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 class IdentifikasiPiutangCreate(BaseSchema):
@@ -362,6 +373,9 @@ class IdentifikasiHutangAlokasiCreate(BaseSchema):
     nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     diskon: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
     pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    # === AUD-08 (update #04) — bukti potong + masa pajak per faktur ===
+    no_bukti_potong: Optional[str] = Field(default=None, max_length=50)
+    masa_pajak: Optional[str] = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 class IdentifikasiHutangCreate(BaseSchema):
@@ -384,6 +398,9 @@ class IdentifikasiRincianResponse(BaseSchema):
     akun_perkiraan: Optional[AkunPerkiraanSimpleResponse] = None
     # Update #03 — snapshot invoice + potongan per faktur (sesi PIUTANG/HUTANG)
     sales_invoice_id: Optional[UUID] = None
+    # AUD-08 (update #04) — bukti potong + masa pajak per faktur
+    no_bukti_potong: Optional[str] = None
+    masa_pajak: Optional[str] = None
     purchase_invoice_id: Optional[UUID] = None
     diskon: Decimal = Decimal("0")
     pph23: Decimal = Decimal("0")
@@ -456,3 +473,38 @@ class PenampungMonitoringResponse(BaseSchema):
     total_sisa: Decimal = Decimal("0")
     rekonsiliasi_ok: bool
     checks: List[PenampungCheckResponse] = []
+
+
+# ==========================================
+# === AUD-11 (update #04) — Monitoring hutang pajak ===
+# ==========================================
+class PajakAkunMonitoringResponse(BaseSchema):
+    """Saldo satu akun hutang pajak (system_account_type=TAX_PAYABLE)."""
+    id: UUID
+    kode: str
+    nama: str
+    saldo_gl: Decimal = Decimal("0")  # debit - kredit (POSTED)
+    hutang: Decimal = Decimal("0")    # positif = masih harus dibayar
+    dibayar_lebih: Decimal = Decimal("0")  # debit > kredit (overpayment)
+
+
+class PajakPelunasanRiwayatResponse(BaseSchema):
+    """Satu dokumen pembayaran jenis PELUNASAN_PAJAK."""
+    id: UUID
+    no_bukti: str
+    no_nukti: str
+    tanggal: datetime
+    total_nilai: Decimal
+    catatan: Optional[str] = None
+    kas_bank: Optional[dict] = None
+    status: str
+    jurnal_umum_id: Optional[UUID] = None
+    akun: List[dict] = []
+
+
+class PajakMonitoringResponse(BaseSchema):
+    """AUD-11 — rekap hutang pajak + riwayat pelunasan pajak."""
+    akun_pajak: List[PajakAkunMonitoringResponse] = []
+    total_hutang: Decimal = Decimal("0")
+    total_dibayar_lebih: Decimal = Decimal("0")
+    riwayat_pelunasan: List[PajakPelunasanRiwayatResponse] = []

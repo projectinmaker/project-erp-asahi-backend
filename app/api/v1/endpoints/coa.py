@@ -212,11 +212,12 @@ def create_coa(
 
 @router.get("/saldo-awal", response_model=SaldoAwalResponse)
 def get_saldo_awal(
+    tahun: Optional[int] = Query(None, description="AUD-15: baca set saldo awal tahun buku tertentu (SA-{tahun}); kosong = set aktif terbaru"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Cek dan ambil saldo awal yang sudah diset."""
-    return coa_service.get_saldo_awal(db)
+    """Cek dan ambil saldo awal yang sudah diset (opsional per tahun buku)."""
+    return coa_service.get_saldo_awal(db, tahun=tahun)
 
 
 @router.post("/saldo-awal", response_model=SaldoAwalResponse)
@@ -247,7 +248,8 @@ def save_saldo_awal(
     ]
 
     try:
-        return coa_service.save_saldo_awal(db, items, req.tanggal, current_user.id)
+        return coa_service.save_saldo_awal(db, items, req.tanggal, current_user.id,
+                                           tahun=getattr(req, "tahun", None))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

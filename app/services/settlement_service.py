@@ -2,6 +2,7 @@
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 from app.models import SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PenerimaanKas, PembayaranKas, Pelanggan, Supplier, JurnalUmum
@@ -203,6 +204,24 @@ def resolve_penalti(db, penalti, akun_penalti_id, current_penalti=ZERO, current_
     return nilai, akun_id
 
 
+def _normalize_bukti_potong(data: dict) -> tuple[Optional[str], Optional[str]]:
+    """AUD-08 (update #04) — normalisasi + validasi bukti potong / masa pajak.
+
+    masa_pajak format 'YYYY-MM' (Januari 2026 = '2026-01'). Keduanya opsional,
+    tapi masa_pajak tanpa format benar ditolak sejak sekarang (bukan saat SPT
+    mau disetor).
+    """
+    no_bukti = (data.get('no_bukti_potong') or '').strip() or None
+    masa = (data.get('masa_pajak') or '').strip() or None
+    if no_bukti and len(no_bukti) > 50:
+        raise ValueError('Nomor bukti potong maksimal 50 karakter')
+    if masa:
+        import re
+        if not re.match(r'^\d{4}-(0[1-9]|1[0-2])$', masa):
+            raise ValueError(f"Format masa pajak '{masa}' tidak valid; gunakan 'YYYY-MM' (contoh '2026-10')")
+    return no_bukti, masa
+
+
 def prepare(db, jenis, pihak_id, tanggal, allocation_data):
     model = invoice_model(jenis)
     party = db.get(Pelanggan if jenis == 'piutang' else Supplier, pihak_id)
@@ -240,16 +259,29 @@ def prepare(db, jenis, pihak_id, tanggal, allocation_data):
             raise ValueError('Diskon pelunasan saat ini hanya didukung untuk pelunasan hutang (pembayaran)')
         # === Update #01 — PPh 23 saat pelunasan (piutang & hutang) ===
         pph23 = normalize_pph23(data.get('pph23'))
+        # === AUD-09 (update #04) — anti pencatatan ganda PPh 23 ===
+        # PI dengan pph23_applicable membentuk Cr Hutang PPh 23 SEJAK posting
+        # invoice (grand_total sudah net). Potongan pph23 di alokasi pelunasan
+        # hanya untuk PI legacy (PPh 23 dicatat saat bayar) — bila keduanya
+        # dipakai, 213002 terbentuk dua kali.
+        if jenis == 'hutang' and pph23 > 0 and (getattr(obj, 'total_pph23', 0) or 0) > 0:
+            raise ValueError(
+                f"PPh 23 faktur {current[obj.id]['no_dokumen']} sudah tercatat saat invoice "
+                f"diposting (grand total net). Kosongkan kolom PPh 23 pada alokasi pelunasan ini."
+            )
         if diskon + pph23 > nilai:
             raise ValueError(f'Diskon + PPh 23 melebihi nilai alokasi {current[obj.id]["no_dokumen"]}')
         if diskon > nilai:
             raise ValueError(f'Diskon melebihi nilai alokasi {current[obj.id]["no_dokumen"]}')
+        # === AUD-08 (update #04) — bukti potong + masa pajak per alokasi ===
+        no_bukti_potong, masa_pajak = _normalize_bukti_potong(data)
         account_id = control_account(db, obj)
         grouped[account_id] += nilai
         # terutang = snapshot sisa tagihan SEBELUM pembayaran ini (kolom
         # "Terutang" di layout cetak Bayar Pemasok).
         rows.append({'invoice_id': obj.id, 'nilai': nilai, 'diskon': diskon,
                      'pph23': pph23,
+                     'no_bukti_potong': no_bukti_potong, 'masa_pajak': masa_pajak,
                      'terutang': current[obj.id]['sisa_tagihan'], 'akun_perkiraan_id': account_id})
     return rows, [{'akun_perkiraan_id': account, 'nilai': amount} for account, amount in grouped.items()]
 
@@ -258,7 +290,9 @@ def attach(payment, jenis, rows):
     for row in rows:
         attrs = {'sales_invoice_id' if jenis == 'piutang' else 'purchase_invoice_id': row['invoice_id'],
                  'nilai': row['nilai'], 'akun_perkiraan_id': row['akun_perkiraan_id'],
-                 'diskon': row.get('diskon', ZERO), 'pph23': row.get('pph23', ZERO), 'terutang': row.get('terutang')}
+                 'diskon': row.get('diskon', ZERO), 'pph23': row.get('pph23', ZERO), 'terutang': row.get('terutang'),
+                 # AUD-08 — bukti potong + masa pajak ikut tersimpan per alokasi
+                 'no_bukti_potong': row.get('no_bukti_potong'), 'masa_pajak': row.get('masa_pajak')}
         payment.alokasi.append(PaymentAllocation(**attrs))
 
 
@@ -341,7 +375,9 @@ def validate_payment(db, payment):
     party = payment.pelanggan_id if jenis == 'piutang' else payment.supplier_id
     rows, expected = prepare(db, jenis, party, payment.tanggal,
                              [{'invoice_id': r.invoice_id, 'nilai': r.nilai, 'diskon': getattr(r, 'diskon', None),
-                               'pph23': getattr(r, 'pph23', None)} for r in payment.alokasi])
+                               'pph23': getattr(r, 'pph23', None),
+                               'no_bukti_potong': getattr(r, 'no_bukti_potong', None),
+                               'masa_pajak': getattr(r, 'masa_pajak', None)} for r in payment.alokasi])
     # Update #5 — rincian boleh berisi grup akun alokasi + 1 baris akun penalti;
     # total rincian harus = Σ alokasi + penalti = total_nilai.
     penalti = normalize_penalti(getattr(payment, 'penalti', None))
@@ -397,5 +433,7 @@ def payment_summary(payment):
         'alokasi': [{'id': r.id, 'invoice_id': r.invoice_id, 'nilai': r.nilai,
                      'diskon': getattr(r, 'diskon', None) or ZERO,
                      'pph23': getattr(r, 'pph23', None) or ZERO,
+                     'no_bukti_potong': getattr(r, 'no_bukti_potong', None),
+                     'masa_pajak': getattr(r, 'masa_pajak', None),
                      'terutang': getattr(r, 'terutang', None),
                      'akun_perkiraan_id': r.akun_perkiraan_id} for r in payment.alokasi]}

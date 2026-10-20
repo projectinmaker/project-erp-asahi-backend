@@ -226,3 +226,82 @@ def get_gl_reconciliation(
         },
         'reconciliationStatus': reconciliation_status,
     }
+
+
+# ============================================================
+# AUD-14 (update #04) — CLOSING TAHUNAN
+# Transfer laba berjalan (322000) → laba ditahan (321000).
+# ============================================================
+def _tahun_payload(rec) -> dict:
+    """Serialisasi record PenutupanTahun (tanpa response_model ORM)."""
+    from datetime import timezone as _tz
+    def _iso(dt):
+        return dt.isoformat() if dt else None
+    return {
+        "tahun": rec.tahun, "status": rec.status, "labaRugi": str(rec.laba_rugi) if rec.laba_rugi is not None else None,
+        "keterangan": rec.keterangan, "jurnalPenutupanId": str(rec.jurnal_penutupan_id) if rec.jurnal_penutupan_id else None,
+        "closedAt": _iso(rec.closed_at), "reopenedAt": _iso(rec.reopened_at),
+        "reopenAlasan": rec.reopen_alasan,
+    }
+@router.get("/penutupan-periode/tahun")
+def get_tahun_list(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar tahun buku + status penutupan tahun (AUD-14)."""
+    return svc.get_tahun_list(db)
+
+
+@router.post("/penutupan-periode/tutup-tahun/{tahun}")
+def tutup_tahun(
+    tahun: int,
+    payload: Optional[dict] = None,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Tutup tahun buku: transfer saldo Laba (Rugi) Tahun Berjalan → Laba
+    Ditahan (jurnal CL-YEAR-{tahun}, dikecualikan dari laporan laba rugi).
+
+    Syarat: tahun sudah berlalu + 12 bulan DITUTUP. Payload opsional:
+    {"keterangan": "...", "withClosingEntry": true} (default true).
+    """
+    payload = payload or {}
+    try:
+        rec = svc.tutup_tahun(
+            db=db,
+            tahun=tahun,
+            user_id=current_user.id,
+            keterangan=payload.get("keterangan"),
+            with_closing_entry=payload.get("withClosingEntry", True),
+        )
+        return _tahun_payload(rec)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/penutupan-periode/buka-tahun/{tahun}")
+def buka_tahun(
+    tahun: int,
+    payload: Optional[dict] = None,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buka kembali tahun buku (reversal jurnal transfer + alasan wajib +
+    hanya manajer/admin). Bulan tetap terkunci — buka bulan lewat endpoint
+    /penutupan-periode/buka setelah tahun dibuka."""
+    payload = payload or {}
+    try:
+        rec = svc.buka_tahun(
+            db=db,
+            tahun=tahun,
+            user_id=current_user.id,
+            alasan=payload.get("alasan"),
+            user=current_user,
+        )
+        return _tahun_payload(rec)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        if hasattr(e, 'status_code') and e.status_code == 403:
+            raise
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

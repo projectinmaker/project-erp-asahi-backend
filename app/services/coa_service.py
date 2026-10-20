@@ -3,7 +3,7 @@ from uuid import UUID
 from decimal import Decimal
 from datetime import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 
 from loguru import logger
 
@@ -342,8 +342,38 @@ def get_next_kode(db: Session, induk_id: UUID) -> str:
 # SALDO AWAL
 # ============================================================
 
-def get_saldo_awal(db: Session) -> dict:
+def _opening_ref_no(tahun: int) -> str:
+    """AUD-15 — ref_no jurnal saldo awal per tahun buku (SA-{tahun})."""
+    return f"SA-{tahun}"
+
+
+def _opening_journal_for_tahun(db: Session, tahun: Optional[int]):
+    """Jurnal saldo awal aktif milik tahun buku tertentu.
+
+    SA-{tahun} eksplisit; legacy SA-INIT (ref_no lama) dicocokkan bila
+    tanggalnya jatuh di tahun tsb. None bila tahun tidak diberikan → jurnal
+    aktif terbaru (perilaku lama, backward compatible).
+    """
+    base = _active_opening_journals(db)
+    if tahun is None:
+        return base.order_by(JurnalUmum.created_at.desc(), JurnalUmum.id).first()
+    from app.services.reporting_ledger import local_datetime
+    year_start = local_datetime(datetime(tahun, 1, 1))
+    year_end = local_datetime(datetime(tahun, 12, 31, 23, 59, 59))
+    explicit = base.filter(JurnalUmum.ref_no == _opening_ref_no(tahun)).first()
+    if explicit:
+        return explicit
+    legacy = base.filter(
+        JurnalUmum.tanggal >= year_start, JurnalUmum.tanggal <= year_end
+    ).order_by(JurnalUmum.created_at.desc(), JurnalUmum.id).first()
+    return legacy
+
+
+def get_saldo_awal(db: Session, tahun: Optional[int] = None) -> dict:
     """Ambil saldo awal yang sudah diset (satu nilai per akun).
+
+    AUD-15 (update #04): parameter ``tahun`` = baca set saldo awal tahun buku
+    tertentu (SA-{tahun}); tanpa parameter = set aktif terbaru (perilaku lama).
 
     Jika sudah, return detail jurnal SALDO_AWAL yang aktif (bisa di-edit ulang).
     Jika belum, return list kosong dengan sudah_diset=False.
@@ -353,13 +383,15 @@ def get_saldo_awal(db: Session) -> dict:
     sehingga `selisih` = nilai yang diserap penampung.
     """
     from app.services.coa_category import OPENING_BALANCE_DIFF_SYSTEM_TYPE
-    from app.services.reporting_ledger import local_datetime
-    existing = _active_opening_journals(db).order_by(JurnalUmum.created_at.desc(), JurnalUmum.id).first()
+    from app.services.reporting_ledger import local_datetime, available_fiscal_years
+    existing = _opening_journal_for_tahun(db, tahun)
 
     if not existing:
         return {
             "sudah_diset": False,
             "tanggal": None,
+            "tahun": tahun,
+            "tahun_tersedia": available_fiscal_years(db),
             "items": [],
             "total_debit": Decimal("0"),
             "total_kredit": Decimal("0"),
@@ -410,6 +442,8 @@ def get_saldo_awal(db: Session) -> dict:
     return {
         "sudah_diset": True,
         "tanggal": local_datetime(existing.tanggal).date().isoformat() if existing.tanggal else None,
+        "tahun": tahun if tahun is not None else (local_datetime(existing.tanggal).year if existing.tanggal else None),
+        "tahun_tersedia": available_fiscal_years(db),
         "items": items,
         "total_debit": total_debit,
         "total_kredit": total_kredit,
@@ -477,16 +511,29 @@ from app.services.accounting_control import atomic_accounting_write
 
 
 @atomic_accounting_write
-def _replace_opening(db, entries, tanggal, user_id):
+def _replace_opening(db, entries, tanggal, user_id, tahun: Optional[int] = None):
     """Keep original journals; replace their effective balance atomically.
 
     entries: baris jurnal saldo awal LENGKAP (item + penampung) yang sudah
     balance — bukan lagi pasangan akun lawan manual.
+
+    AUD-15 (update #04): bila ``tahun`` diberikan, hanya set saldo awal tahun
+    buku tsb yang diganti (SA-{tahun} + legacy SA-INIT yang bertanggal di
+    tahun itu); set tahun lain tetap utuh — mendukung saldo awal per tahun
+    buku (mode laporan tahunBuku). Tanpa tahun = replace semua (perilaku lama).
     """
     from app.services.posting_service import auto_posting_jurnal, reverse_journal, validate_entries
+    from app.services.reporting_ledger import local_datetime
     if entries:
         validate_entries(db, entries)
-    originals = _active_opening_journals(db).order_by(JurnalUmum.id).all()
+    query = _active_opening_journals(db)
+    if tahun is not None:
+        year_start = local_datetime(datetime(tahun, 1, 1))
+        year_end = local_datetime(datetime(tahun, 12, 31, 23, 59, 59))
+        query = query.filter(
+            or_(JurnalUmum.ref_no == _opening_ref_no(tahun),
+                and_(JurnalUmum.tanggal >= year_start, JurnalUmum.tanggal <= year_end)))
+    originals = query.order_by(JurnalUmum.id).all()
     affected = {row.akun_perkiraan_id for journal in originals for row in journal.details}
     for journal in originals:
         reverse_journal(db, journal.id, user_id, "Penggantian saldo awal")
@@ -496,8 +543,10 @@ def _replace_opening(db, entries, tanggal, user_id):
         account.tanggal = tanggal
     journal = None
     if entries:
-        journal = auto_posting_jurnal(db, RefModule.SALDO_AWAL, "SA-INIT", entries,
-            keterangan="Saldo Awal Perusahaan", tanggal=tanggal, created_by=user_id)
+        ref_no = _opening_ref_no(tahun) if tahun is not None else "SA-INIT"
+        keterangan = f"Saldo Awal Perusahaan {tahun}" if tahun is not None else "Saldo Awal Perusahaan"
+        journal = auto_posting_jurnal(db, RefModule.SALDO_AWAL, ref_no, entries,
+            keterangan=keterangan, tanggal=tanggal, created_by=user_id)
         for entry in entries:
             account = db.get(AkunPerkiraan, entry.akun_perkiraan_id)
             account.saldo = (entry.debit-entry.kredit) * (1 if account.saldo_normal == SaldoNormal.DEBIT else -1)
@@ -505,7 +554,8 @@ def _replace_opening(db, entries, tanggal, user_id):
     return journal
 
 
-def save_saldo_awal(db: Session, items: list, tanggal_str: str, user_id: UUID) -> dict:
+def save_saldo_awal(db: Session, items: list, tanggal_str: str, user_id: UUID,
+                    tahun: Optional[int] = None) -> dict:
     """Replace global opening balances (satu nilai per akun).
 
     Perubahan (catatan update):
@@ -575,5 +625,7 @@ def save_saldo_awal(db: Session, items: list, tanggal_str: str, user_id: UUID) -
                 entries.append(JurnalEntryItem(
                     penampung.id, -diff, Decimal("0"), "Penampung selisih saldo awal"))
 
-    _replace_opening(db, entries, tanggal, user_id)
-    return get_saldo_awal(db)
+    if tahun is None:
+        tahun = local_datetime(tanggal).year
+    _replace_opening(db, entries, tanggal, user_id, tahun=tahun)
+    return get_saldo_awal(db, tahun=tahun)

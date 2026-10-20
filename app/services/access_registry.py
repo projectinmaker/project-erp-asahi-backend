@@ -152,6 +152,7 @@ REGISTRY: list = (
     + _res('finance', 'cash_receipt', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'export'])
     + _res('finance', 'bank_transfer', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'reverse', 'export'])
     + _res('finance', 'bank_reconciliation', ['view', 'create', 'edit', 'cancel', 'execute', 'export'])
+    + _res('finance', 'tax_payment', ['view', 'export'])  # AUD-11 (update #04)
     # ── Accounting ────────────────────────────────────────────────────────
     + _res('accounting', 'coa', ['view', 'create', 'edit', 'delete', 'export'])
     + _res('accounting', 'opening_balance', ['view', 'edit'], sensitive_extra=('edit',))
@@ -172,6 +173,7 @@ REGISTRY: list = (
     + _res('reports', 'cashbank', ['view', 'export'])
     + _res('reports', 'inventory_report', ['view', 'export'])
     + _res('reports', 'reconciliation_report', ['view', 'export'])
+    + _res('reports', 'tax_report', ['view', 'export'])  # AUD-07 (update #04)
     # ── Dashboard & Workflow ───────────────────────────────────────────────
     + _res('dashboard', 'operational', ['view'])
     + _res('workflow', 'queue', ['view'])
@@ -276,6 +278,7 @@ ROLE_TEMPLATES = {
             'finance.bank_reconciliation.view', 'finance.bank_reconciliation.create',
             'finance.bank_reconciliation.edit', 'finance.bank_reconciliation.cancel',
             'finance.bank_reconciliation.execute',
+            'finance.tax_payment.view', 'finance.tax_payment.export',  # AUD-11
             'sales.ar_settlement.view', 'sales.ar_settlement.create', 'sales.ar_settlement.edit',
             'sales.ar_settlement.cancel', 'sales.ar_settlement.submit',
             'purchase.ap_settlement.view', 'purchase.ap_settlement.create', 'purchase.ap_settlement.edit',
@@ -283,6 +286,7 @@ ROLE_TEMPLATES = {
             'accounting.journal.view', 'accounting.journal.create', 'accounting.journal.edit',
             'accounting.journal.submit',
             'accounting.coa.view', 'accounting.opening_balance.view', 'accounting.period.view',
+            'reports.tax_report.view', 'reports.tax_report.export',  # AUD-07
             'sales.sales_order.view', 'sales.sales_invoice.view', 'sales.sales_return.view', 'sales.delivery.view',
             'sales.penawaran.view',
             'sales.tukar_faktur.view',
@@ -546,6 +550,12 @@ _EXPLICIT = {
     'import_supplier': 'master.supplier.import',
     # coa
     'get_saldo_awal': 'accounting.opening_balance.view',
+    # AUD-07/AUD-11 (update #04) — rekap pajak & monitoring hutang pajak
+    'get_rekap_ppn': 'reports.tax_report.view',
+    'get_rekap_pph23': 'reports.tax_report.view',
+    'export_rekap_ppn': 'reports.tax_report.export',
+    'export_rekap_pph23': 'reports.tax_report.export',
+    'get_pajak_monitoring': 'finance.tax_payment.view',
     'save_saldo_awal': 'accounting.opening_balance.edit',
     'get_next_kode': 'accounting.coa.view',
     'migration_preview': 'accounting.coa.view',
@@ -589,6 +599,10 @@ _EXPLICIT = {
     'get_gl_reconciliation': 'accounting.period.view',
     'tutup_periode': 'accounting.period.close',
     'buka_periode': 'accounting.period.reopen',
+    # AUD-14 (update #04) — closing tahunan
+    'get_tahun_list': 'accounting.period.view',
+    'tutup_tahun': 'accounting.period.close',
+    'buka_tahun': 'accounting.period.reopen',
     # laporan
     'get_neraca_saldo': 'reports.financial.view',
     'get_perubahan_modal': 'reports.financial.view',

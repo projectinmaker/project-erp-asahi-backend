@@ -44,6 +44,8 @@ from app.services.setting_akun_service import (
     KEY_PPN_MASUKAN,
     KEY_RETUR_PEMBELIAN,
     KEY_BEBAN_ANGKUT_PEMBELIAN,
+    # AUD-09 (update #04) — Cr Hutang PPh 23 saat posting PI ber-PPh23
+    KEY_HUTANG_PPH23,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
@@ -638,6 +640,12 @@ def create_purchase_invoice(
     syarat_bayar_id=None,
     # Update #7 (B-06): link invoice ke Purchase Order sumber (opsional).
     purchase_order_id: UUID | None = None,
+    # === AUD-09 (update #04) — PPh 23 pada Purchase Invoice ===
+    # pph23_applicable=True → grand_total NET + Cr Hutang PPh 23 saat posting;
+    # hutang supplier tercatat bersih sejak invoice. Default false = perilaku
+    # lama (PPh 23 hanya dicatat saat pelunasan, hutang bruto).
+    pph23: Decimal = Decimal("2"),
+    pph23_applicable: bool = False,
 ) -> PurchaseInvoice:
     """Buat PurchaseInvoice baru beserta detail + biaya tambahan."""
     try:
@@ -652,9 +660,10 @@ def create_purchase_invoice(
         sub_total, total_diskon = _hitung_total_detail_with_diskon(details_data)
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        # Invoice pembelian belum mendukung pilihan PPh23 (default PPN aktif).
-        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
-            sub_total, total_diskon, ppn, total_biaya_tambahan
+        # === AUD-09 (update #04) — PPh 23 opsional di PI (mirror SI/PO) ===
+        total_ppn, total_pph23, grand_total = _hitung_grand_total(
+            sub_total, total_diskon, ppn, total_biaya_tambahan,
+            pph23_pct=pph23, pph23_applicable=pph23_applicable,
         )
 
         # Generate nomor form (invoice pembelian)
@@ -673,9 +682,12 @@ def create_purchase_invoice(
             alamat=alamat,
             diskon_global=diskon_global,
             ppn=ppn,
+            pph23=pph23,
+            pph23_applicable=pph23_applicable,
             sub_total=sub_total,
             total_diskon=total_diskon,
             total_ppn=total_ppn,
+            total_pph23=total_pph23,
             total_biaya_tambahan=total_biaya_tambahan,
             grand_total=grand_total,
             auto_post_jurnal=auto_post_jurnal,
@@ -751,6 +763,9 @@ def update_purchase_invoice(
     details: list | None = None,
     # Update #7 (B-06): link/ubah PO sumber saat invoice masih draft.
     purchase_order_id: UUID | None = None,
+    # === AUD-09 (update #04) — PPh 23 PI (draft only; require_unposted) ===
+    pph23: Optional[Decimal] = None,
+    pph23_applicable: Optional[bool] = None,
 ) -> PurchaseInvoice:
     """Update data purchase invoice (field header + opsional replace detail)."""
     require_unposted(db_obj)
@@ -769,6 +784,11 @@ def update_purchase_invoice(
         db_obj.diskon_global = diskon_global
     if ppn is not None:
         db_obj.ppn = ppn
+    # === AUD-09 (update #04) — PPh 23 PI (hanya draft; guard di atas) ===
+    if pph23 is not None:
+        db_obj.pph23 = pph23
+    if pph23_applicable is not None:
+        db_obj.pph23_applicable = pph23_applicable
     if keterangan is not None:
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
@@ -1485,6 +1505,19 @@ def post_purchase_invoice(db: Session, inv, created_by):
 
     entries.append(JurnalEntryItem(akun_perkiraan_id=supplier.akun_hutang_id,
                                   kredit=grand_total, keterangan=f"Utang PINV {no_form}"))
+    # === AUD-09 (update #04) — PPh 23 tercatat SEJAK invoice ===
+    # grand_total sudah NET (dasar + PPN + biaya − total_pph23); supaya jurnal
+    # balance, Cr Hutang PPh 23 (213002) untuk selisihnya — PPh 23 supplier
+    # kini membentuk hutang pajak sejak posting PI, bukan menunggu pelunasan.
+    total_pph23 = inv.total_pph23 or Decimal("0")
+    if total_pph23 > 0:
+        entries.append(JurnalEntryItem(
+            akun_perkiraan_id=get_akun_id_or_raise(
+                db, KEY_HUTANG_PPH23, context=f"PINV {no_form}"
+            ),
+            kredit=total_pph23,
+            keterangan=f"Hutang PPh 23 PINV {no_form}",
+        ))
     if total_ppn > 0:
         entries.insert(
             1,

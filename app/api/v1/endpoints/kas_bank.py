@@ -20,6 +20,7 @@ from app.schemas.kas_bank import (
     KasIdentifikasiCreate, KasIdentifikasiResponse, KasIdentifikasiListResponse,
     IdentifikasiPiutangCreate, IdentifikasiHutangCreate,
     PenampungMonitoringResponse,
+    PajakMonitoringResponse,
     KasBankSimpleResponse, AkunPerkiraanSimpleResponse,
 )
 from app.schemas.workflow import HardDeleteRequest
@@ -646,6 +647,21 @@ def get_penerimaan_penampung_monitoring(
     (subledger vs General Ledger konsisten).
     """
     return identifikasi_svc.get_penampung_monitoring(db)
+
+
+@router.get("/pajak/monitoring", response_model=PajakMonitoringResponse)
+def get_pajak_monitoring(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """AUD-11 (update #04) — monitoring hutang pajak + riwayat pelunasan.
+
+    Rekap saldo akun hutang pajak (TAX_PAYABLE: PPh 21/23/29/Final) dari GL
+    + daftar pembayaran jenis PELUNASAN_PAJAK. Pelunasan pajak dicatat lewat
+    POST /kas-bank/pembayaran dengan jenisTransaksi='PELUNASAN_PAJAK'
+    (akun lawan wajib akun hutang pajak).
+    """
+    return svc.get_pajak_monitoring(db)
 
 
 @router.post("/identifikasi/penerimaan/{identifikasi_id}/cancel", response_model=KasIdentifikasiResponse)

@@ -10,6 +10,9 @@ class AppSettingKey(str, enum.Enum):
     """Kunci pengaturan aplikasi global (non-COA) yang dikenal sistem."""
 
     METODE_VALUASI = "METODE_VALUASI"
+    # AUD-10 (update #04) — tarif pajak default global
+    RATE_PPN = "RATE_PPN"
+    RATE_PPH23 = "RATE_PPH23"
 
 
 class AppSetting(BaseModel, BaseMixin):

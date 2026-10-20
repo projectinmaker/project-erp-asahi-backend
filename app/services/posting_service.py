@@ -71,6 +71,11 @@ def auto_posting_jurnal(
     allow_inactive_accounts: bool = False,
     organization: Optional[dict] = None,
     is_manual: bool = False,
+    # AUD-14 (update #04): bypass periode-terkunci KHUSUS jurnal penutupan
+    # tahunan (RefModule.PENUTUPAN_PERIODE) — transfer laba berjalan → laba
+    # ditahan memang diposting ke periode Desember yang sudah dikunci
+    # (syarat tutup tahun = semua bulan sudah DITUTUP).
+    allow_closed_period: bool = False,
 ) -> JurnalUmum:
     """
     Membuat Jurnal Umum otomatis beserta detailnya (double-entry).
@@ -115,7 +120,8 @@ def auto_posting_jurnal(
         from app.services.reporting_ledger import local_datetime
         tanggal = local_datetime(tanggal or datetime.now(timezone.utc))
         # Validasi: cek periode tidak ditutup (inline query untuk menghindari circular import)
-        if tanggal:
+        # AUD-14: jurnal penutupan tahunan boleh posting ke periode terkunci.
+        if tanggal and not (allow_closed_period and ref_module == RefModule.PENUTUPAN_PERIODE):
             _periode_closed = (
                 db.query(PenutupanPeriode)
                 .filter(

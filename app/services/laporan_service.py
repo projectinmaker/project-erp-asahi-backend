@@ -20,8 +20,24 @@ def _total_by_header(db, header, date_from, date_to=None):
     return sum((r['total'] for r in _saldo_per_akun_list(db, header, date_from, date_to)), gl.ZERO)
 
 
-def get_laba_rugi(db, date_from, date_to):
-    rows = gl.totals(db, date_from, date_to, performance=True)
+def _merge_rows(opening, movement):
+    """AUD-15 — gabung saldo awal tahun buku + mutasi (per akun)."""
+    out = {}
+    for key, row in opening.items():
+        out[key] = {'account': row['account'], 'debit': row['debit'], 'kredit': row['kredit']}
+    for key, row in movement.items():
+        if key in out:
+            out[key]['debit'] += row['debit']
+            out[key]['kredit'] += row['kredit']
+        else:
+            out[key] = {'account': row['account'], 'debit': row['debit'], 'kredit': row['kredit']}
+    return out
+
+
+def get_laba_rugi(db, date_from, date_to, tahun_buku=None):
+    # AUD-15: mode tahun buku mengecualikan jurnal saldo awal (P&L tidak
+    # terpengaruh — SA hanya akun neraca — tapi konsisten dengan mode lain).
+    rows = gl.totals(db, date_from, date_to, performance=True, fiscal_year=tahun_buku)
     # M-02: klasifikasi per akun (level presentasi), bukan per header COA saja:
     # - PENDAPATAN dengan report_group OTHER_INCOME (421xxx bunga/sewa/selisih kurs)
     #   → grup "pendapatan_lain" (pendapatan lain-lain), bukan pendapatan usaha.
@@ -59,9 +75,15 @@ def get_laba_rugi(db, date_from, date_to):
             'laba_bersih': operating + totals['total_pendapatan_lain']}
 
 
-def get_neraca_saldo(db, date_from, date_to):
-    opening = gl.totals(db, before=date_from)
-    movements = gl.totals(db, date_from, date_to)
+def get_neraca_saldo(db, date_from, date_to, tahun_buku=None):
+    # AUD-15: mode tahun buku — saldo awal periode = set SA-{tahun}, bukan
+    # seluruh histori jurnal sebelum tanggal (buku dipotong per tahun).
+    if tahun_buku is not None:
+        opening = gl.fiscal_opening_totals(db, tahun_buku)
+        movements = gl.totals(db, date_from, date_to, fiscal_year=tahun_buku)
+    else:
+        opening = gl.totals(db, before=date_from)
+        movements = gl.totals(db, date_from, date_to)
     items = []
     for key in sorted(opening.keys() | movements.keys(), key=lambda k: (movements.get(k) or opening[k])['account'].kode):
         row = movements.get(key) or opening[key]
@@ -82,8 +104,15 @@ def get_neraca_saldo(db, date_from, date_to):
             'total_saldo_kredit': sum((r['saldo_kredit'] for r in items), gl.ZERO)}
 
 
-def get_neraca(db, tanggal):
-    rows = gl.totals(db, end=tanggal)
+def get_neraca(db, tanggal, tahun_buku=None):
+    # AUD-15: mode tahun buku — saldo = saldo awal tahun (SA-{tahun}) +
+    # mutasi tahun s/d tanggal; jurnal tahun sebelumnya tidak dihitung.
+    if tahun_buku is not None:
+        opening = gl.fiscal_opening_totals(db, tahun_buku)
+        movement = gl.totals(db, end=tanggal, fiscal_year=tahun_buku)
+        rows = _merge_rows(opening, movement)
+    else:
+        rows = gl.totals(db, end=tanggal)
     groups = {name: gl.header_items(rows, header) for name, header in
               (('aset', gl.HeaderCOA.AKTIVA), ('kewajiban', gl.HeaderCOA.KEWAJIBAN), ('ekuitas', gl.HeaderCOA.MODAL))}
     unclosed = gl.profit(rows)
@@ -130,16 +159,20 @@ def get_umur_hutang(db, as_of):
     return aging(db, 'hutang', as_of)
 
 
-def get_buku_besar(db, akun_id, date_from, date_to):
+def get_buku_besar(db, akun_id, date_from, date_to, tahun_buku=None):
     account = db.get(gl.Account, akun_id)
     if account is None:
         raise ValueError('Akun tidak ditemukan')
     sign = 1 if account.saldo_normal == 'DEBIT' else -1
-    opening = sign * gl.net(gl.totals(db, before=date_from).get(akun_id))
+    if tahun_buku is not None:
+        # AUD-15: saldo awal = set SA-{tahun} (bukan histori sebelum tanggal)
+        opening = sign * gl.net(gl.fiscal_opening_totals(db, tahun_buku).get(akun_id))
+    else:
+        opening = sign * gl.net(gl.totals(db, before=date_from).get(akun_id))
     q = db.query(gl.Line, gl.Journal).join(gl.Journal, gl.Journal.id == gl.Line.jurnal_umum_id).filter(gl.Line.akun_perkiraan_id == akun_id)
     # m-10: urutkan tanggal ASC lalu kronologi posting (created_at/id) ASC supaya
     # baris terakhir adalah transaksi terakhir periode (saldo berjalan konsisten).
-    rows = gl.posted(db, q, date_from, date_to).order_by(
+    rows = gl.posted(db, q, date_from, date_to, fiscal_year=tahun_buku).order_by(
         gl.Journal.tanggal, gl.Journal.created_at, gl.Journal.id, gl.Line.id).all()
     balance, debit, credit, items = opening, gl.ZERO, gl.ZERO, []
     for line, journal in rows:

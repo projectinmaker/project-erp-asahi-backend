@@ -37,10 +37,16 @@ class StatusTransaksi(str, enum.Enum):
 JENIS_TRANSAKSI_PELUNASAN_INVOICE = "PELUNASAN_INVOICE"
 JENIS_TRANSAKSI_LAINNYA = "TRANSAKSI_LAINNYA"
 JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI = "BELUM_TERIDENTIFIKASI"
+# === AUD-11 (update #04) — jenis khusus pelunasan hutang pajak ===
+# Pembayaran pajak (PPh 21/23/29/Final, dll): akun lawan HARUS akun hutang
+# pajak (system_account_type=TAX_PAYABLE, group 213000). Akun pajak TIDAK
+# lagi boleh dipakai lewat Transaksi Lainnya (alur tunggal + monitoring).
+JENIS_TRANSAKSI_PELUNASAN_PAJAK = "PELUNASAN_PAJAK"
 JENIS_TRANSAKSI_KAS = (
     JENIS_TRANSAKSI_PELUNASAN_INVOICE,
     JENIS_TRANSAKSI_LAINNYA,
     JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI,
+    JENIS_TRANSAKSI_PELUNASAN_PAJAK,
 )
 
 

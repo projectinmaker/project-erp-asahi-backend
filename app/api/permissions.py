@@ -59,8 +59,14 @@ def module_access(module: str):
                 raise HTTPException(409, 'Gunakan endpoint workflow: submit, approve, lalu execute')
             db.info['request_actor'] = user
             key = request.headers.get('Idempotency-Key')
-            # Required for document creates; optional for updates/cancels. Scope per actor.
-            required = request.method == 'POST' and fn.startswith('create_') and module in ('penjualan', 'pembelian', 'kas_bank', 'persediaan', 'jurnal', 'pelunasan', 'asset_cycle', 'organisasi', 'production')
+            # AUD-03 (update #04): Idempotency-Key kini wajib untuk SEMUA POST
+            # di balik module_access — sebelumnya hanya create_* di 9 modul
+            # (coa/master/aset-tetap/penutupan-periode/rekonsiliasi-bank/
+            # karyawan/pengguna/workflow tidak diwajibkan). PUT/DELETE tetap
+            # opsional (update bersifat idempotent-by-key natural).
+            # Pengecualian: POST yang murni komputasi/sinkronisasi read-like.
+            exempt = fn in ('preview_coa', 'sync_kas_bank_akun')
+            required = request.method == 'POST' and not exempt
             if required and not key:
                 raise HTTPException(400, 'Header Idempotency-Key wajib diisi untuk membuat dokumen')
             if key:

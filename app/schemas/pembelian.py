@@ -256,7 +256,16 @@ class PurchaseInvoiceBase(BaseSchema):
     no_faktur: str
     alamat: Optional[str] = None
     diskon_global: Optional[Decimal] = Decimal("0")
-    ppn: Decimal = Decimal("11")
+    # AUD-10 (update #04): default None = pakai tarif global (app_setting
+    # RATE_PPN) — di-resolve endpoint sebelum service; klien tetap bisa kirim
+    # tarif custom per dokumen.
+    ppn: Optional[Decimal] = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    # === AUD-09 (update #04) — PPh 23 pada Purchase Invoice ===
+    # Mirror SI/PO: potongan PPh 23 supplier tercatat sejak invoice (hutang
+    # net + Cr Hutang PPh 23 saat posting). Default false = perilaku lama
+    # (PPh 23 hanya dicatat saat pelunasan).
+    pph23: Optional[Decimal] = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    pph23_applicable: bool = False
     keterangan: Optional[str] = None
     # Phase D: deprecated
     auto_post_jurnal: bool = False
@@ -279,6 +288,9 @@ class PurchaseInvoiceUpdate(BaseSchema):
     alamat: Optional[str] = None
     diskon_global: Optional[Decimal] = None
     ppn: Optional[Decimal] = None
+    # AUD-09 — PPh 23 PI (hanya bisa diubah saat masih draft)
+    pph23: Optional[Decimal] = None
+    pph23_applicable: Optional[bool] = None
     keterangan: Optional[str] = None
     # Phase D: new fields
     purchase_order_id: Optional[UUID] = None
@@ -294,6 +306,7 @@ class PurchaseInvoiceResponse(PurchaseInvoiceBase):
     sub_total: Decimal
     total_diskon: Decimal
     total_ppn: Decimal
+    total_pph23: Decimal = Decimal("0")
     total_biaya_tambahan: Decimal
     grand_total: Decimal
     status: str

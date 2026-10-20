@@ -243,6 +243,9 @@ class SaldoAwalItemIn(BaseSchema):
 
 class SaldoAwalRequest(BaseSchema):
     tanggal: str  # YYYY-MM-DD
+    # AUD-15 (update #04): tahun buku set saldo awal ini (SA-{tahun}).
+    # None = tahun dari tanggal. Set tahun lain tetap utuh.
+    tahun: Optional[int] = None
     items: List[SaldoAwalItemIn]
 
 
@@ -253,6 +256,9 @@ class NextKodeResponse(BaseSchema):
 class SaldoAwalResponse(BaseSchema):
     sudah_diset: bool
     tanggal: Optional[str] = None
+    # AUD-15 — tahun buku set aktif + daftar tahun yang sudah punya set
+    tahun: Optional[int] = None
+    tahun_tersedia: List[int] = []
     items: List[SaldoAwalItem] = []
     total_debit: Decimal = Decimal("0")
     total_kredit: Decimal = Decimal("0")

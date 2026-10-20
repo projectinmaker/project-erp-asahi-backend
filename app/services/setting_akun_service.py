@@ -165,6 +165,116 @@ SETTING_KEY_TO_SYSTEM_ACCOUNT_TYPE = {
     KEY_PERSEDIAAN_BARANG_JADI: "INVENTORY_FINISHED",
 }
 
+# === AUD-05 (update #04) — validasi tipe akun per key saat PUT setting-akun ===
+# Temuan audit 7-a: PUT /master/setting-akun/{key} menerima akun APA PUN tanpa
+# validasi tipe/arah — misconfig baru terlihat saat runtime (jurnal salah arah
+# diam-diam atau ValueError saat posting). Peta ini menegakkan kontrak tiap key:
+#   headers      : header COA yang wajar untuk key tsb (AKTIVA/KEWAJIBAN/MODAL/
+#                  PENDAPATAN/HPP/BEBAN).
+#   saldo_normal : arah saldo akun (DEBIT/KREDIT); None = dua arah (clearing/
+#                  selisih).
+#   group        : True bila akun GROUP (control root, mis. PIUTANG_USAHA 112000)
+#                  diperbolehkan — key lain wajib DETAIL.
+# Validasi umum untuk semua key: akun ada, aktif, bukan subledger (kecuali group).
+# PENERIMAAN_DALAM_PROSES tetap memakai validator khusus validate_grni_account
+# (lebih ketat: ≠ akun hutang supplier) — peta ini jadi lapis tambahan.
+SETTING_KEY_VALIDATION: dict[str, dict] = {
+    KEY_PENDAPATAN_PENJUALAN: {"headers": {"PENDAPATAN"}, "saldo_normal": "KREDIT"},
+    KEY_PPN_KELUARAN: {"headers": {"KEWAJIBAN"}, "saldo_normal": "KREDIT"},
+    KEY_PPN_MASUKAN: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT"},
+    KEY_RETUR_PENJUALAN: {"headers": {"PENDAPATAN"}, "saldo_normal": "DEBIT"},
+    KEY_RETUR_PEMBELIAN: {"headers": {"HPP", "AKTIVA"}, "saldo_normal": "KREDIT"},
+    KEY_HPP_PENJUALAN: {"headers": {"HPP"}, "saldo_normal": "DEBIT"},
+    KEY_HPP_PRODUK_JADI: {"headers": {"HPP"}, "saldo_normal": "DEBIT"},
+    KEY_PEMBELIAN: {"headers": {"HPP"}, "saldo_normal": "DEBIT"},
+    KEY_PERSEDIAAN_BAHAN_BAKU: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT"},
+    KEY_PERSEDIAAN_WIP: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT"},
+    KEY_PERSEDIAAN_BARANG_JADI: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT"},
+    KEY_PERSEDIAAN_BAHAN_PEMBANTU: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT"},
+    KEY_SELISIH_PERSEDIAAN: {"headers": {"BEBAN", "PENDAPATAN"}},
+    KEY_BEBAN_ANGKUT_PEMBELIAN: {"headers": {"HPP", "BEBAN"}, "saldo_normal": "DEBIT"},
+    KEY_BEBAN_TRANSFER_BANK: {"headers": {"BEBAN"}, "saldo_normal": "DEBIT"},
+    KEY_BEBAN_ADMIN: {"headers": {"BEBAN"}, "saldo_normal": "DEBIT"},
+    KEY_PIUTANG_USAHA: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT", "group": True},
+    KEY_HUTANG_USAHA: {"headers": {"KEWAJIBAN"}, "saldo_normal": "KREDIT", "group": True},
+    KEY_LABA_RUGI_BERJALAN: {"headers": {"MODAL"}},
+    KEY_LABA_RUGI_TAHUN_BERJALAN: {"headers": {"MODAL"}},
+    KEY_LABA_DITAHAN: {"headers": {"MODAL"}},
+    KEY_KAS_DAN_SETARA_KAS: {"headers": {"AKTIVA"}, "group": True},
+    KEY_PENDAPATAN_ANGKUT: {"headers": {"PENDAPATAN"}, "saldo_normal": "KREDIT"},
+    KEY_PENERIMAAN_DALAM_PROSES: {"headers": {"KEWAJIBAN"}, "saldo_normal": "KREDIT"},
+    KEY_BANK_CLEARING: {"headers": {"KEWAJIBAN", "AKTIVA"}},
+    KEY_PPH23_DIBAYAR_DIMUKA: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT"},
+    KEY_POTONGAN_HUTANG: {"headers": {"PENDAPATAN"}, "saldo_normal": "KREDIT"},
+    KEY_HUTANG_PPH23: {"headers": {"KEWAJIBAN"}, "saldo_normal": "KREDIT"},
+    KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI: {"headers": {"KEWAJIBAN"}, "saldo_normal": "KREDIT"},
+    KEY_KAS_PENAMPUNG_PENERIMAAN: {"headers": {"KEWAJIBAN"}, "saldo_normal": "KREDIT"},
+    KEY_KAS_PENAMPUNG_PEMBAYARAN: {"headers": {"AKTIVA"}, "saldo_normal": "DEBIT"},
+}
+
+
+def _enum_value(value) -> str:
+    return getattr(value, "value", value)
+
+
+def validate_setting_akun_target(db: Session, key: str, akun_id) -> AkunPerkiraan:
+    """AUD-05 (update #04): validasi akun target setting sebelum disimpan.
+
+    Memastikan akun ADA (bukan FK 500), AKTIF, dan bertipe/arah yang wajar
+    untuk key tsb (header COA + saldo normal + tingkat DETAIL/group). Raise
+    ValueError dengan pesan spesifik — endpoint PUT menerjemahkan ke 400.
+    Return objek AkunPerkiraan yang tervalidasi.
+    """
+    akun = db.get(AkunPerkiraan, akun_id)
+    if akun is None:
+        raise ValueError("Akun perkiraan tidak ditemukan")
+    label = KNOWN_SETTING_LABELS.get(key, key)
+    akun_desc = f"{akun.kode} — {akun.nama}"
+
+    if not akun.active:
+        raise ValueError(f"Akun {akun_desc} tidak aktif; pilih akun aktif untuk {label}")
+
+    spec = SETTING_KEY_VALIDATION.get(key)
+    if spec is None:
+        # Key tanpa kontrak khusus (termasuk key custom) — cukup ada & aktif.
+        return akun
+
+    tingkat = _enum_value(akun.tingkat)
+    if tingkat != "DETAIL" and not spec.get("group"):
+        raise ValueError(
+            f"Akun {akun_desc} berjenjang {tingkat}; setting {label} harus akun DETAIL"
+        )
+    if akun.is_subledger and not spec.get("group"):
+        raise ValueError(
+            f"Akun {akun_desc} adalah subledger; setting {label} harus akun posting biasa"
+        )
+
+    headers = {_enum_value(h) for h in spec.get("headers", ())}
+    header = _enum_value(akun.header)
+    if headers and header not in headers:
+        raise ValueError(
+            f"Akun {akun_desc} bertipe {header}; setting {label} seharusnya "
+            f"{ ' / '.join(sorted(headers)) }"
+        )
+
+    saldo_wajib = spec.get("saldo_normal")
+    saldo = _enum_value(akun.saldo_normal)
+    if saldo_wajib and saldo != saldo_wajib:
+        raise ValueError(
+            f"Akun {akun_desc} bersaldo normal {saldo}; setting {label} "
+            f"seharusnya bersaldo normal {saldo_wajib}"
+        )
+
+    expected_systype = SETTING_KEY_TO_SYSTEM_ACCOUNT_TYPE.get(key)
+    if (expected_systype and akun.system_account_type
+            and _enum_value(akun.system_account_type) != expected_systype):
+        raise ValueError(
+            f"Akun {akun_desc} terklasifikasi {akun.system_account_type}; "
+            f"setting {label} seharusnya {expected_systype}"
+        )
+    return akun
+
+
 # Key-key yang WAJIB di-configure agar auto-posting jurnal Sales/Purchase
 # (Order, Invoice, Retur) tidak gagal. Dipakai untuk startup check.
 CRITICAL_KEYS = [

@@ -58,7 +58,12 @@ class PenyesuaianStokBase(BaseSchema):
     qty: int = 0
     biaya_satuan: Decimal = Decimal("0")
     alasan: Optional[str] = None
-    auto_post_jurnal: bool = False
+    # AUD-06 (update #04): default True — selaras dengan default model
+    # (penyesuaian_stok.auto_post_jurnal) dan UI, agar klien API/script/import
+    # non-UI tidak secara diam-diam mengubah stok TANPA jurnal GL. Klien yang
+    # memang ingin tanpa jurnal cukup kirim false eksplisit (tetap ditandai
+    # sebagai anomali di Laporan → Audit Persediaan).
+    auto_post_jurnal: bool = True
     # NEW Phase A — FEFO adjustment expiry
     tanggal_kedaluwarsa: Optional[date] = None
 

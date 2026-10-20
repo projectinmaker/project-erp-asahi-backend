@@ -1703,6 +1703,13 @@ def get_setting_akun_detail(key: str, db: Session = Depends(get_current_db), cur
 def update_setting_akun(key: str, data_in: SettingAkunUpdate, db: Session = Depends(get_current_db), current_user: Pengguna = Depends(get_current_user)):
     from app.services.inventory_receipt_control import KEY, validate_grni_account
     from app.services import setting_akun_service
+    # AUD-05 (update #04): validasi tipe/arah akun target untuk SEMUA key
+    # (ada & aktif & header/saldo-normal/tingkat sesuai kontrak key) —
+    # sebelumnya hanya PENERIMAAN_DALAM_PROSES yang divalidasi.
+    try:
+        setting_akun_service.validate_setting_akun_target(db, key, data_in.akun_perkiraan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     item = db.query(SettingAkun).filter(SettingAkun.key == key).first()
     if key == KEY:
         try:
@@ -1750,6 +1757,11 @@ def get_app_setting(key: str, db: Session = Depends(get_current_db), current_use
     if key == app_setting_service.KEY_METODE_VALUASI:
         # Selalu ada jawaban valid (default AVERAGE bila belum dikonfigurasi)
         return {"key": key, "value": app_setting_service.get_metode_valuasi(db)}
+    if key == app_setting_service.KEY_RATE_PPN:
+        # AUD-10 — selalu ada jawaban valid (default 11)
+        return {"key": key, "value": str(app_setting_service.get_rate_ppn(db))}
+    if key == app_setting_service.KEY_RATE_PPH23:
+        return {"key": key, "value": str(app_setting_service.get_rate_pph23(db))}
 
     item = db.query(AppSetting).filter(AppSetting.key == key).first()
     if not item:
@@ -1762,10 +1774,16 @@ def update_app_setting(key: str, data_in: AppSettingUpdate, db: Session = Depend
     """Update nilai setting aplikasi global."""
     from app.services import app_setting_service
 
-    if key != app_setting_service.KEY_METODE_VALUASI:
+    dispatch = {
+        app_setting_service.KEY_METODE_VALUASI: app_setting_service.set_metode_valuasi,
+        app_setting_service.KEY_RATE_PPN: app_setting_service.set_rate_ppn,
+        app_setting_service.KEY_RATE_PPH23: app_setting_service.set_rate_pph23,
+    }
+    handler = dispatch.get(key)
+    if handler is None:
         raise HTTPException(status_code=404, detail="Setting tidak ditemukan")
     try:
-        item = app_setting_service.set_metode_valuasi(db, data_in.value)
+        item = handler(db, data_in.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return item

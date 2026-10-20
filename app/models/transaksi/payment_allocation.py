@@ -1,5 +1,5 @@
 """Allocations are draft children; only their posted, unreversed payment settles an invoice."""
-from sqlalchemy import Column, Numeric, ForeignKey, CheckConstraint, UniqueConstraint
+from sqlalchemy import Column, Numeric, ForeignKey, CheckConstraint, UniqueConstraint, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -43,6 +43,14 @@ class PaymentAllocation(BaseModel, BaseMixin):
     # lunak (tanpa FK): baris dihapus saat sesi identifikasi dibatalkan agar
     # outstanding invoice pulih, sementara jurnal pembalik tetap utuh.
     kas_identifikasi_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # === AUD-08 (update #04) — bukti potong & masa pajak per alokasi ===
+    # no_bukti_potong = nomor bukti potong (BUPTI) yang diterbitkan pelanggan
+    #   (piutang — kita dipotong) atau yang kita terbitkan (hutang — kita
+    #   memotong) untuk potongan PPh 23 baris ini.
+    # masa_pajak = masa pajak 'YYYY-MM' tempat bukti potong dilaporkan
+    #   (SPT Masa PPh/PPN). Keduanya opsional (dokumen lama kosong).
+    no_bukti_potong = Column(String(50), nullable=True)
+    masa_pajak = Column(String(7), nullable=True)
     penerimaan = relationship('PenerimaanKas', back_populates='alokasi')
     pembayaran = relationship('PembayaranKas', back_populates='alokasi')
     sales_invoice = relationship('SalesInvoice')

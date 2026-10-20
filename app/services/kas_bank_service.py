@@ -25,6 +25,7 @@ from app.models.transaksi.kas_bank.pembayaran import (
     PembayaranKas, StatusTransaksi,
     JENIS_TRANSAKSI_PELUNASAN_INVOICE, JENIS_TRANSAKSI_LAINNYA,
     JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI, JENIS_TRANSAKSI_KAS,
+    JENIS_TRANSAKSI_PELUNASAN_PAJAK,
 )
 from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas
 from app.models.transaksi.kas_bank.transfer_bank import TransferBank
@@ -103,6 +104,70 @@ def _validate_akun_lawan_bukan_piutang_hutang(db: Session, akun_id) -> AkunPerki
             "Pelunasan invoice tidak boleh dicatat lewat Transaksi Lainnya "
             "tanpa alokasi invoice — gunakan jenis transaksi 'Pelunasan Invoice' "
             "dan pilih invoice yang dilunasi."
+        )
+    return akun
+
+
+# === AUD-11 (update #04) — guard akun hutang pajak ===
+def _validate_akun_lawan_pajak(db: Session, jenis: str, akun_id) -> AkunPerkiraan:
+    """Validasi akun lawan untuk jenis PELUNASAN_PAJAK & arah sebaliknya.
+
+    - PELUNASAN_PAJAK: akun lawan WAJIB akun hutang pajak
+      (system_account_type = TAX_PAYABLE, mis. 213001 PPh 21, 213002 PPh 23,
+      213003 PPh 29, 213004 PPh Final).
+    - TRANSAKSI_LAINNYA: akun hutang pajak DITOLAK — pembayaran pajak harus
+      lewat jenis 'Pelunasan Pajak' supaya terlacak di monitoring hutang
+      pajak (temuan audit 7-b: pelunasan pajak dulu hanya lewat Transaksi
+      Lainnya manual tanpa alur/monitoring khusus).
+    """
+    akun = db.get(AkunPerkiraan, akun_id)
+    if akun is None:
+        raise ValueError("Akun rincian tidak ditemukan")
+    system_type = (akun.system_account_type or "").upper()
+    is_tax_payable = system_type == "TAX_PAYABLE"
+    if jenis == JENIS_TRANSAKSI_PELUNASAN_PAJAK and not is_tax_payable:
+        raise ValueError(
+            f"Akun {akun.kode} ({akun.nama}) bukan akun hutang pajak. "
+            "Jenis 'Pelunasan Pajak' hanya boleh membayar akun hutang pajak "
+            "(system_account_type TAX_PAYABLE, mis. PPh 21/23/29/Final)."
+        )
+    if jenis == JENIS_TRANSAKSI_LAINNYA and is_tax_payable:
+        raise ValueError(
+            f"Akun {akun.kode} ({akun.nama}) adalah akun hutang pajak. "
+            "Pembayaran pajak harus lewat jenis transaksi 'Pelunasan Pajak' "
+            "supaya terlacak di monitoring hutang pajak."
+        )
+    return akun
+
+
+# === AUD-11 (update #04) — guard akun hutang pajak ===
+def _validate_akun_lawan_pajak(db: Session, jenis: str, akun_id) -> AkunPerkiraan:
+    """Validasi akun lawan untuk jenis PELUNASAN_PAJAK & arah sebaliknya.
+
+    - PELUNASAN_PAJAK: akun lawan WAJIB akun hutang pajak
+      (system_account_type = TAX_PAYABLE, mis. 213001 PPh 21, 213002 PPh 23,
+      213003 PPh 29, 213004 PPh Final).
+    - TRANSAKSI_LAINNYA: akun hutang pajak DITOLAK — pembayaran pajak harus
+      lewat jenis 'Pelunasan Pajak' supaya terlacak di monitoring hutang
+      pajak (temuan audit 7-b #5: pelunasan pajak dulu hanya lewat Transaksi
+      Lainnya manual tanpa alur/monitoring khusus).
+    """
+    akun = db.get(AkunPerkiraan, akun_id)
+    if akun is None:
+        raise ValueError("Akun rincian tidak ditemukan")
+    system_type = (akun.system_account_type or "").upper()
+    is_tax_payable = system_type == "TAX_PAYABLE"
+    if jenis == JENIS_TRANSAKSI_PELUNASAN_PAJAK and not is_tax_payable:
+        raise ValueError(
+            f"Akun {akun.kode} ({akun.nama}) bukan akun hutang pajak. "
+            "Jenis 'Pelunasan Pajak' hanya boleh membayar akun hutang pajak "
+            "(system_account_type TAX_PAYABLE, mis. PPh 21/23/29/Final)."
+        )
+    if jenis == JENIS_TRANSAKSI_LAINNYA and is_tax_payable:
+        raise ValueError(
+            f"Akun {akun.kode} ({akun.nama}) adalah akun hutang pajak. "
+            "Pembayaran pajak harus lewat jenis transaksi 'Pelunasan Pajak' "
+            "supaya terlacak di monitoring hutang pajak."
         )
     return akun
 
@@ -235,6 +300,11 @@ def _guard_post_jenis_transaksi(db: Session, doc, rincian_rows) -> None:
     if jenis == JENIS_TRANSAKSI_LAINNYA:
         for r in rincian_rows:
             _validate_akun_lawan_bukan_piutang_hutang(db, r.akun_perkiraan_id)
+            _validate_akun_lawan_pajak(db, jenis, r.akun_perkiraan_id)  # AUD-11
+    elif jenis == JENIS_TRANSAKSI_PELUNASAN_PAJAK:
+        # AUD-11 — semua akun rincian harus akun hutang pajak (TAX_PAYABLE)
+        for r in rincian_rows:
+            _validate_akun_lawan_pajak(db, jenis, r.akun_perkiraan_id)
     elif jenis == JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI:
         if len(rincian_rows) != 1:
             raise ValueError(
@@ -379,9 +449,11 @@ def create_pembayaran(
             rincian_data = _resolve_rincian_belum_teridentifikasi(db, nilai, "pembayaran")
         elif not is_settlement:
             if not rincian_data:
-                raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
+                raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya/Pelunasan Pajak")
             for r in rincian_data:
                 _validate_akun_lawan_bukan_piutang_hutang(db, r.get("akun_perkiraan_id"))
+                # AUD-11 — guard arah akun pajak per jenis transaksi
+                _validate_akun_lawan_pajak(db, jenis, r.get("akun_perkiraan_id"))
 
         # Generate nomor bukti (pembayaran/pengeluaran kas)
         # Update ASAHI: pola penomoran seragam "PAY ASI/YYYY/NNN" (reset tahunan).
@@ -1233,3 +1305,91 @@ def post_transfer(db: Session, transfer, created_by):
     transfer.jurnal_umum_id = jurnal.id
     transfer.status = StatusTransaksi.SELESAI
     return transfer
+
+
+# ==========================================
+# AUD-11 (update #04) — MONITORING HUTANG PAJAK
+# ==========================================
+def get_pajak_monitoring(db: Session) -> dict:
+    """Rekap hutang pajak (akun TAX_PAYABLE) + riwayat pelunasan pajak.
+
+    - ``akunPajak``: semua akun aktif system_account_type=TAX_PAYABLE
+      (default COA v2: 213001 PPh 21, 213002 PPh 23, 213003 PPh 29,
+      213004 PPh Final) + saldo GL (POSTED) + arah normal (hutang = kredit −
+      debit; positif berarti masih harus dibayar).
+    - ``riwayatPelunasan``: dokumen PembayaranKas jenis PELUNASAN_PAJAK
+      (terbaru dulu) — bukti pelunasan hutang pajak ke kas/bank.
+    """
+    from app.models.detail.jurnal_detail import JurnalDetail
+    from app.models.transaksi.jurnal import JurnalUmum, StatusJurnal
+
+    accounts = (
+        db.query(AkunPerkiraan)
+        .filter(
+            AkunPerkiraan.system_account_type == "TAX_PAYABLE",
+            AkunPerkiraan.active.is_(True),
+        )
+        .order_by(AkunPerkiraan.kode)
+        .all()
+    )
+    balances = {}
+    if accounts:
+        balances = dict(
+            db.query(
+                JurnalDetail.akun_perkiraan_id,
+                func.coalesce(func.sum(JurnalDetail.debit), 0)
+                - func.coalesce(func.sum(JurnalDetail.kredit), 0),
+            )
+            .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+            .filter(
+                JurnalDetail.akun_perkiraan_id.in_([a.id for a in accounts]),
+                JurnalUmum.status == StatusJurnal.POSTED,
+            )
+            .group_by(JurnalDetail.akun_perkiraan_id)
+            .all()
+        )
+
+    akun_pajak = []
+    total_hutang = Decimal("0")
+    total_dibayar_dimuka = Decimal("0")
+    for akun in accounts:
+        gl_debit_kredit = Decimal(str(balances.get(akun.id) or 0))
+        # hutang pajak normal bersaldo KREDIT: saldo_gl (D-K) negatif.
+        saldo_normal = -gl_debit_kredit  # positif = hutang
+        if saldo_normal > 0:
+            total_hutang += saldo_normal
+        elif saldo_normal < 0:
+            total_dibayar_dimuka += -saldo_normal
+        akun_pajak.append({
+            "id": akun.id, "kode": akun.kode, "nama": akun.nama,
+            "saldo_gl": gl_debit_kredit,
+            "hutang": saldo_normal if saldo_normal > 0 else Decimal("0"),
+            "dibayar_lebih": -saldo_normal if saldo_normal < 0 else Decimal("0"),
+        })
+
+    riwayat = (
+        db.query(PembayaranKas)
+        .options(joinedload(PembayaranKas.kas_bank))
+        .filter(PembayaranKas.jenis_transaksi == JENIS_TRANSAKSI_PELUNASAN_PAJAK)
+        .order_by(PembayaranKas.tanggal.desc(), PembayaranKas.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    riwayat_pelunasan = [{
+        "id": r.id, "no_bukti": r.no_bukti, "no_nukti": r.no_nukti,
+        "tanggal": r.tanggal, "total_nilai": r.total_nilai,
+        "catatan": r.catatan,
+        "kas_bank": {"id": r.kas_bank.id, "kode": r.kas_bank.kode,
+                      "nama": r.kas_bank.nama} if r.kas_bank else None,
+        "status": getattr(r.status, "value", r.status),
+        "jurnal_umum_id": r.jurnal_umum_id,
+        "akun": [{"id": det.akun_perkiraan_id, "nilai": det.nilai}
+                 for det in r.rincian],
+    } for r in riwayat]
+
+    return {
+        "akun_pajak": akun_pajak,
+        "total_hutang": total_hutang,
+        "total_dibayar_lebih": total_dibayar_dimuka,
+        "riwayat_pelunasan": riwayat_pelunasan,
+    }

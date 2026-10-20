@@ -88,6 +88,10 @@ def create_sales_order(
 ):
     """Buat Sales Order baru."""
     try:
+        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
+        from app.services import app_setting_service
+        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
+
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_sales_order(
@@ -259,6 +263,10 @@ def create_sales_invoice(
 ):
     """Buat Sales Invoice baru (auto-generate no invoice + auto-post jurnal)."""
     try:
+        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
+        from app.services import app_setting_service
+        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
+
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_sales_invoice(
@@ -378,6 +386,10 @@ def create_sales_retur(
 ):
     """Buat Sales Retur baru (auto-generate no retur + auto-post jurnal)."""
     try:
+        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
+        from app.services import app_setting_service
+        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
+
         details_data = [d.model_dump() for d in data_in.details]
         obj = svc.create_sales_retur(
             db=db,
@@ -772,6 +784,10 @@ def create_penawaran(
 ):
     """Buat Penawaran baru (tanpa jurnal, tanpa workflow — status DRAFT)."""
     try:
+        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
+        from app.services import app_setting_service
+        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=True)
+
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         return penawaran_service.create_penawaran(

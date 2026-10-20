@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, UniqueConstraint
+from sqlalchemy import Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -55,7 +55,15 @@ class StatusJurnal(str, enum.Enum):
 
 class JurnalUmum(BaseModel, BaseMixin):
     __tablename__ = "jurnal_umum"
-    __table_args__ = (UniqueConstraint("reversal_of_id", name="uq_jurnal_reversal"),)
+    # AUD-02: invariant balance ditegakkan di DB (migration cp0000000014).
+    __table_args__ = (
+        UniqueConstraint("reversal_of_id", name="uq_jurnal_reversal"),
+        CheckConstraint("total_debit = total_kredit", name="ck_jurnal_umum_balanced"),
+        Index(
+            "uq_jurnal_umum_ref_doc", "ref_module", "ref_id", "tipe_transaksi",
+            unique=True, postgresql_where="ref_id IS NOT NULL",
+        ),
+    )
 
     company_id = Column(UUID(as_uuid=True), ForeignKey('organization_unit.id'), nullable=True, index=True)
     branch_id = Column(UUID(as_uuid=True), ForeignKey('organization_unit.id'), nullable=True, index=True)
