@@ -4,7 +4,6 @@ PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang, LPPB.
 """
 
 from datetime import date, datetime
-from decimal import Decimal
 from typing import Optional, Dict, Any
 from uuid import UUID
 
@@ -26,7 +25,7 @@ from app.schemas.pembelian import (
 from app.services import pembelian_service as svc
 from app.services import lppb_service as lppb_svc
 from app.services import workflow_service
-from app.services.document_cancellation_service import cancel_document
+from app.services.cancel_document_service import cancel_document
 from app.services.purchase_validation import (
     get_qty_received_so_far,
     get_qty_invoiced_for_po_detail,
@@ -81,9 +80,6 @@ def create_purchase_order(
 ):
     """Buat Purchase Order baru."""
     try:
-        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
-        from app.services import app_setting_service
-        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=True)
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_purchase_order(
@@ -217,12 +213,10 @@ def cancel_purchase_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Purchase Order — reversal-first (AUD-01, update #05).
+    """Hapus permanen Purchase Order (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian dihapus dari database (guard: masih dirujuk dokumen lanjutan → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -246,6 +240,7 @@ def get_purchase_invoice_list(
     supplier_id: Optional[UUID] = Query(None, description="Filter supplier"),
     tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
+    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -254,6 +249,7 @@ def get_purchase_invoice_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, supplier_id=supplier_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+        company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
@@ -266,9 +262,6 @@ def create_purchase_invoice(
 ):
     """Buat Purchase Invoice baru (auto-generate no form + auto-post jurnal)."""
     try:
-        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
-        from app.services import app_setting_service
-        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=True)
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_purchase_invoice(
@@ -283,9 +276,6 @@ def create_purchase_invoice(
             alamat=data_in.alamat,
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,
-            # === AUD-09 (update #04) — PPh 23 opsional di PI ===
-            pph23=data_in.pph23 if data_in.pph23 is not None else Decimal("2"),
-            pph23_applicable=data_in.pph23_applicable,
             keterangan=data_in.keterangan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
@@ -346,12 +336,10 @@ def cancel_purchase_invoice(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Purchase Invoice — reversal-first (AUD-01, update #05).
+    """Hapus permanen Purchase Invoice (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -395,9 +383,6 @@ def create_purchase_retur(
 ):
     """Buat Purchase Retur baru (auto-generate no retur + auto-post jurnal)."""
     try:
-        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
-        from app.services import app_setting_service
-        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
         details_data = [d.model_dump() for d in data_in.details]
         obj = svc.create_purchase_retur(
             db=db,
@@ -460,12 +445,10 @@ def cancel_purchase_retur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Purchase Retur — reversal-first (AUD-01, update #05).
+    """Hapus permanen Purchase Retur (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -579,12 +562,10 @@ def cancel_penerimaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penerimaan Barang — reversal-first (AUD-01, update #05).
+    """Hapus permanen Penerimaan Barang (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -820,11 +801,10 @@ def cancel_lppb(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan LPPB — hard delete + snapshot histori (LPPB tanpa jurnal).
+    """Hapus permanen LPPB (hard delete) — berlaku utk DRAFT maupun final.
 
-    Dokumen + detail dihapus permanen; jejak tersimpan di log dokumen
-    terhapus (modul Histori). LPPB tidak menghasilkan jurnal, sehingga
-    jalur reversal-first tidak diperlukan.
+    Dokumen + baris pemeriksaan dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     item = lppb_svc.get_lppb_by_id(db, lppb_id)
     if not item:

@@ -32,7 +32,7 @@ from app.services import penjualan_service as svc
 from app.services import penawaran_service
 from app.services import tukar_faktur_service
 from app.services import workflow_service
-from app.services.document_cancellation_service import cancel_document
+from app.services.cancel_document_service import cancel_document
 from app.services.sales_validation import (
     get_qty_delivered_so_far,
     get_qty_invoiced_for_so_detail,
@@ -88,10 +88,6 @@ def create_sales_order(
 ):
     """Buat Sales Order baru."""
     try:
-        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
-        from app.services import app_setting_service
-        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
-
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_sales_order(
@@ -216,12 +212,10 @@ def cancel_sales_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Sales Order — reversal-first (AUD-01, update #05).
+    """Hapus permanen Sales Order (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + dokumen terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -245,6 +239,7 @@ def get_sales_invoice_list(
     pelanggan_id: Optional[UUID] = Query(None, description="Filter pelanggan"),
     tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
+    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -253,6 +248,7 @@ def get_sales_invoice_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, pelanggan_id=pelanggan_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+        company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
@@ -265,10 +261,6 @@ def create_sales_invoice(
 ):
     """Buat Sales Invoice baru (auto-generate no invoice + auto-post jurnal)."""
     try:
-        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
-        from app.services import app_setting_service
-        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
-
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         obj = svc.create_sales_invoice(
@@ -341,12 +333,10 @@ def cancel_sales_invoice(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Sales Invoice — reversal-first (AUD-01, update #05).
+    """Hapus permanen Sales Invoice (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -390,10 +380,6 @@ def create_sales_retur(
 ):
     """Buat Sales Retur baru (auto-generate no retur + auto-post jurnal)."""
     try:
-        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
-        from app.services import app_setting_service
-        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=False)
-
         details_data = [d.model_dump() for d in data_in.details]
         obj = svc.create_sales_retur(
             db=db,
@@ -458,12 +444,10 @@ def cancel_sales_retur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Sales Retur — reversal-first (AUD-01, update #05).
+    """Hapus permanen Sales Retur (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -626,12 +610,10 @@ def cancel_pengiriman(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Pengiriman — reversal-first (AUD-01, update #05).
+    """Hapus permanen Pengiriman Barang (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -792,10 +774,6 @@ def create_penawaran(
 ):
     """Buat Penawaran baru (tanpa jurnal, tanpa workflow — status DRAFT)."""
     try:
-        # AUD-10 (update #04) — tarif tidak dikirim → pakai setting global.
-        from app.services import app_setting_service
-        app_setting_service.apply_default_tax_rates(db, data_in, ppn=True, pph23=True)
-
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
         return penawaran_service.create_penawaran(
@@ -859,12 +837,10 @@ def cancel_penawaran(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penawaran — reversal-first (AUD-01, update #05).
+    """Hapus permanen Penawaran (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + biaya tambahan dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -1004,12 +980,10 @@ def cancel_tukar_faktur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Tukar Faktur — reversal-first (AUD-01, update #05).
+    """Hapus permanen Tukar Faktur (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian dihapus dari database (tanpa jurnal/stok — tidak ada
+    efek samping); jejak lengkap tersimpan di log dokumen terhapus (Histori).
     """
     try:
         return cancel_document(

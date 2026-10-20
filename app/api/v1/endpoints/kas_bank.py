@@ -20,15 +20,13 @@ from app.schemas.kas_bank import (
     KasIdentifikasiCreate, KasIdentifikasiResponse, KasIdentifikasiListResponse,
     IdentifikasiPiutangCreate, IdentifikasiHutangCreate,
     PenampungMonitoringResponse,
-    PajakMonitoringResponse,
     KasBankSimpleResponse, AkunPerkiraanSimpleResponse,
 )
 from app.schemas.workflow import HardDeleteRequest
 from app.services import kas_bank_service as svc
 from app.services import kas_identifikasi_service as identifikasi_svc
 from app.services import workflow_service
-from app.services.document_cancellation_service import cancel_document
-from app.api.reporting import report_scope  # AUD-17: scope laporan pajak monitoring
+from app.services.cancel_document_service import cancel_document
 
 router = APIRouter()
 
@@ -111,6 +109,7 @@ def get_pembayaran_list(
     jenis_transaksi: Optional[str] = Query(
         None, description="Update #02 — filter jenis transaksi "
         "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA / BELUM_TERIDENTIFIKASI)"),
+    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -119,7 +118,7 @@ def get_pembayaran_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, kas_bank_id=kas_bank_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
-        jenis_transaksi=jenis_transaksi,
+        jenis_transaksi=jenis_transaksi, company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
@@ -202,12 +201,10 @@ def cancel_pembayaran(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Pembayaran Kas — reversal-first (AUD-01, update #05).
+    """Hapus permanen Pembayaran Kas (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -234,6 +231,7 @@ def get_penerimaan_list(
     jenis_transaksi: Optional[str] = Query(
         None, description="Update #02 — filter jenis transaksi "
         "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA / BELUM_TERIDENTIFIKASI)"),
+    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -242,7 +240,7 @@ def get_penerimaan_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, kas_bank_id=kas_bank_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
-        jenis_transaksi=jenis_transaksi,
+        jenis_transaksi=jenis_transaksi, company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
@@ -320,12 +318,10 @@ def cancel_penerimaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Penerimaan Kas — reversal-first (AUD-01, update #05).
+    """Hapus permanen Penerimaan Kas (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -348,6 +344,7 @@ def get_transfer_list(
     status_filter: Optional[str] = Query(None, alias="status", description="Filter status"),
     tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
+    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -356,6 +353,7 @@ def get_transfer_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+        company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
@@ -428,12 +426,10 @@ def cancel_transfer(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan Transfer Bank — reversal-first (AUD-01, update #05).
+    """Hapus permanen Transfer Bank (hard delete).
 
-    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
-    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
-    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
-    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
+    Dokumen + rincian + jurnal terkait dihapus dari database;
+    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
     """
     try:
         return cancel_document(
@@ -656,25 +652,6 @@ def get_penerimaan_penampung_monitoring(
     return identifikasi_svc.get_penampung_monitoring(db)
 
 
-@router.get("/pajak/monitoring", response_model=PajakMonitoringResponse)
-def get_pajak_monitoring(
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-    scope: None = Depends(report_scope),
-):
-    """AUD-11 (update #04) — monitoring hutang pajak + riwayat pelunasan.
-
-    Rekap saldo akun hutang pajak (TAX_PAYABLE: PPh 21/23/29/Final) dari GL
-    + daftar pembayaran jenis PELUNASAN_PAJAK. Pelunasan pajak dicatat lewat
-    POST /kas-bank/pembayaran dengan jenisTransaksi='PELUNASAN_PAJAK'
-    (akun lawan wajib akun hutang pajak).
-
-    AUD-17 (update #05): menerima filter laporan ?companyId=&unassigned= —
-    saldo GL dihitung hanya dari jurnal perusahaan terpilih.
-    """
-    return svc.get_pajak_monitoring(db)
-
-
 @router.post("/identifikasi/penerimaan/{identifikasi_id}/cancel", response_model=KasIdentifikasiResponse)
 def cancel_penerimaan_identifikasi(
     identifikasi_id: UUID,
@@ -682,10 +659,10 @@ def cancel_penerimaan_identifikasi(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan sesi identifikasi — jurnal pembalik + status BATAL.
+    """Update #02 — batalkan sesi identifikasi penerimaan (jurnal pembalik).
 
-    Jurnal identifikasi asli tetap POSTED (audit trail); alokasi invoice
-    dipulihkan; dokumen kas kembali bisa diidentifikasi ulang.
+    Jurnal identifikasi asli tetap POSTED (audit trail); sisa belum
+    teridentifikasi dokumen naik kembali.
     """
     try:
         obj = identifikasi_svc.cancel_identifikasi(
@@ -705,11 +682,7 @@ def cancel_pembayaran_identifikasi(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Batalkan sesi identifikasi — jurnal pembalik + status BATAL.
-
-    Jurnal identifikasi asli tetap POSTED (audit trail); alokasi invoice
-    dipulihkan; dokumen kas kembali bisa diidentifikasi ulang.
-    """
+    """Update #02 — batalkan sesi identifikasi pembayaran (jurnal pembalik)."""
     try:
         obj = identifikasi_svc.cancel_identifikasi(
             db, identifikasi_id, current_user.id,
