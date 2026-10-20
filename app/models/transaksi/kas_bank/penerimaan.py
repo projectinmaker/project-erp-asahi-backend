@@ -3,7 +3,10 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
 from app.models.base import BaseMixin
-from app.models.transaksi.kas_bank.pembayaran import StatusTransaksi
+from app.models.transaksi.kas_bank.pembayaran import (
+    StatusTransaksi,
+    JENIS_TRANSAKSI_LAINNYA,
+)
 
 
 class PenerimaanKas(BaseModel, BaseMixin):
@@ -31,6 +34,12 @@ class PenerimaanKas(BaseModel, BaseMixin):
     # settlement (pelunasan piutang) tanpa query N+1.
     pelanggan = relationship("Pelanggan")
     alokasi = relationship("PaymentAllocation", back_populates="penerimaan", cascade="all, delete-orphan")
+    # === Update #02 — jenis transaksi kas (lihat konstanta JENIS_TRANSAKSI_*
+    # di app/models/transaksi/kas_bank/pembayaran.py) ===
+    jenis_transaksi = Column(
+        String(30), nullable=False, default=JENIS_TRANSAKSI_LAINNYA,
+        server_default=JENIS_TRANSAKSI_LAINNYA,
+    )
 
     # Relationships
     kas_bank = relationship("KasBankAkun")

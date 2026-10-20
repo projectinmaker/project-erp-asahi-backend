@@ -85,6 +85,16 @@ KEY_POTONGAN_HUTANG = "POTONGAN_HUTANG"
 # (Sisi piutang memakai KEY_PPH23_DIBAYAR_DIMUKA yang sudah ada.)
 KEY_HUTANG_PPH23 = "HUTANG_PPH23"
 
+# === Update #02 — Kas & Bank: akun penampung Belum Teridentifikasi ===
+# Penerimaan/Pembayaran dengan jenis transaksi BELUM_TERIDENTIFIKASI
+# diposting ke akun penampung sementara ini (default COA 216000 "Hutang
+# Belum Teridentifikasi (Penampung)" di bawah 210000). Setelah asal mutasi
+# diketahui, nilai dipindahkan ke akun yang benar lewat fitur Identifikasi
+# & Alokasi (jurnal reklasifikasi tanpa jurnal bank ganda). Konfigurasi
+# per perusahaan via Pengaturan → Setting Akun
+# (PUT /master/setting-akun/KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI).
+KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI = "KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI"
+
 # Label untuk semua key setting yang dikenal sistem. Dipakai endpoint
 # PUT /master/setting-akun/{key} untuk MEMBUAT baris setting baru bila belum ada
 # (mis. PENDAPATAN_ANGKUT yang di-skip phase3 seed karena akun default legacy
@@ -119,6 +129,8 @@ KNOWN_SETTING_LABELS = {
     KEY_PPH23_DIBAYAR_DIMUKA: "PPh 23 Dibayar Dimuka",
     KEY_POTONGAN_HUTANG: "Potongan Hutang (Pelunasan)",
     KEY_HUTANG_PPH23: "Hutang PPh 23 (Pelunasan)",
+    # === Update #02 — Kas & Bank ===
+    KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI: "Kas Belum Teridentifikasi (Penampung)",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)
@@ -179,6 +191,15 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
         "kode": ["213002", "213.002", "215200002"],
         "nama_exact": ["Hutang PPh 23", "Hutang PPh23"],
         "nama_like": ["%hutang pph 23%", "%hutang pph23%"],
+    },
+    # === Update #02 — akun penampung mutasi kas Belum Teridentifikasi ===
+    # Default COA v2 kode 216000 (dibuat migration cp0000000012 di bawah
+    # 210000 KEWAJIBAN JANGKA PENDEK). nama_like longgar supaya perusahaan
+    # dengan akun penampung/suspense custom tetap ter-match otomatis.
+    KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI: {
+        "kode": ["216000"],
+        "nama_exact": ["Hutang Belum Teridentifikasi (Penampung)"],
+        "nama_like": ["%belum teridentifikasi%", "%penampung%", "%suspense%"],
     },
 }
 
@@ -245,10 +266,22 @@ def auto_configure_missing(db: Session, key: str) -> Optional[UUID]:
     - Baris setting baru di-add + flush() mengikuti transaksi pemanggil
       (tidak commit di sini) — aman di-rollback bersama transaksi gagal.
     - Cache in-memory langsung di-update supaya get_akun_id() melihatnya.
+
+    Update #02 — hardening: sebelum insert, baris di-cek ulang langsung ke
+    DB (bukan hanya cache). Cache bisa stale bila setting dibuat di luar
+    proses ini (migration, worker lain, sesi paralel) — tanpa re-check,
+    auto-configure akan INSERT duplikat yang memicu UniqueViolation pada
+    key yang sama (kasus: migration cp0000000012 menambah setting
+    KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI setelah cache startup termuat).
     """
     if not _cache:
         _load_all_settings(db)
     if _cache.get(key):
+        return _cache[key]
+    # Re-check langsung ke DB — cache in-memory bisa stale.
+    existing = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+    if existing is not None:
+        _cache[key] = existing.akun_perkiraan_id
         return _cache[key]
     akun_id = _find_fallback_akun(db, key)
     if not akun_id:

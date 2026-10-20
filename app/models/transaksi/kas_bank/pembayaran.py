@@ -12,6 +12,38 @@ class StatusTransaksi(str, enum.Enum):
     BATAL = "BATAL"
 
 
+# === Update #02 — Jenis Transaksi Kas & Bank (Penerimaan/Pembayaran) ===
+# Tiga jenis transaksi dipilih user di form Penerimaan/Pembayaran:
+# 1. PELUNASAN_INVOICE    — pelunasan piutang (penerimaan, pilih pelanggan →
+#                            invoice penjualan outstanding) atau pelunasan
+#                            hutang (pembayaran, pilih supplier → invoice
+#                            pembelian outstanding). Dicatat lewat alur
+#                            settlement (/pelunasan/{piutang|hutang}) dengan
+#                            alokasi per invoice; jurnal Dr/Kr akun
+#                            piutang/hutang subledger pihak + Kas/Bank.
+# 2. TRANSAKSI_LAINNYA    — penerimaan modal, pendapatan lain, biaya
+#                            operasional, dan transaksi non-invoice lain;
+#                            user memilih akun lawan dari COA per baris
+#                            rincian. TIDAK BOLEH memakai akun piutang/hutang
+#                            (guard di service) tanpa alokasi invoice.
+# 3. BELUM_TERIDENTIFIKASI — mutasi bank yang pelanggan/supplier atau
+#                            transaksi asalnya belum diketahui. Posting ke
+#                            akun penampung sementara (setting
+#                            KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI); kemudian
+#                            dipindahkan ke akun yang benar lewat fitur
+#                            Identifikasi & Alokasi TANPA jurnal bank ganda.
+# Disimpan sebagai String (bukan pg enum) supaya migration ringan dan aman
+# untuk upgrade database berjalan.
+JENIS_TRANSAKSI_PELUNASAN_INVOICE = "PELUNASAN_INVOICE"
+JENIS_TRANSAKSI_LAINNYA = "TRANSAKSI_LAINNYA"
+JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI = "BELUM_TERIDENTIFIKASI"
+JENIS_TRANSAKSI_KAS = (
+    JENIS_TRANSAKSI_PELUNASAN_INVOICE,
+    JENIS_TRANSAKSI_LAINNYA,
+    JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI,
+)
+
+
 class PembayaranKas(BaseModel, BaseMixin):
     __tablename__ = "pembayaran_kas"
 
@@ -39,6 +71,11 @@ class PembayaranKas(BaseModel, BaseMixin):
     supplier_id = Column(UUID(as_uuid=True), ForeignKey("supplier.id"), nullable=True)
     supplier = relationship("Supplier")
     alokasi = relationship("PaymentAllocation", back_populates="pembayaran", cascade="all, delete-orphan")
+    # === Update #02 — jenis transaksi kas (lihat konstanta JENIS_TRANSAKSI_*) ===
+    jenis_transaksi = Column(
+        String(30), nullable=False, default=JENIS_TRANSAKSI_LAINNYA,
+        server_default=JENIS_TRANSAKSI_LAINNYA,
+    )
 
     # Relationships
     kas_bank = relationship("KasBankAkun")

@@ -29,9 +29,12 @@ from app.models.master.access import (
 )
 
 # Transaksi - Kas & Bank
-from app.models.transaksi.kas_bank.pembayaran import PembayaranKas, StatusTransaksi
+from app.models.transaksi.kas_bank.pembayaran import (
+    PembayaranKas, StatusTransaksi, JENIS_TRANSAKSI_KAS,
+)
 from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas
 from app.models.transaksi.kas_bank.transfer_bank import TransferBank
+from app.models.transaksi.kas_bank.kas_identifikasi import KasIdentifikasi, KasIdentifikasiRincian
 
 # Transaksi - Penjualan
 from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
@@ -109,6 +112,9 @@ __all__ = [
     # Transaksi - Kas & Bank
     "PembayaranKas",
     "PenerimaanKas",
+    "KasIdentifikasi",
+    "KasIdentifikasiRincian",
+    "JENIS_TRANSAKSI_KAS",
     "TransferBank",
     # Transaksi - Penjualan
     "SalesOrder",
