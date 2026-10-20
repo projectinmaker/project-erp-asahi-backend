@@ -162,6 +162,12 @@ Efek setelah reset (yang diharapkan):
       (supplier-from-coa) — tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-10-20  + WIPE : kas_identifikasi, kas_identifikasi_rincian (Kas &
+                         Bank), lppb, lppb_detail (Pembelian),
+                         penutupan_tahun (tutup tahun — periode/tahun
+                         kembali terbuka), document_cancellation (histori
+                         pembatalan dokumen). Sebelumnya belum
+                         terklasifikasi sehingga script menolak jalan.
     2026-10-13  + WIPE : request_order_part, request_order_part_item
                          (modul Request Order Part — dokumen transaksi
                          beserta item-nya; sebelumnya belum terklasifikasi
@@ -292,6 +298,8 @@ WIPE_TABLES = frozenset({
     "transfer_bank",
     "rekonsiliasi_bank",
     "rekonsiliasi_bank_detail",
+    "kas_identifikasi",
+    "kas_identifikasi_rincian",
     # Penjualan (Penawaran & Tukar Faktur termasuk — update #3/#4)
     "penawaran",
     "penawaran_detail",
@@ -315,6 +323,8 @@ WIPE_TABLES = frozenset({
     "purchase_retur",
     "purchase_retur_detail",
     "purchase_invoice_receipt_match",
+    "lppb",
+    "lppb_detail",
     # Request Order Part
     "request_order_part",
     "request_order_part_item",
@@ -325,10 +335,12 @@ WIPE_TABLES = frozenset({
     "transaksi_biaya",
     "payment_allocation",
     "penutupan_periode",
+    "penutupan_tahun",
     "document_workflow",
     "workflow_event",
     "idempotent_operation",
     "deleted_document_log",
+    "document_cancellation",
     "document_organization",
     "reporting_audit",
 }) | STOK_TABLES
@@ -339,6 +351,7 @@ WIPE_GROUPS = [
     ("Kas & Bank", [
         "penerimaan_kas", "penerimaan_rincian", "pembayaran_kas", "pembayaran_rincian",
         "transfer_bank", "rekonsiliasi_bank", "rekonsiliasi_bank_detail",
+        "kas_identifikasi", "kas_identifikasi_rincian",
     ]),
     ("Penjualan", [
         "penawaran", "penawaran_detail",
@@ -349,7 +362,7 @@ WIPE_GROUPS = [
     ("Pembelian", [
         "purchase_order", "purchase_order_detail", "penerimaan_barang", "penerimaan_barang_detail",
         "purchase_invoice", "purchase_invoice_detail", "purchase_retur", "purchase_retur_detail",
-        "purchase_invoice_receipt_match",
+        "purchase_invoice_receipt_match", "lppb", "lppb_detail",
     ]),
     ("Persediaan", [
         "permintaan_barang", "pemindahan_barang", "penyesuaian_stok",
@@ -359,8 +372,9 @@ WIPE_GROUPS = [
     ("Aset Tetap", ["aset_tetap", "asset_event"]),
     ("Pelunasan / Workflow / Histori", [
         "transaksi_biaya", "payment_allocation", "penutupan_periode",
-        "document_workflow", "workflow_event", "idempotent_operation",
-        "deleted_document_log", "document_organization", "reporting_audit",
+        "penutupan_tahun", "document_workflow", "workflow_event",
+        "idempotent_operation", "deleted_document_log", "document_cancellation",
+        "document_organization", "reporting_audit",
     ]),
 ]
 
