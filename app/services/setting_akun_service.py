@@ -342,28 +342,53 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
 }
 
 
-# Simple in-memory cache (per process lifecycle)
-_cache: dict[str, Optional[UUID]] = {}
+# Simple in-memory cache (per process lifecycle).
+# AUD-17 (update #05): cache ber-key (key, company_id|None) — lookup
+# perusahaan di-fallback ke baris global (key, None).
+_cache: dict[tuple, Optional[UUID]] = {}
+
+# Sentinel: company_id tidak diberikan eksplisit → ambil dari konteks posting
+# aktif (db.info['posting_company'], di-set workflow saat memposting dokumen).
+_AUTO = object()
+
+
+def posting_company(db: Session):
+    """Company aktif dari konteks posting (di-set workflow/atomic decorator)."""
+    return db.info.get('posting_company') if db is not None else None
+
+
+def _company_key(company_id) -> tuple:
+    return (str(company_id) if company_id is not None else None)
 
 
 def _load_all_settings(db: Session) -> None:
-    """Load semua setting akun ke cache."""
+    """Load semua setting akun ke cache (key per (key, company))."""
     global _cache
     rows = db.query(SettingAkun).all()
-    _cache = {r.key: r.akun_perkiraan_id for r in rows}
+    _cache = {(r.key, _company_key(r.company_id)): r.akun_perkiraan_id for r in rows}
     logger.debug(f"Loaded {len(_cache)} setting akun into cache")
 
 
-def get_akun_id(db: Session, key: str) -> Optional[UUID]:
-    """Ambil UUID akun perkiraan berdasarkan key setting.
+def get_akun_id(db: Session, key: str, company_id=_AUTO) -> Optional[UUID]:
+    """Ambil UUID akun perkiraan berdasarkan key setting (company-aware).
+
+    Lookup (AUD-17): baris (key, company) → fallback (key, NULL/global).
+    ``company_id`` eksplisit None = paksa global; tanpa argumen (AUTO) =
+    ambil dari konteks posting aktif ``db.info['posting_company']``.
 
     Return:
         UUID akun_perkiraan, atau None jika belum di-configure.
     """
+    if company_id is _AUTO:
+        company_id = posting_company(db)
     if not _cache:
         _load_all_settings(db)
-
-    return _cache.get(key)
+    k = _company_key(company_id)
+    if company_id is not None:
+        override = _cache.get((key, k))
+        if override:
+            return override
+    return _cache.get((key, None))
 
 
 def _find_fallback_akun(db: Session, key: str) -> Optional[UUID]:
@@ -399,6 +424,10 @@ def _find_fallback_akun(db: Session, key: str) -> Optional[UUID]:
 def auto_configure_missing(db: Session, key: str) -> Optional[UUID]:
     """Auto-configure setting `key` bila belum ada dan kandidat ditemukan.
 
+    AUD-17: baris auto-configure SELALU global (company NULL) — override
+    per perusahaan sengaja tidak dibuat otomatis (harus dikonfigurasi
+    eksplisit lewat PUT /master/setting-akun/{key}?companyId=...).
+
     Perilaku:
     - Setting yang SUDAH ada tidak pernah diubah (return id-nya saja).
     - Baris setting baru di-add + flush() mengikuti transaksi pemanggil
@@ -414,20 +443,21 @@ def auto_configure_missing(db: Session, key: str) -> Optional[UUID]:
     """
     if not _cache:
         _load_all_settings(db)
-    if _cache.get(key):
-        return _cache[key]
+    if _cache.get((key, None)):
+        return _cache[(key, None)]
     # Re-check langsung ke DB — cache in-memory bisa stale.
-    existing = db.query(SettingAkun).filter(SettingAkun.key == key).first()
+    existing = db.query(SettingAkun).filter(
+        SettingAkun.key == key, SettingAkun.company_id.is_(None)).first()
     if existing is not None:
-        _cache[key] = existing.akun_perkiraan_id
-        return _cache[key]
+        _cache[(key, None)] = existing.akun_perkiraan_id
+        return _cache[(key, None)]
     akun_id = _find_fallback_akun(db, key)
     if not akun_id:
         return None
     label = KNOWN_SETTING_LABELS.get(key, key)
-    db.add(SettingAkun(key=key, label=label, akun_perkiraan_id=akun_id))
+    db.add(SettingAkun(key=key, label=label, akun_perkiraan_id=akun_id, company_id=None))
     db.flush()
-    _cache[key] = akun_id
+    _cache[(key, None)] = akun_id
     logger.debug(f"Setting akun '{key}' auto-configured ke akun {akun_id}")
     return akun_id
 
@@ -442,10 +472,10 @@ def ensure_fallback_settings(db: Session) -> list[str]:
     """
     configured: list[str] = []
     for key in SETTING_KEY_FALLBACK_CANDIDATES:
-        sudah = _cache.get(key) if _cache else None
+        sudah = _cache.get((key, None)) if _cache else None
         if not sudah:
             _load_all_settings(db)
-            sudah = _cache.get(key)
+            sudah = _cache.get((key, None))
         if sudah:
             continue
         if auto_configure_missing(db, key):
@@ -453,27 +483,47 @@ def ensure_fallback_settings(db: Session) -> list[str]:
     return configured
 
 
-def get_setting_akun_id_optional(db: Session, key: str) -> Optional[UUID]:
+def get_setting_akun_id_optional(db: Session, key: str, company_id=_AUTO) -> Optional[UUID]:
     """Update #03 — baca setting akun TANPA raise dan TANPA auto-configure.
 
+    AUD-17: company-aware — (key, company) → fallback (key, global).
     Dipakai untuk pemilihan akun penampung arah-spesifik: bila setting belum
     ada, pemanggil boleh jatuh ke fallback lain (mis. key gabungan Update #02)
     tanpa memicu auto-configure yang bisa memilih kandidat salah arah.
     Cache lokal dibaca/diisi agar tidak query berulang dalam satu request.
     """
-    if key in _cache:
-        return _cache[key] or None
-    row = db.query(SettingAkun.akun_perkiraan_id).filter(SettingAkun.key == key).first()
-    _cache[key] = row[0] if row else None
-    return _cache[key]
+    if company_id is _AUTO:
+        company_id = posting_company(db)
+    k = _company_key(company_id)
+    if (key, k) in _cache and company_id is not None:
+        value = _cache.get((key, k))
+        if value:
+            return value
+    if (key, None) in _cache:
+        return _cache.get((key, None)) or None
+    row = (db.query(SettingAkun.akun_perkiraan_id)
+           .filter(SettingAkun.key == key, SettingAkun.company_id.is_(None))
+           .first())
+    _cache[(key, None)] = row[0] if row else None
+    if company_id is not None:
+        row_c = (db.query(SettingAkun.akun_perkiraan_id)
+                 .filter(SettingAkun.key == key, SettingAkun.company_id == company_id)
+                 .first())
+        _cache[(key, k)] = row_c[0] if row_c else None
+        if row_c:
+            return row_c[0]
+    return _cache.get((key, None))
 
 
-def get_akun_id_or_raise(db: Session, key: str, context: str = "") -> UUID:
+def get_akun_id_or_raise(db: Session, key: str, context: str = "", company_id=_AUTO) -> UUID:
     """Ambil UUID akun perkiraan, raise ValueError jika tidak ditemukan.
 
     Parameter:
         key: Kunci setting (misal 'PENDAPATAN_PENJUALAN')
         context: Keterangan tambahan untuk error message
+        company_id: AUD-17 — konteks perusahaan (AUTO = dari db.info;
+        eksplisit None = global). Override perusahaan dipakai bila ada,
+        fallback ke baris global.
 
     ASAHI #006: bila belum dikonfigurasi, coba auto-configure dulu via
     kandidat fallback COA (mis. PPH23_DIBAYAR_DIMUKA → akun 116003) baru
@@ -486,7 +536,7 @@ def get_akun_id_or_raise(db: Session, key: str, context: str = "") -> UUID:
     Raises:
         ValueError: Jika akun belum di-configure dan tidak ada kandidat
     """
-    akun_id = get_akun_id(db, key)
+    akun_id = get_akun_id(db, key, company_id=company_id)
     if not akun_id:
         akun_id = auto_configure_missing(db, key)
     if not akun_id:
@@ -514,4 +564,4 @@ def check_critical_settings(db: Session) -> list[str]:
     """
     if not _cache:
         _load_all_settings(db)
-    return [key for key in CRITICAL_KEYS if not _cache.get(key)]
+    return [key for key in CRITICAL_KEYS if not _cache.get((key, None))]

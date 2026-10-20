@@ -1,7 +1,9 @@
-"""Endpoint Histori Dokumen Terhapus — audit trail hard delete (Task 27-a).
+"""Endpoint Histori Dokumen Terhapus & Pembatalan — audit trail (Task 27-a + AUD-01).
 
-Semua pembatalan (/cancel) kini menghapus dokumen secara permanen; modul ini
-menyajikan jejak penghapusan lengkap (ringkasan + snapshot JSON per dokumen).
+Dokumen TANPA jejak akuntansi dihapus permanen (snapshot JSON lengkap di log
+dokumen terhapus). AUD-01 (update #05): dokumen POSTED dibatalkan via jurnal
+pembalik + status BATAL — jejaknya (alasan, user, jurnal pembalik) disajikan
+ endpoint /histori/pembatalan.
 """
 from datetime import date, datetime, time
 from typing import Optional
@@ -16,8 +18,26 @@ from app.models.master.pengguna import Pengguna
 from app.models.transaksi.deleted_document_log import DeletedDocumentLog
 from app.schemas.base import PaginatedResponse
 from app.schemas.histori import DeletedDocumentLogResponse, DeletedDocumentLogDetailResponse
+from app.services.document_cancellation_service import get_cancellation_history
 
 router = APIRouter()
+
+
+@router.get('/pembatalan')
+def list_cancellations(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    document_type: Optional[str] = Query(None, alias='documentType'),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """AUD-01 (update #05) — histori pembatalan dokumen (reversal & hard delete).
+
+    Setiap baris: dokumen yang dibatalkan, mode (REVERSAL/HARD_DELETE), alasan,
+    user & waktu, serta daftar jurnal pembalik yang dibuat (mode REVERSAL).
+    """
+    rows = get_cancellation_history(db, document_type=document_type, limit=limit, offset=skip)
+    return {'data': rows, 'total': len(rows), 'skip': skip, 'limit': limit}
 
 
 @router.get('/dokumen-terhapus', response_model=PaginatedResponse[DeletedDocumentLogResponse])

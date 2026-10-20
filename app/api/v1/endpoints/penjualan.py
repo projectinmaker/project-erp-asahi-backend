@@ -32,7 +32,7 @@ from app.services import penjualan_service as svc
 from app.services import penawaran_service
 from app.services import tukar_faktur_service
 from app.services import workflow_service
-from app.services.hard_delete_service import hard_delete_document
+from app.services.document_cancellation_service import cancel_document
 from app.services.sales_validation import (
     get_qty_delivered_so_far,
     get_qty_invoiced_for_so_detail,
@@ -216,13 +216,15 @@ def cancel_sales_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Sales Order (hard delete).
+    """Batalkan Sales Order — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian + dokumen terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'sales_order', so_id, current_user,
             reason=payload.reason if payload else None,
         )
@@ -339,13 +341,15 @@ def cancel_sales_invoice(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Sales Invoice (hard delete).
+    """Batalkan Sales Invoice — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian + jurnal terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'sales_invoice', inv_id, current_user,
             reason=payload.reason if payload else None,
         )
@@ -454,13 +458,15 @@ def cancel_sales_retur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Sales Retur (hard delete).
+    """Batalkan Sales Retur — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian + jurnal terkait dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'sales_retur', retur_id, current_user,
             reason=payload.reason if payload else None,
         )
@@ -620,13 +626,15 @@ def cancel_pengiriman(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Pengiriman Barang (hard delete).
+    """Batalkan Pengiriman — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'pengiriman_barang', pengiriman_id, current_user,
             reason=payload.reason if payload else None,
         )
@@ -851,13 +859,15 @@ def cancel_penawaran(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Penawaran (hard delete).
+    """Batalkan Penawaran — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian + biaya tambahan dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'penawaran', penawaran_id, current_user,
             reason=payload.reason if payload else None,
         )
@@ -994,13 +1004,15 @@ def cancel_tukar_faktur(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Tukar Faktur (hard delete).
+    """Batalkan Tukar Faktur — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian dihapus dari database (tanpa jurnal/stok — tidak ada
-    efek samping); jejak lengkap tersimpan di log dokumen terhapus (Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'tukar_faktur', tf_id, current_user,
             reason=payload.reason if payload else None,
         )

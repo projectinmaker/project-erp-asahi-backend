@@ -26,7 +26,7 @@ from app.services import persediaan_service as svc
 from app.services import workflow_service
 from app.services import dashboard_service
 from app.services import excel_service
-from app.services.hard_delete_service import hard_delete_document
+from app.services.document_cancellation_service import cancel_document
 from app.schemas.workflow import HardDeleteRequest
 
 router = APIRouter()
@@ -269,13 +269,15 @@ def cancel_penyesuaian(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Penyesuaian Stok (hard delete).
+    """Batalkan Penyesuaian Stok — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'penyesuaian_stok', adj_id, current_user,
             reason=payload.reason if payload else None,
         )
@@ -394,13 +396,15 @@ def cancel_pemindahan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Pemindahan Barang (hard delete).
+    """Batalkan Pemindahan — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian dihapus dari database (guard: stok sudah bergerak → tolak);
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'pemindahan_barang', pb_id, current_user,
             reason=payload.reason if payload else None,
         )
@@ -551,13 +555,15 @@ def cancel_permintaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Permintaan Barang (hard delete).
+    """Batalkan Permintaan — reversal-first (AUD-01, update #05).
 
-    Dokumen + rincian dihapus dari database;
-    jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'permintaan_barang', req_id, current_user,
             reason=payload.reason if payload else None,
         )

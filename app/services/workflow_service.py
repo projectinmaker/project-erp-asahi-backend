@@ -222,6 +222,9 @@ def _direct_complete_tx(db, user, kind, document_id):
     if not is_administrator(db, user):
         return None
     obj = get_document(db, kind, document_id, lock=True)
+    # AUD-17: konteks perusahaan dokumen utk guard periode & setting akun.
+    from app.services.accounting_control import _company_of
+    db.info['posting_company'] = _company_of(db, obj)
     from app.services.penutupan_periode_service import validate_periode_not_closed
     validate_periode_not_closed(db, obj.tanggal)
     wf = find_workflow(db, obj)
@@ -273,6 +276,9 @@ def transition(db, document_type, document_id, action, user, expected_version, r
     if not can_read(db, user, document_type):
         raise HTTPException(403, 'Tidak memiliki akses dokumen ini')
     obj = get_document(db, document_type, document_id, lock=True)
+    # AUD-17: konteks perusahaan dokumen utk guard periode & setting akun.
+    from app.services.accounting_control import _company_of
+    db.info['posting_company'] = _company_of(db, obj)
     from app.services.penutupan_periode_service import validate_periode_not_closed
     validate_periode_not_closed(db, obj.tanggal)
     wf = find_workflow(db, obj)
@@ -350,6 +356,8 @@ def post_existing(db, obj, actor_id):
         from loguru import logger
         from app.services.posting_service import validate_entries, JurnalEntryItem, sync_kas_bank_saldo
         from app.models.transaksi.jurnal import StatusJurnal
+        # AUD-17: jurnal manual — konteks perusahaan dari jurnal itu sendiri.
+        db.info['posting_company'] = obj.company_id
         entries = [JurnalEntryItem(r.akun_perkiraan_id, r.debit, r.kredit) for r in obj.details]
         debit, kredit = validate_entries(db, entries, is_manual=True)
         if debit != obj.total_debit or kredit != obj.total_kredit:

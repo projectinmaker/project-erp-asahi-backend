@@ -35,6 +35,27 @@ router = APIRouter(dependencies=[Depends(report_scope)])
 
 
 # ==========================================
+# AUD-17 — DAFTAR PERUSAHAAN (untuk filter laporan)
+# ==========================================
+@router.get("/companies")
+def list_companies(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """AUD-17 (update #05) — daftar perusahaan aktif untuk filter laporan.
+
+    Dipakai dropdown "Perusahaan" di halaman laporan/dashboard/jurnal.
+    Mapping izin: reports.financial.view (sama dengan laporan keuangan).
+    """
+    from app.models.organization import OrganizationUnit
+    rows = (db.query(OrganizationUnit)
+            .filter(OrganizationUnit.kind == "COMPANY",
+                    OrganizationUnit.status == "AKTIF")
+            .order_by(OrganizationUnit.name).all())
+    return [{"id": str(r.id), "code": r.code, "name": r.name} for r in rows]
+
+
+# ==========================================
 # LAPORAN KEUANGAN
 # ==========================================
 
@@ -604,7 +625,9 @@ def export_rekap_pph23(
         ("DIPOTONG PIHAK LAIN (pelanggan)", data["dipotong_pihak_lain"]),
         ("DIPOTONG DARI SUPPLIER (kita potong)", data["dipotong_dari_supplier"]),
         ("ACCRUAL INVOICE PENJUALAN", data["pph23_invoice_penjualan"]),
+        ("RETUR PENJUALAN (pembalikan — AUD-12)", data["pph23_retur_penjualan"]),
         ("ACCRUAL INVOICE PEMBELIAN", data["pph23_invoice_pembelian"]),
+        ("RETUR PEMBELIAN (pembalikan — AUD-12)", data["pph23_retur_pembelian"]),
     ):
         for r in items:
             rows.append([label, r["tanggal"].date() if r["tanggal"] else None,

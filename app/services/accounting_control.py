@@ -48,6 +48,11 @@ def atomic_accounting_write(function):
                 item = (db.query(type(item)).filter(type(item).id == item.id)
                         .populate_existing().with_for_update().one())
                 bound.arguments["db_obj"] = item
+            # AUD-17 (update #05): konteks perusahaan aktif untuk guard periode
+            # & lookup setting akun (fallback global bila dokumen tanpa dimensi).
+            # Jurnal punya kolom company_id; dokumen lain lewat DocumentOrganization.
+            if item is not None:
+                db.info['posting_company'] = _company_of(db, item)
             from app.services.penutupan_periode_service import validate_periode_not_closed
             # Reconciliation functions address the parent by ID instead of db_obj.
             rek = None
@@ -125,8 +130,26 @@ def atomic_accounting_write(function):
         finally:
             db.commit = original_commit
             db.info.pop('accounting_depth', None)
-
+            db.info.pop('posting_company', None)
     return wrapped
+
+
+def _company_of(db, item):
+    """Company dokumen: kolom company_id (jurnal) atau dimensi DocumentOrganization.
+
+    Kegagalan resolusi → None (global) — perilaku identik pra-AUD-17.
+    """
+    cid = getattr(item, 'company_id', None)
+    if cid is not None:
+        return cid
+    doc_id = getattr(item, 'id', None)
+    if doc_id is None:
+        return None
+    try:
+        from app.services.organization_service import for_source
+        return for_source(db, doc_id).get('company_id')
+    except Exception:  # noqa: BLE001 — resolusi dimensi opsional
+        return None
 
 
 def require_unposted(item):

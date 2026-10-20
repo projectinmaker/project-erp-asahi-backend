@@ -51,7 +51,11 @@ def refresh_totals(obj):
         if global_pct > 100 or tax_pct > 100 or pph23_pct > 100:
             raise ValueError('Diskon global, PPN, dan PPh23 harus antara 0 dan 100 persen')
         ppn_applied = tax_pct if getattr(obj, 'ppn_applicable', True) else ZERO
-        pph23_applied = pph23_pct if getattr(obj, 'pph23_applicable', False) else ZERO
+        # AUD-12 (update #05): retur TIDAK menghitung ulang total_pph23 — nilai
+        # diderivasi & di-cap dari invoice sumber (settlement_service.apply_retur_pph23);
+        # refresh hanya memakai nilai tersimpan agar grand tetap NET konsisten.
+        is_retur = name in ('sales_retur', 'purchase_retur')
+        pph23_applied = ZERO if is_retur else (pph23_pct if getattr(obj, 'pph23_applicable', False) else ZERO)
         # Diskon global diterapkan setelah diskon baris (sama seperti invoice):
         # base = (gross - diskon baris) * (1 - diskon global %)
         discount += money((subtotal - discount) * global_pct / 100)
@@ -65,7 +69,12 @@ def refresh_totals(obj):
         obj.total_ppn = money(base * ppn_applied / 100)
         if hasattr(obj, 'total_pph23'):
             # PPh23 dipotong dari grand_total (potongan pajak atas dokumen).
-            obj.total_pph23 = money(base * pph23_applied / 100)
+            if not is_retur:
+                obj.total_pph23 = money(base * pph23_applied / 100)
+            # Retur: total_pph23 tetap nilai tersimpan (cap AUD-12) — cukup
+            # pastikan tidak negatif; grand dihitung ulang NET di bawah.
+            if obj.total_pph23 < 0:
+                obj.total_pph23 = ZERO
             obj.grand_total = base + obj.total_ppn + fees - obj.total_pph23
         else:
             obj.grand_total = base + obj.total_ppn + fees

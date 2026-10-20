@@ -451,6 +451,8 @@ class KasBankAkunBase(BaseSchema):
     akun_perkiraan_id: UUID
     # NEW Phase 2 — currency (P0)
     currency: str = "IDR"  # ISO 4217, default IDR (Phase-1 IDR-only per Roadmap §7)
+    # AUD-17 (update #05): akun milik satu perusahaan (None = GLOBAL)
+    company_id: Optional[UUID] = None
 
 class KasBankAkunCreate(KasBankAkunBase): pass
 
@@ -460,6 +462,8 @@ class KasBankAkunUpdate(BaseSchema):
     akun_perkiraan_id: Optional[UUID] = None
     currency: Optional[str] = None  # NEW Phase 2
     status: Optional[str] = None
+    # AUD-17: pindahkan kepemilikan akun ke perusahaan lain / global
+    company_id: Optional[UUID] = None
 
 class KasBankAkunResponse(KasBankAkunBase):
     id: UUID
@@ -474,12 +478,15 @@ class KasBankAkunResponse(KasBankAkunBase):
 # ==========================================
 class SettingAkunUpdate(BaseSchema):
     akun_perkiraan_id: UUID
+    # AUD-17 (update #05): override per perusahaan (bila kosong = baris GLOBAL)
+    company_id: Optional[UUID] = None
 
 class SettingAkunResponse(BaseSchema):
     id: UUID
     key: str
     label: str
     akun_perkiraan_id: UUID
+    company_id: Optional[UUID] = None  # AUD-17: None = global
     akun_perkiraan: Optional[COASimpleResponse] = None
     created_at: datetime
     updated_at: datetime

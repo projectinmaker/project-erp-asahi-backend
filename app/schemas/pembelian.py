@@ -390,6 +390,10 @@ class PurchaseReturResponse(PurchaseReturBase):
     sub_total: Decimal
     total_ppn: Decimal
     grand_total: Decimal
+    # AUD-12 (update #05) — PPh23 retur derived dari PI sumber (net-of-PPh23)
+    pph23_applicable: bool = False
+    pph23: Decimal = Decimal("0")
+    total_pph23: Decimal = Decimal("0")
     status: str
     jurnal_umum_id: Optional[UUID] = None
     created_by: UUID

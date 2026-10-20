@@ -65,7 +65,10 @@ def _update_manual(db, db_obj, data_in, actor):
     from app.services.penutupan_periode_service import validate_periode_not_closed
     if actor.id != db_obj.created_by and role(actor) not in APPROVERS:
         raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengedit draft')
-    validate_periode_not_closed(db, data_in.tanggal)
+    # AUD-17: jurnal manual — periode dicek per perusahaan jurnal (data baru
+    # boleh membawa dimensi perusahaan; guard mengikuti company hasil update).
+    company_baru = getattr(data_in, 'company_id', None) or getattr(db_obj, 'company_id', None)
+    validate_periode_not_closed(db, data_in.tanggal, company_id=company_baru)
     entries = [JurnalEntryItem(d.akun_perkiraan_id, d.debit, d.kredit, d.keterangan) for d in data_in.details]
     debit, kredit = validate_entries(db, entries, is_manual=True)
     db_obj.details.clear()

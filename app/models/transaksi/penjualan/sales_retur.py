@@ -22,6 +22,14 @@ class SalesRetur(BaseModel, BaseMixin):
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
     total_ppn = Column(Numeric(18, 2), default=0, nullable=False)
     grand_total = Column(Numeric(18, 2), default=0, nullable=False)
+    # === AUD-12 (update #05) — pembalikan PPh 23 oleh retur ===
+    # Flag & tarif DISALIN dari SI sumber saat create (bukan input user).
+    # total_pph23 dihitung refresh_totals atas DPP retur (di-cap sisa pph23 SI);
+    # grand_total retur menjadi NET-of-PPh23 sehingga jurnal retur membalik
+    # Dr PPH23_DIBAYAR_DIMUKA (116003) posting SI secara proporsional.
+    pph23_applicable = Column(Boolean, nullable=False, default=False, server_default="false")
+    pph23 = Column(Numeric(5, 2), default=2, nullable=False, server_default="2")
+    total_pph23 = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
     auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Phase E: deprecated
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
     keterangan = Column(Text, nullable=True)

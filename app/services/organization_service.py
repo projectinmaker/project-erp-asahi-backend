@@ -91,11 +91,16 @@ def assign_document(db, kind, document_id, data, expected_version, user):
         raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengedit draft')
     require_unposted(obj)
     from app.services.penutupan_periode_service import validate_periode_not_closed
-    validate_periode_not_closed(db, obj.tanggal)
+    # AUD-17: guard periode mengikuti perusahaan TARGET (dimensi baru yang
+    # di-assign) bila ada, else perusahaan dokumen saat ini.
+    from app.services.organization_service import validate as _validate_org
+    normalized_pre = _validate_org(db, data)
+    validate_periode_not_closed(db, obj.tanggal,
+                                company_id=normalized_pre.get('company_id'))
     workflow = wf.find_workflow(db, obj)
     if (workflow.version if workflow else 0) != expected_version:
         raise HTTPException(409, 'Versi dokumen berubah; muat ulang workflow')
-    normalized = validate(db, data)
+    normalized = normalized_pre
     row = db.query(DocumentOrganization).filter_by(document_id=document_id).first()
     if row and row.document_type != kind:
         raise ValueError('ID dokumen organisasi ambigu')

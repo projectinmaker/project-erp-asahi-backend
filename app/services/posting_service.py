@@ -119,18 +119,18 @@ def auto_posting_jurnal(
         accounting_lock(db)
         from app.services.reporting_ledger import local_datetime
         tanggal = local_datetime(tanggal or datetime.now(timezone.utc))
+        # AUD-17 (update #05): resolusi dimensi organisasi DULU supaya guard
+        # periode & lookup setting akun mengetahui perusahaan konteksnya.
+        from app.services.organization_service import for_source, validate
+        if organization is None:
+            organization = validate(db, for_source(db, ref_id))
+        db.info['posting_company'] = organization.get('company_id')
         # Validasi: cek periode tidak ditutup (inline query untuk menghindari circular import)
         # AUD-14: jurnal penutupan tahunan boleh posting ke periode terkunci.
+        # AUD-17: periode terkunci per perusahaan (global NULL atau company C).
         if tanggal and not (allow_closed_period and ref_module == RefModule.PENUTUPAN_PERIODE):
-            _periode_closed = (
-                db.query(PenutupanPeriode)
-                .filter(
-                    PenutupanPeriode.tahun == tanggal.year,
-                    PenutupanPeriode.bulan == tanggal.month,
-                    PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
-                )
-                .first()
-            )
+            from app.services.penutupan_periode_service import is_periode_closed
+            _periode_closed = is_periode_closed(db, tanggal, organization.get('company_id'))
             if _periode_closed:
                 raise ValueError(
                     f"Periode {tanggal.strftime('%B %Y')} sudah ditutup. "
@@ -163,8 +163,6 @@ def auto_posting_jurnal(
             no_jurnal = _generate_no_jurnal(db, "JV", tanggal)
 
         # Buat header Jurnal Umum
-        from app.services.organization_service import for_source, validate
-        organization = organization if organization is not None else validate(db, for_source(db, ref_id))
         jurnal = JurnalUmum(
             **organization,
             no_jurnal=no_jurnal,

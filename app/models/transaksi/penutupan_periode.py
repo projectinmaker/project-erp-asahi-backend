@@ -17,7 +17,11 @@ class StatusPeriode(str, enum.Enum):
 class PenutupanPeriode(BaseModel, BaseMixin):
     __tablename__ = "penutupan_periode"
     __table_args__ = (
-        UniqueConstraint("tahun", "bulan", name="uq_penutupan_periode_tahun_bulan"),
+        # AUD-17 (update #05): periode bisa ditutup GLOBAL (company NULL =
+        # mengunci semua perusahaan) atau khusus satu perusahaan.
+        UniqueConstraint("tahun", "bulan", "company_id",
+                        name="uq_penutupan_periode_tahun_bulan_company",
+                        postgresql_nulls_not_distinct=True),
     )
 
     tahun = Column(Integer, nullable=False)
@@ -26,6 +30,8 @@ class PenutupanPeriode(BaseModel, BaseMixin):
     keterangan = Column(Text, nullable=True)
     jurnal_penutupan_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)
     laba_rugi = Column(Numeric(18, 2), nullable=True)  # Laba/rugi periode ini
+    # AUD-17: NULL = penutupan global; terisi = khusus perusahaan tsb.
+    company_id = Column(UUID(as_uuid=True), ForeignKey("organization_unit.id"), nullable=True, index=True)
 
     closed_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)

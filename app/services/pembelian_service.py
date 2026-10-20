@@ -982,6 +982,12 @@ def create_purchase_retur(
         from app.services.document_totals import refresh_totals
         db.flush()
         refresh_totals(retur)
+        # === AUD-12 (update #05) — derive PPh23 retur dari PI sumber ===
+        # Flag & tarif disalin dari PI (bila ada); total_pph23 di-cap sisa
+        # PPh23 PI; grand_total NET-of-PPh23. Di-apply ulang saat posting.
+        from app.services.settlement_service import apply_retur_pph23
+        apply_retur_pph23(db, retur, retur.purchase_invoice)
+        grand_total = retur.grand_total
         if purchase_invoice_id is not None:
             retur.purchase_invoice_id = purchase_invoice_id
             from app.services.settlement_service import validate_return
@@ -1591,11 +1597,16 @@ def post_purchase_retur(db: Session, retur, created_by):
     no_retur = retur.no_retur
     sub_total = retur.sub_total
     total_ppn = retur.total_ppn
-    grand_total = retur.grand_total
+    # === AUD-12 (update #05) — finalisasi PPh23 retur sebelum jurnal ===
+    # Idempotent: dihitung ulang dari primitif + di-cap sisa PPh23 PI
+    # (retur lain non-DIBATALKAN atas PI yang sama ikut dihitung).
+    from app.services.settlement_service import apply_retur_pph23
+    total_pph23 = apply_retur_pph23(db, retur, retur.purchase_invoice)
+    grand_total = retur.grand_total  # NET-of-PPh23
     if not supplier.akun_hutang_id:
         raise ValueError("Mapping akun akun_hutang_id belum diisi; posting dibatalkan")
     entries = [
-        # Debit: Utang Dagang
+        # Debit: Utang Dagang (net-of-PPh23 — konsisten booking PI AUD-09)
         JurnalEntryItem(
             akun_perkiraan_id=control_account(db, retur.purchase_invoice) if retur.purchase_invoice else supplier.akun_hutang_id,
             debit=grand_total,
@@ -1618,6 +1629,20 @@ def post_purchase_retur(db: Session, retur, created_by):
                 ),
                 kredit=total_ppn,
                 keterangan=f"PPN Retur {no_retur}",
+            )
+        )
+    # === AUD-12 (update #05) — balik Cr Hutang PPh 23 posting PI (AUD-09) ===
+    # Retur atas PI ber-PPh23 membalik porsi hutang pajak (213002) sehingga
+    # hutang supplier turun net & 213002 ikut turun proporsional (tanpa ini:
+    # Dr utang bruto > sisa hutang net → retur penuh PI ber-PPh23 selalu gagal).
+    if total_pph23 > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_HUTANG_PPH23, context=f"Retur {no_retur}"
+                ),
+                debit=total_pph23,
+                keterangan=f"Balik hutang PPh23 retur {no_retur}",
             )
         )
 

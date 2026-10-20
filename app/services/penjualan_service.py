@@ -836,6 +836,12 @@ def create_sales_retur(
         from app.services.document_totals import refresh_totals
         db.flush()
         refresh_totals(retur)
+        # === AUD-12 (update #05) — derive PPh23 retur dari SI sumber ===
+        # Flag & tarif disalin dari SI; total_pph23 di-cap sisa PPh23 SI;
+        # grand_total menjadi NET-of-PPh23. Di-apply ulang saat posting.
+        from app.services.settlement_service import apply_retur_pph23
+        apply_retur_pph23(db, retur, retur.sales_invoice)
+        grand_total = retur.grand_total
         if auto_post_jurnal:
             post_sales_retur(db, retur, created_by)
 
@@ -1505,19 +1511,25 @@ def post_sales_retur(db: Session, retur, created_by):
     no_retur = retur.no_retur
     sub_total = retur.sub_total
     total_ppn = retur.total_ppn
-    grand_total = retur.grand_total
+    # === AUD-12 (update #05) — finalisasi PPh23 retur sebelum jurnal ===
+    # Idempotent: dihitung ulang dari primitif + di-cap sisa PPh23 SI
+    # (retur lain non-DIBATALKAN atas SI yang sama ikut dihitung).
+    from app.services.settlement_service import apply_retur_pph23
+    total_pph23 = apply_retur_pph23(db, retur, retur.sales_invoice)
+    grand_total = retur.grand_total  # NET-of-PPh23
     if not pelanggan.akun_piutang_id:
         raise ValueError("Mapping akun akun_piutang_id belum diisi; posting dibatalkan")
     entries = [
-        # Debit: Retur Penjualan
+        # Debit: Retur Penjualan (DPP retur = grand net + pph23 − ppn; tanpa
+        # pph23 → grand − ppn, identik rumus lama)
         JurnalEntryItem(
             akun_perkiraan_id=get_akun_id_or_raise(
                 db, KEY_RETUR_PENJUALAN, context=f"Retur {no_retur}"
             ),
-            debit=grand_total - total_ppn,
+            debit=grand_total + total_pph23 - total_ppn,
             keterangan=f"Retur Penjualan {no_retur}",
         ),
-        # Kredit: Piutang Dagang
+        # Kredit: Piutang Dagang (net-of-PPh23 — konsisten dengan booking SI)
         JurnalEntryItem(
             akun_perkiraan_id=control_account(db, retur.sales_invoice) if retur.sales_invoice else pelanggan.akun_piutang_id,
             kredit=grand_total,
@@ -1532,6 +1544,20 @@ def post_sales_retur(db: Session, retur, created_by):
                 ),
                 debit=total_ppn,
                 keterangan=f"PPN Retur {no_retur}",
+            )
+        )
+    # === AUD-12 (update #05) — balik Dr PPh23 Dibayar di Muka posting SI ===
+    # Retur atas SI ber-PPh23 mengembalikan porsi PPh23 dibayar di muka
+    # (116003) secara proporsional; tanpa baris ini piutang direduksi bruto
+    # padahal dibukukan net → AR melebihi & 116003 tidak pernah turun.
+    if total_pph23 > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_PPH23_DIBAYAR_DIMUKA, context=f"Retur {no_retur}"
+                ),
+                kredit=total_pph23,
+                keterangan=f"PPh23 dibatalkan retur {no_retur}",
             )
         )
 

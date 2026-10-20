@@ -29,6 +29,8 @@ class PenutupanPeriodeResponse(BaseSchema):
     laba_rugi: Optional[Decimal] = None
     keterangan: Optional[str] = None
     jurnal_penutupan_id: Optional[UUID] = None
+    # AUD-17: NULL = penutupan global; terisi = khusus perusahaan
+    company_id: Optional[UUID] = None
     closed_by: Optional[UUID] = None
     closed_at: Optional[datetime] = None
     reopened_by: Optional[UUID] = None
@@ -46,9 +48,13 @@ class TutupPeriodeRequest(BaseSchema):
     bulan: int
     keterangan: Optional[str] = None
     with_closing_entry: bool = True  # Default: bikin jurnal penutupan
+    # AUD-17: kosong = tutup global; terisi = khusus perusahaan tsb
+    company_id: Optional[UUID] = None
 
 
 class BukaPeriodeRequest(BaseSchema):
     tahun: int
     bulan: int
     alasan: Optional[str] = None
+    # AUD-17: kosong = buka global; terisi = khusus perusahaan tsb
+    company_id: Optional[UUID] = None

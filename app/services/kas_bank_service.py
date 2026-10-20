@@ -1334,7 +1334,8 @@ def get_pajak_monitoring(db: Session) -> dict:
     )
     balances = {}
     if accounts:
-        balances = dict(
+        from app.services.organization_service import apply_scope
+        saldo_q = (
             db.query(
                 JurnalDetail.akun_perkiraan_id,
                 func.coalesce(func.sum(JurnalDetail.debit), 0)
@@ -1345,9 +1346,10 @@ def get_pajak_monitoring(db: Session) -> dict:
                 JurnalDetail.akun_perkiraan_id.in_([a.id for a in accounts]),
                 JurnalUmum.status == StatusJurnal.POSTED,
             )
-            .group_by(JurnalDetail.akun_perkiraan_id)
-            .all()
         )
+        # AUD-17 (update #05): scope laporan per perusahaan (dari ?companyId)
+        saldo_q = apply_scope(db, saldo_q, JurnalUmum)
+        balances = dict(saldo_q.group_by(JurnalDetail.akun_perkiraan_id).all())
 
     akun_pajak = []
     total_hutang = Decimal("0")

@@ -533,6 +533,8 @@ _EXPLICIT = {
     'get_pelanggan_dropdown': 'master.pelanggan.view',
     'get_supplier_dropdown': 'master.supplier.view',
     'get_kas_bank_dropdown': 'master.kasbank_akun.view',
+    # AUD-17 (update #05): dropdown perusahaan utk filter laporan
+    'list_companies': 'reports.financial.view',
     'get_barang_inventory_accounts': 'master.barang.view',
     'get_barang_akun_pilihan': 'master.barang.view',
     'sync_kas_bank_akun': 'master.kasbank_akun.edit',

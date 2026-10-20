@@ -5,7 +5,7 @@ from app.models.transaksi.asset_event import AssetEvent
 from app.schemas.asset_cycle import AssetEventCreate, AssetEventResponse, AssetCancel
 from app.services import asset_cycle_service as svc
 from app.services import workflow_service
-from app.services.hard_delete_service import hard_delete_document
+from app.services.document_cancellation_service import cancel_document
 
 router = APIRouter()
 
@@ -41,14 +41,16 @@ def get_asset_event(event_id: UUID, db=Depends(get_current_db)):
 
 @router.post('/{event_id}/cancel')
 def cancel_asset_event(event_id: UUID, data: AssetCancel, db=Depends(get_current_db), user=Depends(get_current_user)):
-    """Hapus permanen Transaksi Aset (hard delete) — alasan WAJIB.
+    """Batalkan Transaksi Aset — reversal-first (AUD-01, update #05).
 
-    Event + snapshot state-nya dihapus; bila event POSTED (bukan yang terakhir
-    → ditolak). Jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
+    Bila dokumen sudah diposting (punya jurnal/stok): dibuat JURNAL PEMBALIK,
+    status menjadi BATAL/DIBATALKAN, alokasi pelunasan dihapus, stok dipulihkan —
+    dokumen & jurnal asli tetap tersimpan (audit trail utuh; alasan wajib).
+    Bila masih draft (tanpa jurnal): dihapus permanen + snapshot histori.
     """
     obj = get_asset_event(event_id, db)
     try:
-        return hard_delete_document(
+        return cancel_document(
             db, 'asset_event', event_id, user,
             reason=data.reason,
         )

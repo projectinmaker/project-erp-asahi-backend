@@ -336,7 +336,9 @@ def hard_delete_document(db: Session, document_type: str, document_id: UUID,
     """Hapus permanen dokumen transaksi + seluruh data turunannya.
 
     Jejak lengkap disimpan ke deleted_document_log (snapshot JSON).
-    Dokumen berstatus BATAL boleh dihapus — justru untuk membersihkan dokumen batal.
+    AUD-01 (update #05): dokumen yang sudah dibatalkan (BATAL/DIBATALKAN —
+    jurnal pembalik sudah terbentuk) TIDAK boleh dihapus permanen supaya
+    audit trail pembatalan tetap utuh.
     """
     model = MODELS.get(document_type)
     if model is None:
@@ -347,11 +349,23 @@ def hard_delete_document(db: Session, document_type: str, document_id: UUID,
     if obj is None:
         raise HTTPException(404, 'Dokumen tidak ditemukan')
 
+    # AUD-01 (update #05): BATAL/DIBATALKAN = jejak pembatalan — jangan hapus.
+    if _status_value(obj) in ('BATAL', 'DIBATALKAN'):
+        raise ValueError(
+            'Dokumen sudah dibatalkan (jurnal pembalik sudah terbentuk) dan tidak '
+            'dapat dihapus permanen — jejak audit pembatalan harus dipertahankan.'
+        )
+
     accounting_lock(db)
 
-    # Guard periode (sama dengan cancel/post lama).
+    # Guard periode (sama dengan cancel/post lama) — AUD-17: company-aware.
     from app.services.penutupan_periode_service import validate_periode_not_closed
-    validate_periode_not_closed(db, obj.tanggal, context='penghapusan dokumen')
+    from app.services.accounting_control import _company_of
+    db.info['posting_company'] = _company_of(db, obj)
+    try:
+        validate_periode_not_closed(db, obj.tanggal, context='penghapusan dokumen')
+    finally:
+        db.info.pop('posting_company', None)
 
     _apply_guards(db, document_type, obj)
 

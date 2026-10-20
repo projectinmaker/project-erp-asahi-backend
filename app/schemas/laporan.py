@@ -465,6 +465,10 @@ class PajakPph23Response(BaseSchema):
     total_dipotong_dari_supplier: Decimal = Decimal("0")
     pph23_invoice_penjualan: List[PajakPph23Baris] = []
     total_pph23_invoice_penjualan: Decimal = Decimal("0")
+    pph23_retur_penjualan: List[PajakPph23Baris] = []  # AUD-12: netting (nilai negatif)
+    total_pph23_retur_penjualan: Decimal = Decimal("0")
     pph23_invoice_pembelian: List[PajakPph23Baris] = []
     total_pph23_invoice_pembelian: Decimal = Decimal("0")
+    pph23_retur_pembelian: List[PajakPph23Baris] = []  # AUD-12: netting (nilai negatif)
+    total_pph23_retur_pembelian: Decimal = Decimal("0")
     per_masa: List[PajakPph23PerMasa] = []

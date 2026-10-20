@@ -202,15 +202,22 @@ def _allocation_rows(db: Session, dari: date, sampai: date, side: str):
 
 
 def get_rekap_pph23(db: Session, dari: date, sampai: date) -> dict:
-    """Rekap PPh 23 per periode — potongan keluar/masuk + accrual per invoice."""
+    """Rekap PPh 23 per periode — potongan keluar/masuk + accrual per invoice.
+
+    AUD-12 (update #05): accrual invoice DI-NETTING retur atas invoice tsb
+    (retur membalik Dr 116003 / Cr 213002). AUD-01 (update #05): invoice
+    DIBATALKAN (jurnal dibalik) dikecualikan dari accrual.
+    """
     dipotong_pihak_lain = _allocation_rows(db, dari, sampai, "piutang")
     dipotong_dari_supplier = _allocation_rows(db, dari, sampai, "hutang")
 
     # Accrual SI (PPh 23 dibayar di muka terbentuk saat invoice ber-PPh23)
     start, end = gl.day_start(dari), gl.day_end(sampai)
+    from app.models.transaksi.penjualan.sales_order import StatusPenjualan
     si_rows = (
         db.query(SalesInvoice)
         .filter(SalesInvoice.total_pph23 > 0,
+                SalesInvoice.status != StatusPenjualan.DIBATALKAN,  # AUD-01
                 SalesInvoice.tanggal >= start, SalesInvoice.tanggal <= end)
         .order_by(SalesInvoice.tanggal)
         .all()
@@ -224,12 +231,32 @@ def get_rekap_pph23(db: Session, dari: date, sampai: date) -> dict:
         "masa_pajak": _masa(_local_day(inv.tanggal)),
     } for inv in si_rows]
 
+    # AUD-12 — retur penjualan membalik PPh23 dibayar di muka (Cr 116003):
+    # tampilkan sebagai baris pengurang accrual periode retur terjadi.
+    sr_rows = (
+        db.query(SalesRetur)
+        .filter(SalesRetur.total_pph23 > 0,
+                SalesRetur.status != StatusPenjualan.DIBATALKAN,
+                SalesRetur.tanggal >= start, SalesRetur.tanggal <= end)
+        .order_by(SalesRetur.tanggal)
+        .all()
+    )
+    pph23_retur_penjualan = [{
+        "tanggal": r.tanggal,
+        "no_dokumen": r.no_retur,
+        "no_invoice": (r.sales_invoice.no_invoice if r.sales_invoice else None),
+        "pihak": (db.get(Pelanggan, r.pelanggan_id).nama if r.pelanggan_id else None),
+        "pph23": -(r.total_pph23 or ZERO),
+        "masa_pajak": _masa(_local_day(r.tanggal)),
+    } for r in sr_rows]
+
     # Accrual PI (hutang PPh 23 terbentuk sejak invoice — AUD-09).
     # AUD-08: bukti potong & masa pajak dibaca dari alokasi pelunasannya
     # (potongan dicatat di invoice, bukti potong menyusul saat dibayar).
     pi_rows = (
         db.query(PurchaseInvoice)
         .filter(PurchaseInvoice.total_pph23 > 0,
+                PurchaseInvoice.status != StatusPenjualan.DIBATALKAN,  # AUD-01
                 PurchaseInvoice.tanggal >= start, PurchaseInvoice.tanggal <= end)
         .order_by(PurchaseInvoice.tanggal)
         .all()
@@ -237,8 +264,7 @@ def get_rekap_pph23(db: Session, dari: date, sampai: date) -> dict:
     pph23_invoice_pembelian = []
     for inv in pi_rows:
         alloc = (db.query(PaymentAllocation)
-                 .filter(PurchaseInvoice.id == inv.id and True or True,
-                         PaymentAllocation.purchase_invoice_id == inv.id)
+                 .filter(PaymentAllocation.purchase_invoice_id == inv.id)
                  .order_by(PaymentAllocation.created_at.desc())
                  .first())
         pph23_invoice_pembelian.append({
@@ -252,10 +278,30 @@ def get_rekap_pph23(db: Session, dari: date, sampai: date) -> dict:
             "sumber": "INVOICE",
         })
 
+    # AUD-12 — retur pembelian membalik hutang PPh 23 (Dr 213002):
+    pr_rows = (
+        db.query(PurchaseRetur)
+        .filter(PurchaseRetur.total_pph23 > 0,
+                PurchaseRetur.status != StatusPenjualan.DIBATALKAN,
+                PurchaseRetur.tanggal >= start, PurchaseRetur.tanggal <= end)
+        .order_by(PurchaseRetur.tanggal)
+        .all()
+    )
+    pph23_retur_pembelian = [{
+        "tanggal": r.tanggal,
+        "no_dokumen": r.no_retur,
+        "no_invoice": (r.purchase_invoice.no_form if r.purchase_invoice else None),
+        "pihak": (db.get(Supplier, r.supplier_id).nama if r.supplier_id else None),
+        "pph23": -(r.total_pph23 or ZERO),
+        "masa_pajak": _masa(_local_day(r.tanggal)),
+    } for r in pr_rows]
+
     total_dipotong_pihak_lain = sum((r["pph23"] for r in dipotong_pihak_lain), ZERO)
     total_dipotong_dari_supplier = sum((r["pph23"] for r in dipotong_dari_supplier), ZERO)
-    total_invoice_penjualan = sum((r["pph23"] for r in pph23_invoice_penjualan), ZERO)
-    total_invoice_pembelian = sum((r["pph23"] for r in pph23_invoice_pembelian), ZERO)
+    total_invoice_penjualan = sum((r["pph23"] for r in pph23_invoice_penjualan), ZERO) \
+        + sum((r["pph23"] for r in pph23_retur_penjualan), ZERO)
+    total_invoice_pembelian = sum((r["pph23"] for r in pph23_invoice_pembelian), ZERO) \
+        + sum((r["pph23"] for r in pph23_retur_pembelian), ZERO)
 
     # Ringkasan per masa pajak dari bukti potong (allocation rows)
     per_masa_map: dict[str, dict] = {}
@@ -277,7 +323,11 @@ def get_rekap_pph23(db: Session, dari: date, sampai: date) -> dict:
         "total_dipotong_dari_supplier": total_dipotong_dari_supplier,
         "pph23_invoice_penjualan": pph23_invoice_penjualan,
         "total_pph23_invoice_penjualan": total_invoice_penjualan,
+        "pph23_retur_penjualan": pph23_retur_penjualan,
+        "total_pph23_retur_penjualan": sum((r["pph23"] for r in pph23_retur_penjualan), ZERO),
         "pph23_invoice_pembelian": pph23_invoice_pembelian,
         "total_pph23_invoice_pembelian": total_invoice_pembelian,
+        "pph23_retur_pembelian": pph23_retur_pembelian,
+        "total_pph23_retur_pembelian": sum((r["pph23"] for r in pph23_retur_pembelian), ZERO),
         "per_masa": per_masa,
     }

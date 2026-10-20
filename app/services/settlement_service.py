@@ -10,6 +10,7 @@ from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
 from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.services.accounting_control import atomic_accounting_write, require_unposted
+from app.services.document_totals import money  # AUD-12: quantize apply_retur_pph23
 
 ZERO = Decimal('0.00')
 JAKARTA = timezone(timedelta(hours=7))
@@ -119,6 +120,68 @@ def control_account(db, invoice):
     if len(rows) != 1:
         raise ValueError('Akun piutang/hutang invoice lama tidak dapat ditentukan; rekonsiliasi jurnal sumber diperlukan')
     return rows[0][0]
+
+
+def apply_retur_pph23(db, retur, invoice):
+    """AUD-12 (update #05) — turunkan & cap PPh 23 retur dari invoice sumber.
+
+    Flag (``pph23_applicable``) dan tarif (``pph23``) DISALIN dari invoice
+    sumber (bukan input user). ``total_pph23`` = min(DPP retur × tarif,
+    sisa PPh23 invoice) dengan sisa = ``invoice.total_pph23`` − Σ
+    ``total_pph23`` retur aktif (non-DIBATALKAN) lain atas invoice yang sama.
+    ``grand_total`` retur dikoreksi menjadi NET-of-PPh23 sehingga:
+
+    - retur penjualan: Cr Piutang = grand_total (net) + Cr PPH23_DIBAYAR_DIMUKA
+      (membalik Dr 116003 posting SI);
+    - retur pembelian: Dr Hutang = grand_total (net) + Dr HUTANG_PPH23
+      (membalik Cr 213002 posting PI — AUD-09).
+
+    Idempotent: dihitung ulang dari primitif (sub_total, diskon_global, ppn,
+    tarif invoice) setiap dipanggil. ``invoice`` None → pph23 dinolkan
+    (retur pembelian lama tanpa PI tetap didukung).
+    """
+    from app.models.transaksi.penjualan.sales_retur import SalesRetur
+    from app.models.transaksi.penjualan.sales_order import StatusPenjualan
+
+    is_sales = isinstance(retur, SalesRetur)
+    model = type(retur)
+    fk = model.sales_invoice_id if is_sales else model.purchase_invoice_id
+    if invoice is None or not getattr(invoice, 'pph23_applicable', False) \
+            or Decimal(invoice.total_pph23 or 0) <= 0:
+        retur.pph23_applicable = False
+        retur.pph23 = Decimal(getattr(invoice, 'pph23', 2) or 0) if invoice is not None else Decimal('2')
+        retur.total_pph23 = ZERO
+        retur.grand_total = _retur_gross_total(retur)
+        return ZERO
+
+    retur.pph23_applicable = True
+    retur.pph23 = Decimal(getattr(invoice, 'pph23', 2) or 0)
+    terpakai = Decimal(db.query(func.sum(model.total_pph23)).filter(
+        fk == invoice.id,
+        model.id != retur.id,
+        model.status != StatusPenjualan.DIBATALKAN,
+    ).scalar() or 0)
+    sisa_pph23 = Decimal(invoice.total_pph23 or 0) - terpakai
+    dpp = _retur_dpp(retur)
+    raw = money(dpp * retur.pph23 / 100)
+    total_pph23 = min(raw, max(ZERO, sisa_pph23))
+    retur.total_pph23 = total_pph23
+    retur.grand_total = _retur_gross_total(retur) - total_pph23
+    return total_pph23
+
+
+def _retur_dpp(retur) -> Decimal:
+    """DPP retur = sub_total − potongan diskon global (konsisten refresh_totals)."""
+    subtotal = Decimal(retur.sub_total or 0)
+    global_pct = Decimal(getattr(retur, 'diskon_global', 0) or 0)
+    if global_pct > 0:
+        subtotal = subtotal - money(subtotal * global_pct / 100)
+    return subtotal
+
+
+def _retur_gross_total(retur) -> Decimal:
+    """Grand total retur TANPA pph23 (bruto) = DPP + total_ppn."""
+    return _retur_dpp(retur) + Decimal(retur.total_ppn or 0)
 
 
 def positive_money(value):
@@ -268,6 +331,16 @@ def prepare(db, jenis, pihak_id, tanggal, allocation_data):
             raise ValueError(
                 f"PPh 23 faktur {current[obj.id]['no_dokumen']} sudah tercatat saat invoice "
                 f"diposting (grand total net). Kosongkan kolom PPh 23 pada alokasi pelunasan ini."
+            )
+        # === AUD-12 (update #05) — anti pencatatan ganda PPh 23 sisi PIUTANG ===
+        # SI dengan pph23_applicable membentuk Dr PPh 23 Dibayar di Muka SEJAK
+        # posting invoice (piutang dibukukan net). Potongan pph23 di alokasi
+        # pelunasan hanya untuk SI legacy — bila keduanya dipakai, Dr 116003
+        # terbentuk dua kali.
+        if jenis == 'piutang' and pph23 > 0 and (getattr(obj, 'total_pph23', 0) or 0) > 0:
+            raise ValueError(
+                f"PPh 23 invoice {current[obj.id]['no_dokumen']} sudah tercatat saat invoice "
+                f"diposting (piutang net). Kosongkan kolom PPh 23 pada alokasi penerimaan ini."
             )
         if diskon + pph23 > nilai:
             raise ValueError(f'Diskon + PPh 23 melebihi nilai alokasi {current[obj.id]["no_dokumen"]}')
