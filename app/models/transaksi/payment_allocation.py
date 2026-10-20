@@ -25,6 +25,16 @@ class PaymentAllocation(BaseModel, BaseMixin):
     # diskon = bagian dari nilai yang tidak dibayar tunai (potongan dari
     # supplier) sehingga kas keluar = nilai - diskon per faktur.
     diskon = Column(Numeric(18, 2), nullable=False, default=0, server_default='0')
+    # === Update #01 — PPh 23 saat pelunasan (per faktur) ===
+    # pph23 = potongan PPh 23 atas pembayaran faktur ini:
+    # - piutang (penerimaan): pelanggan memotong PPh 23 dari setoran,
+    #   kas masuk = nilai - pph23, selisihnya didebit ke akun PPh 23 Dibayar
+    #   di Muka (setting PPH23_DIBAYAR_DIMUKA);
+    # - hutang (pembayaran): perusahaan menahan PPh 23 dari pembayaran ke
+    #   supplier, kas keluar = nilai - diskon - pph23, selisihnya dikredit
+    #   ke akun Hutang PPh 23 (setting HUTANG_PPH23).
+    # Sisa tagihan tetap berkurang sebesar ``nilai`` penuh.
+    pph23 = Column(Numeric(18, 2), nullable=False, default=0, server_default='0')
     # Snapshot sisa tagihan faktur SEBELUM pembayaran ini (untuk kolom
     # "Terutang" di layout cetak Bayar Pemasok).
     terutang = Column(Numeric(18, 2), nullable=True)

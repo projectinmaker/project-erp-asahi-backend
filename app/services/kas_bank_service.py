@@ -29,7 +29,7 @@ from app.models.master.pengguna import Pengguna
 from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
-from app.services.setting_akun_service import get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK, KEY_POTONGAN_HUTANG
+from app.services.setting_akun_service import get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK, KEY_POTONGAN_HUTANG, KEY_HUTANG_PPH23, KEY_PPH23_DIBAYAR_DIMUKA
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
@@ -293,6 +293,11 @@ def get_penerimaan_list(
         joinedload(PenerimaanKas.creator),
         joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
         joinedload(PenerimaanKas.jurnal),
+        # Update #01 — paritas dengan pembayaran: list Kas & Bank harus bisa
+        # membedakan penerimaan settlement (pelunasan piutang) vs umum —
+        # relasi pelanggan + alokasi di-eager-load.
+        joinedload(PenerimaanKas.pelanggan),
+        joinedload(PenerimaanKas.alokasi),
     )
 
     if search:
@@ -324,7 +329,9 @@ def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[Penerimaa
         .options(
             joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
             joinedload(PenerimaanKas.creator),
+            joinedload(PenerimaanKas.pelanggan),
             joinedload(PenerimaanKas.rincian).joinedload(PenerimaanRincian.akun_perkiraan),
+            joinedload(PenerimaanKas.alokasi).joinedload(PaymentAllocation.sales_invoice),
             joinedload(PenerimaanKas.jurnal),
         )
         .filter(PenerimaanKas.id == penerimaan_id)
@@ -680,6 +687,15 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
         akun_potongan_id = get_akun_id_or_raise(db, KEY_POTONGAN_HUTANG, "potongan hutang pelunasan")
     else:
         akun_potongan_id = None
+    # Update #01 — PPh 23 ditahan dari pembayaran ke supplier (per faktur).
+    # Kas keluar = total_nilai (net PPh 23); PPh 23 dikredit ke akun Hutang
+    # PPh 23 (setting HUTANG_PPH23) supaya Dr hutang tetap sebesar nilai
+    # penuh dan jurnal tetap balance.
+    total_pph23 = sum((Decimal(str(getattr(a, "pph23", 0) or 0)) for a in (pembayaran.alokasi or [])), Decimal("0"))
+    if total_pph23 > 0:
+        akun_pph23_id = get_akun_id_or_raise(db, KEY_HUTANG_PPH23, "PPh 23 pelunasan hutang")
+    else:
+        akun_pph23_id = None
     entries = [
         # Kredit: Kas/Bank
         JurnalEntryItem(
@@ -695,6 +711,15 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
                 akun_perkiraan_id=akun_potongan_id,
                 kredit=total_diskon,
                 keterangan=f"Potongan pelunasan {no_bukti}",
+            )
+        )
+    # Kredit: Hutang PPh 23 (Update #01 — hanya bila ada PPh 23 ditahan)
+    if akun_pph23_id is not None:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=akun_pph23_id,
+                kredit=total_pph23,
+                keterangan=f"PPh 23 ditahan {no_bukti}",
             )
         )
     # Debit: Akun-akun dari rincian (grup akun kontrol alokasi + akun penalti)
@@ -722,6 +747,8 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
         keterangan += f" (termasuk penalti {penalti})"
     if total_diskon > 0:
         keterangan += f" (termasuk diskon {total_diskon})"
+    if total_pph23 > 0:
+        keterangan += f" (termasuk PPh 23 ditahan {total_pph23})"
 
     jurnal = auto_posting_jurnal(
         db=db,
@@ -775,6 +802,20 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
             keterangan=f"Penerimaan {no_bukti}",
         ),
     ]
+    # Update #01 — PPh 23 dipotong pelanggan saat pelunasan piutang (per
+    # faktur): kas masuk = total_nilai (net PPh 23); PPh 23 didebit ke akun
+    # PPh 23 Dibayar di Muka (setting PPH23_DIBAYAR_DIMUKA) supaya Cr
+    # piutang tetap sebesar nilai penuh dan jurnal tetap balance.
+    total_pph23 = sum((Decimal(str(getattr(a, "pph23", 0) or 0)) for a in (penerimaan.alokasi or [])), Decimal("0"))
+    if total_pph23 > 0:
+        akun_pph23_id = get_akun_id_or_raise(db, KEY_PPH23_DIBAYAR_DIMUKA, "PPh 23 potongan pelanggan")
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=akun_pph23_id,
+                debit=total_pph23,
+                keterangan=f"PPh 23 dipotong pelanggan {no_bukti}",
+            )
+        )
     # Kredit: Akun-akun dari rincian (grup akun kontrol alokasi + akun penalti)
     for r in rincian_data:
         entries.append(
@@ -798,6 +839,8 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
     )
     if penalti > 0:
         keterangan += f" (termasuk penalti {penalti})"
+    if total_pph23 > 0:
+        keterangan += f" (termasuk PPh 23 dipotong pelanggan {total_pph23})"
 
     jurnal = auto_posting_jurnal(
         db=db,

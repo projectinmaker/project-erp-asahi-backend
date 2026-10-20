@@ -12,6 +12,10 @@ class AllocationInput(BaseSchema):
     # Update cetak "Bayar Pemasok" — diskon pelunasan per faktur (hutang saja).
     # Kas keluar = nilai - diskon; sisa tagihan berkurang sebesar nilai.
     diskon: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    # === Update #01 — PPh 23 saat pelunasan (per faktur, piutang & hutang) ===
+    # Potongan PPh 23 atas pembayaran: kas = nilai - diskon - pph23;
+    # sisa tagihan tetap berkurang sebesar nilai penuh.
+    pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
 
 
 class AllocationUpdate(BaseSchema):
@@ -40,6 +44,7 @@ class SettlementCreate(AllocationUpdate):
 class AllocationResponse(AllocationInput):
     id: UUID
     akun_perkiraan_id: UUID
+    # (pph23 diwarisi dari AllocationInput — Update #01)
     # === Update cetak "Bayar Pemasok" — detail faktur untuk tabel cetak ===
     # Hanya diisi untuk pembayaran (AP settlement); penerimaan membiarkan None.
     terutang: Optional[Decimal] = None

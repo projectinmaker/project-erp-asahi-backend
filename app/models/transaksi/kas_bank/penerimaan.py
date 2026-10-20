@@ -26,6 +26,10 @@ class PenerimaanKas(BaseModel, BaseMixin):
     created_by = Column(UUID(as_uuid=True), ForeignKey("pengguna.id"), nullable=False)
 
     pelanggan_id = Column(UUID(as_uuid=True), ForeignKey("pelanggan.id"), nullable=True)
+    # Update #01 — relasi pelanggan (paritas dengan PembayaranKas.supplier)
+    # supaya list/detail Kas & Bank bisa menampilkan pihak penerimaan
+    # settlement (pelunasan piutang) tanpa query N+1.
+    pelanggan = relationship("Pelanggan")
     alokasi = relationship("PaymentAllocation", back_populates="penerimaan", cascade="all, delete-orphan")
 
     # Relationships

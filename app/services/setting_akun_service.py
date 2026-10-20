@@ -76,6 +76,15 @@ KEY_LABA_DITAHAN = "LABA_DITAHAN"
 # Konfigurasi via Pengaturan → Setting Akun (PUT /master/setting-akun/POTONGAN_HUTANG).
 KEY_POTONGAN_HUTANG = "POTONGAN_HUTANG"
 
+# === Update #01 — PPh 23 saat pelunasan ===
+# Akun Hutang PPh 23 (COA v2 213002) — dikredit saat pelunasan hutang
+# (pembayaran ke supplier) menyertakan potongan PPh 23 per faktur yang
+# ditahan perusahaan: kas keluar = nilai - diskon - pph23. Opsional:
+# hanya wajib bila ada pelunasan hutang dengan pph23 > 0. Konfigurasi
+# via Pengaturan → Setting Akun (PUT /master/setting-akun/HUTANG_PPH23).
+# (Sisi piutang memakai KEY_PPH23_DIBAYAR_DIMUKA yang sudah ada.)
+KEY_HUTANG_PPH23 = "HUTANG_PPH23"
+
 # Label untuk semua key setting yang dikenal sistem. Dipakai endpoint
 # PUT /master/setting-akun/{key} untuk MEMBUAT baris setting baru bila belum ada
 # (mis. PENDAPATAN_ANGKUT yang di-skip phase3 seed karena akun default legacy
@@ -109,6 +118,7 @@ KNOWN_SETTING_LABELS = {
     KEY_LABA_DITAHAN: "Laba (Rugi) Ditahan",
     KEY_PPH23_DIBAYAR_DIMUKA: "PPh 23 Dibayar Dimuka",
     KEY_POTONGAN_HUTANG: "Potongan Hutang (Pelunasan)",
+    KEY_HUTANG_PPH23: "Hutang PPh 23 (Pelunasan)",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)
@@ -162,6 +172,13 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
         "kode": ["116003", "150100002", "150.100.002"],
         "nama_exact": ["PPh 23 Dibayar di Muka", "PPh 23 Dibayar Dimuka"],
         "nama_like": ["%pph 23 dibayar%"],
+    },
+    # === Update #01 — Hutang PPh 23 untuk pelunasan hutang ===
+    # COA v2 kode 213002 (di bawah group 213000 Hutang Pajak).
+    KEY_HUTANG_PPH23: {
+        "kode": ["213002", "213.002", "215200002"],
+        "nama_exact": ["Hutang PPh 23", "Hutang PPh23"],
+        "nama_like": ["%hutang pph 23%", "%hutang pph23%"],
     },
 }
 

@@ -49,6 +49,13 @@ class SupplierSimpleResponse(BaseSchema):
     alamat: Optional[str] = None
 
 
+# === Update #01 — blok Pelanggan untuk Penerimaan Kas (pelunasan piutang) ===
+class PelangganSimpleResponse(BaseSchema):
+    id: UUID
+    nama: str
+    alamat: Optional[str] = None
+
+
 # ==========================================
 # PEMBAYARAN KAS
 # ==========================================
@@ -165,6 +172,8 @@ class PenerimaanKasUpdate(BaseSchema):
 class PenerimaanKasResponse(PenerimaanKasBase):
     pelanggan_id: Optional[UUID] = None
     alokasi: List[AllocationResponse] = []
+    # === Update #01 — relasi pelanggan untuk blok Pelanggan (pelunasan piutang) ===
+    pelanggan: Optional[PelangganSimpleResponse] = None
     id: UUID
     no_bukti: str
     total_nilai: Decimal

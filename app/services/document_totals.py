@@ -75,8 +75,12 @@ def refresh_totals(obj):
         total = sum((money(amount(r.nilai)) for r in obj.rincian), ZERO)
         # Update cetak "Bayar Pemasok" — diskon pelunasan per faktur
         # mengurangi kas keluar (rincian tetap Dr hutang penuh).
-        if name == 'pembayaran_kas':
-            total -= sum((money(amount(getattr(a, 'diskon', 0))) for a in (getattr(obj, 'alokasi', None) or [])), ZERO)
+        # Update #01 — PPh 23 pelunasan per faktur juga memotong kas
+        # (pembayaran: Σ rincian − Σ diskon − Σ pph23; penerimaan:
+        # Σ rincian − Σ pph23 — rincian tetap Dr/Kr akun kontrol penuh;
+        # selisih diposting ke akun potongan hutang / PPh 23).
+        total -= sum((money(amount(getattr(a, 'diskon', 0))) for a in (getattr(obj, 'alokasi', None) or [])), ZERO)
+        total -= sum((money(amount(getattr(a, 'pph23', 0))) for a in (getattr(obj, 'alokasi', None) or [])), ZERO)
         obj.total_nilai = total
     elif name == 'transfer_bank':
         if obj.dari_kas_bank_id == obj.ke_kas_bank_id:
