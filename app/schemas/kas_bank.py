@@ -336,12 +336,57 @@ class KasIdentifikasiCreate(BaseSchema):
     catatan: Optional[str] = None
 
 
+# === Update #03 — Identifikasi Piutang/Hutang (pihak + invoice) ===
+class IdentifikasiPiutangAlokasiCreate(BaseSchema):
+    """Satu baris alokasi identifikasi piutang: sales invoice + nilai (+ PPh 23)."""
+    sales_invoice_id: UUID
+    nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+
+
+class IdentifikasiPiutangCreate(BaseSchema):
+    """Payload identifikasi penerimaan Belum Teridentifikasi ke pelanggan.
+
+    Jurnal reklasifikasi: Dr Penampung / Dr PPh 23 Dibayar di Muka /
+    Cr Piutang pelanggan + alokasi invoice (outstanding terbarui).
+    """
+    pelanggan_id: UUID
+    tanggal: datetime
+    alokasi: List[IdentifikasiPiutangAlokasiCreate] = Field(min_length=1, max_length=100)
+    catatan: Optional[str] = None
+
+
+class IdentifikasiHutangAlokasiCreate(BaseSchema):
+    """Satu baris alokasi identifikasi hutang: purchase invoice + nilai (+ diskon + PPh 23)."""
+    purchase_invoice_id: UUID
+    nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    diskon: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+    pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
+
+
+class IdentifikasiHutangCreate(BaseSchema):
+    """Payload identifikasi pembayaran Belum Teridentifikasi ke supplier.
+
+    Jurnal reklasifikasi: Cr Penampung / Dr Hutang supplier / Cr Potongan
+    Hutang / Cr Hutang PPh 23 + alokasi invoice (outstanding terbarui).
+    """
+    supplier_id: UUID
+    tanggal: datetime
+    alokasi: List[IdentifikasiHutangAlokasiCreate] = Field(min_length=1, max_length=100)
+    catatan: Optional[str] = None
+
+
 class IdentifikasiRincianResponse(BaseSchema):
     id: UUID
     akun_perkiraan_id: UUID
     nilai: Decimal
     keterangan: Optional[str] = None
     akun_perkiraan: Optional[AkunPerkiraanSimpleResponse] = None
+    # Update #03 — snapshot invoice + potongan per faktur (sesi PIUTANG/HUTANG)
+    sales_invoice_id: Optional[UUID] = None
+    purchase_invoice_id: Optional[UUID] = None
+    diskon: Decimal = Decimal("0")
+    pph23: Decimal = Decimal("0")
 
 
 class KasIdentifikasiResponse(BaseSchema):
@@ -360,6 +405,10 @@ class KasIdentifikasiResponse(BaseSchema):
     jurnal: Optional[JurnalSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     rincian: List[IdentifikasiRincianResponse] = []
+    # Update #03 — jenis sesi + pihak yang diidentifikasi
+    jenis: str = "LAINNYA"
+    pelanggan_id: Optional[UUID] = None
+    supplier_id: Optional[UUID] = None
 
 
 class KasIdentifikasiListResponse(BaseSchema):
@@ -376,3 +425,34 @@ class KasIdentifikasiListResponse(BaseSchema):
     teridentifikasi: Decimal
     sisa_belum_teridentifikasi: Decimal
     identifikasi: List[KasIdentifikasiResponse] = []
+
+
+# === Update #03 — Monitoring & rekonsiliasi akun penampung ===
+class PenampungAkunMonitoringResponse(BaseSchema):
+    """Saldo satu akun penampung + Σ sisa dokumen Belum Teridentifikasi."""
+    akun: AkunPerkiraanSimpleResponse
+    setting_key: Optional[str] = None
+    arah: str
+    saldo_gl: Decimal
+    jumlah_dokumen_aktif: int
+    sisa_penerimaan: Decimal = Decimal("0")
+    sisa_pembayaran: Decimal = Decimal("0")
+    total_sisa_dokumen: Decimal
+    selisih: Decimal
+    konsisten: bool
+
+
+class PenampungCheckResponse(BaseSchema):
+    """Hasil satu cek rekonsiliasi penampung."""
+    kode: str
+    label: str
+    ok: bool
+    detail: Optional[str] = None
+
+
+class PenampungMonitoringResponse(BaseSchema):
+    """Monitoring & rekonsiliasi semua akun penampung (penerimaan + pembayaran)."""
+    akun: List[PenampungAkunMonitoringResponse] = []
+    total_sisa: Decimal = Decimal("0")
+    rekonsiliasi_ok: bool
+    checks: List[PenampungCheckResponse] = []

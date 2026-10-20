@@ -36,9 +36,11 @@ from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.setting_akun_service import (
-    get_akun_id_or_raise, KEY_BEBAN_TRANSFER_BANK, KEY_POTONGAN_HUTANG,
+    get_akun_id_or_raise, get_setting_akun_id_optional,
+    KEY_BEBAN_TRANSFER_BANK, KEY_POTONGAN_HUTANG,
     KEY_HUTANG_PPH23, KEY_PPH23_DIBAYAR_DIMUKA,
     KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI,
+    KEY_KAS_PENAMPUNG_PENERIMAAN, KEY_KAS_PENAMPUNG_PEMBAYARAN,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
@@ -105,23 +107,44 @@ def _validate_akun_lawan_bukan_piutang_hutang(db: Session, akun_id) -> AkunPerki
     return akun
 
 
-def _resolve_rincian_belum_teridentifikasi(db: Session, nilai) -> list:
-    """Update #02 — rincian dokumen Belum Teridentifikasi: tepat satu baris
-    ke akun penampung (setting KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI).
+def _key_penampung(jenis_doc: str) -> str:
+    """Update #03 — setting akun penampung arah-spesifik.
+
+    Penerimaan (kas masuk tidak diketahui asalnya) → liabilitas
+    KAS_PENAMPUNG_PENERIMAAN (default 216001); pembayaran (kas keluar tidak
+    diketahui tujuannya) → aset KAS_PENAMPUNG_PEMBAYARAN (default 117004).
+    Keduanya terpisah dari akun piutang/hutang operasional sehingga neraca
+    menyajikan kontrol sementara dengan benar (catatan-update-03).
+    Key gabungan Update #02 (216000) tetap dipakai sebagai fallback bila
+    setting arah-spesifik belum terkonfigurasi.
+    """
+    if jenis_doc.startswith("penerimaan"):
+        return KEY_KAS_PENAMPUNG_PENERIMAAN
+    return KEY_KAS_PENAMPUNG_PEMBAYARAN
+
+
+def _resolve_rincian_belum_teridentifikasi(db: Session, nilai, jenis_doc: str) -> list:
+    """Update #02/#03 — rincian dokumen Belum Teridentifikasi: tepat satu
+    baris ke akun penampung arah-spesifik (penerimaan → liabilitas
+    KAS_PENAMPUNG_PENERIMAAN; pembayaran → aset KAS_PENAMPUNG_PEMBAYARAN;
+    fallback key gabungan Update #02 bila setting arah-spesifik kosong).
 
     User hanya memasukkan satu nilai total; akun lawan dipilih sistem dari
     konfigurasi per perusahaan (Pengaturan → Setting Akun) — bukan dari COA
-    bebas — supaya mutasi tidak teridentifikasi selalu terkumpul di satu
-    akun penampung yang bisa direkonsiliasi.
+    bebas — supaya mutasi tidak teridentifikasi selalu terkumpul di akun
+    penampung yang bisa direkonsiliasi.
     """
     if nilai is None:
         raise ValueError("Nilai wajib diisi untuk jenis transaksi 'Belum Teridentifikasi'")
     nilai = Decimal(str(nilai))
     if not nilai.is_finite() or nilai <= 0:
         raise ValueError("Nilai harus positif untuk jenis transaksi 'Belum Teridentifikasi'")
-    akun_id = get_akun_id_or_raise(
-        db, KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI, "Belum Teridentifikasi"
-    )
+    from app.services.setting_akun_service import get_setting_akun_id_optional  # noqa: F811
+    akun_id = get_setting_akun_id_optional(db, _key_penampung(jenis_doc))
+    if akun_id is None:
+        akun_id = get_akun_id_or_raise(
+            db, KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI, "Belum Teridentifikasi"
+        )
     return [{"akun_perkiraan_id": akun_id, "nilai": nilai}]
 
 
@@ -153,9 +176,14 @@ def _patch_jenis_transaksi_dan_nilai(db: Session, db_obj, jenis_transaksi, nilai
         nilai_dec = Decimal(str(nilai))
         if not nilai_dec.is_finite() or nilai_dec <= 0:
             raise ValueError("Nilai harus positif")
-        akun_id = get_akun_id_or_raise(
-            db, KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI, "Belum Teridentifikasi"
-        )
+        # Update #03 — akun penampung arah-spesifik (penerimaan vs pembayaran);
+        # fallback key gabungan Update #02 bila setting arah-spesifik kosong.
+        jenis_doc = "penerimaan" if fk_attr == "penerimaan_id" else "pembayaran"
+        akun_id = get_setting_akun_id_optional(db, _key_penampung(jenis_doc))
+        if akun_id is None:
+            akun_id = get_akun_id_or_raise(
+                db, KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI, "Belum Teridentifikasi"
+            )
         db_obj.rincian.clear()
         db.flush()  # lepas baris lama sebelum insert baru
         row = rincian_model(**{fk_attr: db_obj.id, "akun_perkiraan_id": akun_id, "nilai": nilai_dec})
@@ -348,7 +376,7 @@ def create_pembayaran(
                     "Jenis 'Belum Teridentifikasi' tidak memakai rincian akun lawan — "
                     "kirim nilai total saja; sistem otomatis posting ke akun penampung"
                 )
-            rincian_data = _resolve_rincian_belum_teridentifikasi(db, nilai)
+            rincian_data = _resolve_rincian_belum_teridentifikasi(db, nilai, "pembayaran")
         elif not is_settlement:
             if not rincian_data:
                 raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
@@ -624,7 +652,7 @@ def create_penerimaan(
                     "Jenis 'Belum Teridentifikasi' tidak memakai rincian akun lawan — "
                     "kirim nilai total saja; sistem otomatis posting ke akun penampung"
                 )
-            rincian_data = _resolve_rincian_belum_teridentifikasi(db, nilai)
+            rincian_data = _resolve_rincian_belum_teridentifikasi(db, nilai, "penerimaan")
         elif not is_settlement:
             if not rincian_data:
                 raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")

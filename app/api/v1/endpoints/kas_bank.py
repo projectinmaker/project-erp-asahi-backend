@@ -18,6 +18,8 @@ from app.schemas.kas_bank import (
     PenerimaanKasCreate, PenerimaanKasUpdate, PenerimaanKasResponse,
     TransferBankCreate, TransferBankUpdate, TransferBankResponse,
     KasIdentifikasiCreate, KasIdentifikasiResponse, KasIdentifikasiListResponse,
+    IdentifikasiPiutangCreate, IdentifikasiHutangCreate,
+    PenampungMonitoringResponse,
     KasBankSimpleResponse, AkunPerkiraanSimpleResponse,
 )
 from app.schemas.workflow import HardDeleteRequest
@@ -558,6 +560,92 @@ def get_pembayaran_identifikasi(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return _identifikasi_list_response(result)
+
+
+# ==========================================
+# UPDATE #03 — IDENTIFIKASI PIUTANG / HUTANG
+# (dokumen BELUM_TERIDENTIFIKASI → pihak + invoice)
+# ==========================================
+
+@router.post(
+    "/penerimaan/{penerimaan_id}/identifikasi-piutang",
+    response_model=KasIdentifikasiResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_penerimaan_identifikasi_piutang(
+    penerimaan_id: UUID,
+    data_in: IdentifikasiPiutangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Update #03 — Identifikasi penerimaan Belum Teridentifikasi ke pelanggan.
+
+    User membuka transaksi penerimaan, memilih pelanggan + invoice penjualan
+    outstanding, lalu sistem mereklasifikasi akun penampung ke akun piutang
+    pelanggan (Dr Penampung / Dr PPh 23 Dibayar di Muka / Cr Piutang) DAN
+    membuat alokasi invoice — outstanding invoice terbarui tanpa jurnal
+    penerimaan bank ganda. Identifikasi penuh → dokumen menjadi
+    PELUNASAN_INVOICE; pembatalan via endpoint cancel sesi.
+    """
+    try:
+        obj = identifikasi_svc.create_identifikasi_piutang(
+            db, penerimaan_id, data_in.pelanggan_id,
+            tanggal=data_in.tanggal,
+            alokasi_data=[r.model_dump() for r in data_in.alokasi],
+            catatan=data_in.catatan,
+            created_by=current_user.id,
+        )
+        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
+        return refreshed or obj
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post(
+    "/pembayaran/{pembayaran_id}/identifikasi-hutang",
+    response_model=KasIdentifikasiResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_pembayaran_identifikasi_hutang(
+    pembayaran_id: UUID,
+    data_in: IdentifikasiHutangCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Update #03 — Identifikasi pembayaran Belum Teridentifikasi ke supplier.
+
+    Pilih supplier + invoice pembelian outstanding → jurnal reklasifikasi
+    Cr Penampung / Dr Hutang supplier / Cr Potongan Hutang / Cr Hutang PPh 23
+    + alokasi invoice; outstanding terbarui tanpa jurnal bank ganda.
+    """
+    try:
+        obj = identifikasi_svc.create_identifikasi_hutang(
+            db, pembayaran_id, data_in.supplier_id,
+            tanggal=data_in.tanggal,
+            alokasi_data=[r.model_dump() for r in data_in.alokasi],
+            catatan=data_in.catatan,
+            created_by=current_user.id,
+        )
+        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
+        return refreshed or obj
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/penampung/monitoring", response_model=PenampungMonitoringResponse)
+def get_penerimaan_penampung_monitoring(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Update #03 — monitoring saldo akun penampung + rekonsiliasi ke nol.
+
+    Saldo GL tiap akun penampung (penerimaan 216001 / pembayaran 117004 /
+    legacy 216000 + akun aktual dokumen lama) dibandingkan dengan Σ sisa
+    dokumen Belum Teridentifikasi aktif; plus cek jurnal balance, jurnal
+    identifikasi tidak menyentuh kas, dan tidak ada outstanding negatif
+    (subledger vs General Ledger konsisten).
+    """
+    return identifikasi_svc.get_penampung_monitoring(db)
 
 
 @router.post("/identifikasi/penerimaan/{identifikasi_id}/cancel", response_model=KasIdentifikasiResponse)
