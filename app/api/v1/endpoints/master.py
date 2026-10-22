@@ -1088,6 +1088,12 @@ async def import_barang(
     metode_valuasi_global = app_setting_service.get_metode_valuasi(db)
 
     result = ImportResult(total_baris=0, sukses=0, gagal=0, errors=[])
+    # Fix bug report import barang (butir 7): deteksi Kode duplikat DI DALAM
+    # file sejak awal — tanpa ini baris duplikat baru ditolak saat menabrak
+    # barang yang baris sebelumnya buat, dengan pesan generik "sudah digunakan
+    # oleh barang aktif" yang seolah menyalahkan data DB, padahal duplikatnya
+    # ada di file itu sendiri.
+    kode_pertama: dict[str, int] = {}
     for offset, raw in enumerate(rows):
         excel_row = offset + 2  # baris 1 = header
         kode = _cell_str(_get_col(raw, header_map, "kode"))
@@ -1100,6 +1106,12 @@ async def import_barang(
                 raise ValueError("Kode wajib diisi")
             if not nama:
                 raise ValueError("Nama wajib diisi")
+            if kode in kode_pertama:
+                raise ValueError(
+                    f"Kode '{kode}' duplikat di dalam file — baris {kode_pertama[kode]} "
+                    "sudah memakai kode yang sama. Kode barang harus unik per file."
+                )
+            kode_pertama[kode] = excel_row
             kategori_nama = _cell_str(_get_col(raw, header_map, "kategori"))
             if not kategori_nama:
                 raise ValueError("Kategori wajib diisi")

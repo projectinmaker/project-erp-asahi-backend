@@ -21,6 +21,21 @@ from app.services.access_service import effective_permissions
 # Modul yang gate-nya ditegakkan di service (bukan di router).
 _SERVICE_ENFORCED = {'workflow'}
 
+# Endpoint bulk import Excel (multipart, banyak baris per request).
+# FIX BUG import master barang: endpoint ini membuat BANYAK baris/dokumen
+# dalam SATU request, sedangkan model idempotency AUD-03 adalah satu-key-
+# satu-hasil (IdempotentOperation ditegakkan di atomic_accounting_write).
+# Bila key didaftarkan untuk bulk import, dokumen turunan baris ke-2 dst.
+# (mis. Penyesuaian Stok awal dari kolom "Stok") akan "berhasil" via replay
+# hasil baris pertama TANPA benar-benar dibuat — silent data loss.
+# Karena itu bulk import:
+#   1. TIDAK diwajibkan mengirim Idempotency-Key (bukan dokumen tunggal);
+#   2. key yang tetap dikirim klien DIABAIKAN (tidak didaftarkan).
+# Anti-duplikasi retry tetap terjaga secara natural: create_master menolak
+# kode duplikat (constraint unik + eksplisit) per baris, sehingga import
+# ulang hanya menolak baris yang sudah ada — tidak pernah menduplikasi.
+_BULK_IMPORT_FNS = {'import_barang', 'import_pelanggan', 'import_supplier', 'import_gudang'}
+
 
 def module_access(module: str):
     async def check(request: Request, db=Depends(get_current_db), user=Depends(get_current_user),
@@ -64,11 +79,18 @@ def module_access(module: str):
             # (coa/master/aset-tetap/penutupan-periode/rekonsiliasi-bank/
             # karyawan/pengguna/workflow tidak diwajibkan). PUT/DELETE tetap
             # opsional (update bersifat idempotent-by-key natural).
-            # Pengecualian: POST yang murni komputasi/sinkronisasi read-like.
-            exempt = fn in ('preview_coa', 'sync_kas_bank_akun')
+            # Pengecualian: POST yang murni komputasi/sinkronisasi read-like,
+            # plus bulk import Excel (lihat _BULK_IMPORT_FNS) — import master
+            # bukan "pembuatan dokumen" tunggal sehingga di luar cakupan
+            # idempotency satu-key-satu-hasil.
+            exempt = fn in ('preview_coa', 'sync_kas_bank_akun') or fn in _BULK_IMPORT_FNS
             required = request.method == 'POST' and not exempt
             if required and not key:
                 raise HTTPException(400, 'Header Idempotency-Key wajib diisi untuk membuat dokumen')
+            # Bulk import: key yang dikirim klien diabaikan total — jangan
+            # daftarkan db.info['idempotency'] (lihat catatan _BULK_IMPORT_FNS).
+            if fn in _BULK_IMPORT_FNS:
+                key = None
             if key:
                 if len(key) > 128 or not key.strip():
                     raise HTTPException(400, 'Idempotency-Key harus berisi 1–128 karakter')
