@@ -144,8 +144,21 @@ def _eligible_receipts_for_invoice(db, inv):
                 or journal.ref_id != row.id
                 or db.query(JurnalUmum).filter_by(reversal_of_id=journal.id).first()):
             continue
+        # FIX bug ERR-2 posting invoice pembelian: sebelumnya baris di bawah
+        # membandingkan kolom organisasi JURNAL penerimaan dengan scope invoice
+        # (getattr(journal, key) != value). Sejak AUD-12, auto_posting_jurnal
+        # SELALU men-stempel jurnal dengan perusahaan default (ASAHI) bila
+        # dokumen tidak punya DocumentOrganization — sedangkan scope invoice
+        # tanpa DocumentOrganization bernilai company_id=None. Akibatnya
+        # perbandingan journal.company_id (uuid ASAHI) != None tidak pernah
+        # cocok → SEMUA penerimaan dianggap tidak eligible →
+        # "GRNI aktif tetapi tidak ada penerimaan GRNI yang eligible".
+        # Perbaikan: bandingkan dimensi organisasi RECEIPT vs INVOICE
+        # (keduanya via DocumentOrganization, simetris) — sesuai maksud
+        # docstring "Dimensi organisasi sama dengan invoice".
         scope = organization_service.for_source(db, inv.id)
-        if any(getattr(journal, key) != value for key, value in scope.items()):
+        row_scope = organization_service.for_source(db, row.id)
+        if any(row_scope.get(key, None) != value for key, value in scope.items()):
             continue
         # Validasi nilai jurnal penerimaan cocok dengan detail (invariant lama, tetap dipertahankan)
         value = Decimal(0)
