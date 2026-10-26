@@ -1,5 +1,5 @@
 from app.services.accounting_control import atomic_accounting_write
-from app.services.posting_service import reverse_journal
+from app.services.posting_service import reverse_journal, nama_bulan_periode  # Update #17 — nama bulan Indonesia
 import calendar
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -52,7 +52,8 @@ def validate_periode_not_closed(db: Session, tanggal: datetime, context: str = "
     if is_periode_closed(db, tanggal):
         ctx = f" ({context})" if context else ""
         raise ValueError(
-            f"Periode {tanggal.strftime('%B %Y')} sudah ditutup. "
+            # Update #17 — nama bulan Indonesia (dulu "February 2026")
+            f"Periode {nama_bulan_periode(tanggal)} sudah ditutup. "
             f"Tidak bisa melakukan posting.{ctx}"
         )
 

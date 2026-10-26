@@ -71,7 +71,9 @@ def validate_transfer_banks_different(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Gudang asal dan tujuan tidak boleh sama (id: {dari_kas_bank_id}). "
+                # Update #17 — perbaikan teks pesan: sebelumnya tertulis
+                # "Gudang asal dan tujuan..." (salin-tempel dari modul gudang).
+                f"Kas/Bank asal dan tujuan tidak boleh sama (id: {dari_kas_bank_id}). "
                 f"{context} dibatalkan. Pilih kas/bank tujuan yang berbeda."
             ),
         )

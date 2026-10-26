@@ -51,6 +51,15 @@ def compute_saldo_buku(db: Session, kas_bank_akun_id: UUID, tanggal_akhir: datet
     if not akun:
         raise ValueError(f"Akun perkiraan tidak ditemukan untuk Kas/Bank {kb.nama}")
 
+    # === Update #17 — cutoff end-of-day (paritas pola B-04 reporting_ledger) ===
+    # Sebelumnya filter memakai `<= tanggal_akhir` mentah (midnight), sehingga
+    # jurnal dengan timestamp aktual (jurnal manual / integrasi API) pada hari
+    # cutoff TER-EXCLUDE — saldo buku bisa ≠ buku besar. Batas akhir kini
+    # end-of-day Asia/Jakarta (23:59:59.999999), identik dengan pelaporan GL
+    # (reporting_ledger.day_end). Jurnal dokumen kas (00:00 WIB) tak terdampak.
+    from app.services.reporting_ledger import day_end
+    cutoff = day_end(tanggal_akhir)
+
     # Total debit & kredit from all POSTED journals up to tanggal_akhir (inclusive)
     row = (
         db.query(
@@ -61,7 +70,7 @@ def compute_saldo_buku(db: Session, kas_bank_akun_id: UUID, tanggal_akhir: datet
         .filter(
             JurnalDetail.akun_perkiraan_id == akun_id,
             JurnalUmum.status == StatusJurnal.POSTED,
-            JurnalUmum.tanggal <= tanggal_akhir,
+            JurnalUmum.tanggal <= cutoff,
         )
         .first()
     )

@@ -35,6 +35,19 @@ class JurnalEntryItem:
         self.keterangan = keterangan
 
 
+# === Update #17 — nama bulan Indonesia untuk pesan periode ===
+# strftime('%B %Y') mengikuti locale C ("February 2026") — pesan user harus
+# berbahasa Indonesia ("Februari 2026"). Dipakai di sini dan
+# penutupan_periode_service.validate_periode_not_closed.
+NAMA_BULAN = ("Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
+              "Agustus", "September", "Oktober", "November", "Desember")
+
+
+def nama_bulan_periode(tanggal) -> str:
+    """'Februari 2026' dari datetime/date (locale-independent)."""
+    return f"{NAMA_BULAN[tanggal.month - 1]} {tanggal.year}"
+
+
 def _generate_no_jurnal(db: Session, prefix: str, tanggal: datetime) -> str:
     """Generate nomor jurnal auto-increment per bulan.
     Format: JV-YYYYMM-NNN
@@ -127,7 +140,8 @@ def auto_posting_jurnal(
             )
             if _periode_closed:
                 raise ValueError(
-                    f"Periode {tanggal.strftime('%B %Y')} sudah ditutup. "
+                    # Update #17 — nama bulan Indonesia (dulu "February 2026")
+                    f"Periode {nama_bulan_periode(tanggal)} sudah ditutup. "
                     f"Tidak bisa posting jurnal ({ref_no})."
                 )
 

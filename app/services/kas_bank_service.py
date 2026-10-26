@@ -921,7 +921,14 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
     _guard_post_jenis_transaksi(db, pembayaran, rincian(pembayaran))
     tanggal = pembayaran.tanggal
     kas_bank = db.get(KasBankAkun, pembayaran.kas_bank_id)
-    rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in pembayaran.rincian]
+    # === Update #17 — keterangan baris rincian (fitur #16) dialirkan ke
+    # keterangan baris jurnal supaya buku besar mewarisi narasi per baris
+    # (sebelumnya selalu None untuk baris rincian non-penalti). ===
+    rincian_data = [
+        {"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai,
+         "keterangan": getattr(r, "keterangan", None)}
+        for r in pembayaran.rincian
+    ]
     no_bukti = pembayaran.no_bukti
     total_nilai = pembayaran.total_nilai
     # Update #5 — penalti pelunasan hutang: baris rincian akun penalti
@@ -976,15 +983,18 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
             )
         )
     # Debit: Akun-akun dari rincian (grup akun kontrol alokasi + akun penalti)
+    # Update #17 — keterangan baris jurnal: keterangan rincian (input user)
+    # menang; fallback label penalti untuk baris akun penalti settlement.
     for r in rincian_data:
         entries.append(
             JurnalEntryItem(
                 akun_perkiraan_id=r["akun_perkiraan_id"],
                 debit=Decimal(str(r["nilai"])),
                 keterangan=(
-                    f"Penalti pelunasan {no_bukti}"
-                    if penalti > 0 and akun_penalti_id and r["akun_perkiraan_id"] == akun_penalti_id
-                    else None
+                    r.get("keterangan")
+                    or (f"Penalti pelunasan {no_bukti}"
+                        if penalti > 0 and akun_penalti_id and r["akun_perkiraan_id"] == akun_penalti_id
+                        else None)
                 ),
             )
         )
@@ -1041,7 +1051,13 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
     _guard_post_jenis_transaksi(db, penerimaan, rincian(penerimaan))
     tanggal = penerimaan.tanggal
     kas_bank = db.get(KasBankAkun, penerimaan.kas_bank_id)
-    rincian_data = [{"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai} for r in penerimaan.rincian]
+    # === Update #17 — keterangan baris rincian (fitur #16) dialirkan ke
+    # keterangan baris jurnal (paritas dengan post_pembayaran). ===
+    rincian_data = [
+        {"akun_perkiraan_id": r.akun_perkiraan_id, "nilai": r.nilai,
+         "keterangan": getattr(r, "keterangan", None)}
+        for r in penerimaan.rincian
+    ]
     no_bukti = penerimaan.no_bukti
     total_nilai = penerimaan.total_nilai
     # Update #5 — penalti pelunasan piutang: baris rincian akun penalti
@@ -1073,15 +1089,18 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
             )
         )
     # Kredit: Akun-akun dari rincian (grup akun kontrol alokasi + akun penalti)
+    # Update #17 — keterangan baris jurnal: keterangan rincian (input user)
+    # menang; fallback label penalti untuk baris akun penalti settlement.
     for r in rincian_data:
         entries.append(
             JurnalEntryItem(
                 akun_perkiraan_id=r["akun_perkiraan_id"],
                 kredit=Decimal(str(r["nilai"])),
                 keterangan=(
-                    f"Penalti pelunasan {no_bukti}"
-                    if penalti > 0 and akun_penalti_id and r["akun_perkiraan_id"] == akun_penalti_id
-                    else None
+                    r.get("keterangan")
+                    or (f"Penalti pelunasan {no_bukti}"
+                        if penalti > 0 and akun_penalti_id and r["akun_perkiraan_id"] == akun_penalti_id
+                        else None)
                 ),
             )
         )
