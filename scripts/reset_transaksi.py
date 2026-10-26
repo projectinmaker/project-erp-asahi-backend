@@ -162,6 +162,10 @@ Efek setelah reset (yang diharapkan):
       (supplier-from-coa) — tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-10-26  + Tabel yang terdaftar di model tapi tidak ada di database
+                (migrasi belum jalan / tabel sudah di-drop) kini dilewati
+                dengan peringatan, bukan membuat script gagal dengan
+                'relation ... does not exist'.
     2026-10-20  + WIPE : kas_identifikasi, kas_identifikasi_rincian (Kas &
                          Bank), lppb, lppb_detail (Pembelian),
                          penutupan_tahun (tutup tahun — periode/tahun
@@ -1293,6 +1297,27 @@ def main() -> int:
     settings = get_settings()
     engine = create_engine(settings.DATABASE_URL)
     masked_url = engine.url.render_as_string(hide_password=True)
+
+    # ---------- Tabel ada di model tapi belum/tidak ada di database ----------
+    # (mis. migrasi belum dijalankan atau tabel sudah di-drop). Tabel yang
+    # tidak ada di DB tidak punya data untuk dihapus, jadi dilewati dengan
+    # peringatan — bukan membuat seluruh script gagal.
+    try:
+        from sqlalchemy import inspect as sa_inspect
+        db_tables = set(sa_inspect(engine).get_table_names())
+    except Exception as exc:
+        print(f"[ERROR] Tidak bisa connect ke database: {exc}")
+        print(f"        Target: {masked_url}")
+        return 2
+    absent = sorted((keep | wipe) - db_tables)
+    if absent:
+        print("[PERINGATAN] Tabel ada di model tapi TIDAK ada di database — dilewati:")
+        for t in absent:
+            print(f"             - {t}")
+        print("             (jalankan migrasi bila tabel itu memang seharusnya ada)")
+        keep = frozenset(keep - set(absent))
+        wipe = frozenset(wipe - set(absent))
+        master_tables = frozenset(master_tables - set(absent))
 
     delete_order = _delete_order(metadata, wipe)
     null_fks = _fk_keep_to_wipe(metadata, keep, wipe)
