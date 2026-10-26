@@ -5,10 +5,10 @@ Semua endpoint /cancel bisnis sebelumnya memakai hard_delete_service: dokumen
 
 - Dokumen DENGAN jejak akuntansi (punya jurnal POSTED via ref_id dan/atau
   mutasi stok aktif) → REVERSAL:
-    1. guard referensi (alokasi pelunasan / retur / penerimaan / identifikasi /
+    1. guard referensi (alokasi pelunasan / retur / penerimaan /
        dokumen lanjutan / event aset bukan terakhir → tolak),
     2. hapus PaymentAllocation milik dokumen kas settlement (outstanding
-       piutang/hutang pulih — pola cancel_identifikasi),
+       piutang/hutang pulih),
     3. reverse setiap mutasi stok dokumen (exact-layer, MASUK dulu),
     4. reverse setiap jurnal dokumen (posting_service.reverse_journal,
        idempotent via uq_jurnal_reversal, tanggal = tanggal jurnal asli),
@@ -19,8 +19,8 @@ Semua endpoint /cancel bisnis sebelumnya memakai hard_delete_service: dokumen
   hard delete + snapshot deleted_document_log (perilaku lama).
 
 Endpoint /workflow/{type}/{id}/cancel (jurnal manual), /reverse (transfer,
-delivery, receipt, pemindahan), cancel identifikasi, buka periode — tetap
-sebagaimana adanya (sudah reversal-first).
+delivery, receipt, pemindahan), buka periode — tetap sebagaimana adanya
+(sudah reversal-first).
 """
 from datetime import datetime, timezone
 from typing import Optional
@@ -139,16 +139,6 @@ def _guard_cancel(db: Session, document_type: str, obj):
                 'Batalkan dokumen lanjutan terlebih dahulu.'
             )
 
-    # 3. Kas Belum Teridentifikasi yang sudah punya sesi identifikasi.
-    if document_type in ('penerimaan_kas', 'pembayaran_kas'):
-        from app.models.transaksi.kas_bank.kas_identifikasi import KasIdentifikasi
-        col = KasIdentifikasi.penerimaan_id if document_type == 'penerimaan_kas' else KasIdentifikasi.pembayaran_id
-        if db.query(KasIdentifikasi.id).filter(col == obj.id).first() is not None:
-            raise ValueError(
-                'Dokumen kas masih memiliki riwayat Identifikasi & Alokasi. '
-                'Batalkan identifikasi terkait terlebih dahulu.'
-            )
-
 
 def _reverse_stock(db: Session, obj, user_id: UUID, reason: str, mutasi_list: list):
     """Reverse seluruh mutasi stok dokumen — MASUK-type lebih dulu (pola reverse_pemindahan)."""
@@ -216,8 +206,7 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
         raise ValueError('Alasan pembatalan wajib diisi untuk dokumen yang sudah diposting')
 
     # 1. Hapus alokasi pelunasan milik dokumen kas settlement — sisa
-    #    piutang/hutang invoice pulih (pola cancel_identifikasi; identifikasi
-    #    sudah ditolak guard di atas).
+    #    piutang/hutang invoice pulih.
     if document_type in ('penerimaan_kas', 'pembayaran_kas'):
         col = PaymentAllocation.penerimaan_id if document_type == 'penerimaan_kas' else PaymentAllocation.pembayaran_id
         deleted = (db.query(PaymentAllocation)

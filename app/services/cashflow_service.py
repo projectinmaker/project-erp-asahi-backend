@@ -230,17 +230,11 @@ def report(db, start, end):
          'PERSEDIAAN_BAHAN_BAKU', 'PERSEDIAAN_WIP', 'PERSEDIAAN_BARANG_JADI', 'PERSEDIAAN_BAHAN_PEMBANTU'))).all()}
     # AUD2-D2 — default OPERASIONAL utk akun yang secara bisnis merupakan arus
     # operasional tapi tidak tertangkap heuristik di atas:
-    # - Akun penampung kas belum teridentifikasi (216001/117004/216000):
-    #   penerimaan/pembayaran yang belum diketahui pelanggan/supplier-nya —
-    #   umumnya dana dagang in-transit (setelah identifikasi, jurnal reklas
-    #   hanya memindah penampung ↔ piutang/hutang; sisi kas tidak berubah).
     # - Akun PPh 23 pelunasan (PPH23_DIBAYAR_DIMUKA / HUTANG_PPH23): potongan
     #   pajak yang melekat pada settlement piutang/hutang.
     # Override ACCOUNT eksplisit tetap menang atas default ini.
     operating |= {r.akun_perkiraan_id for r in db.query(SettingAkun).filter(SettingAkun.key.in_(
-        ('KAS_PENAMPUNG_PENERIMAAN', 'KAS_PENAMPUNG_PEMBAYARAN',
-         'KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI',
-         'PPH23_DIBAYAR_DIMUKA', 'HUTANG_PPH23'))).all()}
+        ('PPH23_DIBAYAR_DIMUKA', 'HUTANG_PPH23'))).all()}
     sections = {name: {'items': [], 'total': gl.ZERO} for name in CATEGORIES}
 
     # Trace no_jurnal sumber untuk jurnal pembalik (batch, hindari N+1).

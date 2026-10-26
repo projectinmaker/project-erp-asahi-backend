@@ -13,7 +13,7 @@ class StatusTransaksi(str, enum.Enum):
 
 
 # === Update #02 — Jenis Transaksi Kas & Bank (Penerimaan/Pembayaran) ===
-# Tiga jenis transaksi dipilih user di form Penerimaan/Pembayaran:
+# Dua jenis transaksi dipilih user di form Penerimaan/Pembayaran:
 # 1. PELUNASAN_INVOICE    — pelunasan piutang (penerimaan, pilih pelanggan →
 #                            invoice penjualan outstanding) atau pelunasan
 #                            hutang (pembayaran, pilih supplier → invoice
@@ -26,21 +26,16 @@ class StatusTransaksi(str, enum.Enum):
 #                            user memilih akun lawan dari COA per baris
 #                            rincian. TIDAK BOLEH memakai akun piutang/hutang
 #                            (guard di service) tanpa alokasi invoice.
-# 3. BELUM_TERIDENTIFIKASI — mutasi bank yang pelanggan/supplier atau
-#                            transaksi asalnya belum diketahui. Posting ke
-#                            akun penampung sementara (setting
-#                            KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI); kemudian
-#                            dipindahkan ke akun yang benar lewat fitur
-#                            Identifikasi & Alokasi TANPA jurnal bank ganda.
+# (Update #14 — jenis BELUM_TERIDENTIFIKASI dihapus bersama seluruh fitur
+#  Identifikasi & Alokasi; dokumen lama dikonversi migration
+#  cp0000000021 ke TRANSAKSI_LAINNYA.)
 # Disimpan sebagai String (bukan pg enum) supaya migration ringan dan aman
 # untuk upgrade database berjalan.
 JENIS_TRANSAKSI_PELUNASAN_INVOICE = "PELUNASAN_INVOICE"
 JENIS_TRANSAKSI_LAINNYA = "TRANSAKSI_LAINNYA"
-JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI = "BELUM_TERIDENTIFIKASI"
 JENIS_TRANSAKSI_KAS = (
     JENIS_TRANSAKSI_PELUNASAN_INVOICE,
     JENIS_TRANSAKSI_LAINNYA,
-    JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI,
 )
 
 

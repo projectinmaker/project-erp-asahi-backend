@@ -85,28 +85,9 @@ KEY_POTONGAN_HUTANG = "POTONGAN_HUTANG"
 # (Sisi piutang memakai KEY_PPH23_DIBAYAR_DIMUKA yang sudah ada.)
 KEY_HUTANG_PPH23 = "HUTANG_PPH23"
 
-# === Update #02 — Kas & Bank: akun penampung Belum Teridentifikasi ===
-# Penerimaan/Pembayaran dengan jenis transaksi BELUM_TERIDENTIFIKASI
-# diposting ke akun penampung sementara ini (default COA 216000 "Hutang
-# Belum Teridentifikasi (Penampung)" di bawah 210000). Setelah asal mutasi
-# diketahui, nilai dipindahkan ke akun yang benar lewat fitur Identifikasi
-# & Alokasi (jurnal reklasifikasi tanpa jurnal bank ganda). Konfigurasi
-# per perusahaan via Pengaturan → Setting Akun
-# (PUT /master/setting-akun/KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI).
-# Update #03: key ini menjadi LEGACY — dokumen lama tetap membaca akun
-# penampung dari rincian masing-masing; dokumen baru memakai key arah-
-# spesifik di bawah.
-KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI = "KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI"
-
-# === Update #03 — Piutang/Hutang Kontrol Sementara (dua akun penampung
-# terpisah, penyajian neraca benar: penerimaan = liabilitas, pembayaran =
-# aset; keduanya TERPISAH dari akun piutang/hutang operasional). ===
-# Penerimaan BELUM_TERIDENTIFIKASI → 216001 "Penerimaan Kas Belum
-# Teridentifikasi (Penampung)" (liabilitas, kredit).
-KEY_KAS_PENAMPUNG_PENERIMAAN = "KAS_PENAMPUNG_PENERIMAAN"
-# Pembayaran BELUM_TERIDENTIFIKASI → 117004 "Pembayaran Kas Belum
-# Teridentifikasi (Penampung)" (aset lancar, debit).
-KEY_KAS_PENAMPUNG_PEMBAYARAN = "KAS_PENAMPUNG_PEMBAYARAN"
+# (Update #14 — key KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI / KAS_PENAMPUNG_
+# PENERIMAAN / KAS_PENAMPUNG_PEMBAYARAN dihapus bersama fitur Belum
+# Teridentifikasi; baris setting lama dibersihkan migration cp0000000021.)
 
 # Label untuk semua key setting yang dikenal sistem. Dipakai endpoint
 # PUT /master/setting-akun/{key} untuk MEMBUAT baris setting baru bila belum ada
@@ -142,11 +123,6 @@ KNOWN_SETTING_LABELS = {
     KEY_PPH23_DIBAYAR_DIMUKA: "PPh 23 Dibayar Dimuka",
     KEY_POTONGAN_HUTANG: "Potongan Hutang (Pelunasan)",
     KEY_HUTANG_PPH23: "Hutang PPh 23 (Pelunasan)",
-    # === Update #02 — Kas & Bank ===
-    KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI: "Kas Belum Teridentifikasi (Penampung)",
-    # === Update #03 — penampung arah-spesifik (neraca terpisah AR/AP) ===
-    KEY_KAS_PENAMPUNG_PENERIMAAN: "Penerimaan Kas Belum Teridentifikasi (Penampung AR)",
-    KEY_KAS_PENAMPUNG_PEMBAYARAN: "Pembayaran Kas Belum Teridentifikasi (Penampung AP)",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)
@@ -208,21 +184,6 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
         "nama_exact": ["Hutang PPh 23", "Hutang PPh23"],
         "nama_like": ["%hutang pph 23%", "%hutang pph23%"],
     },
-    # === Update #02 — akun penampung mutasi kas Belum Teridentifikasi ===
-    # Default COA v2 kode 216000 (dibuat migration cp0000000012 di bawah
-    # 210000 KEWAJIBAN JANGKA PENDEK). nama_like longgar supaya perusahaan
-    # dengan akun penampung/suspense custom tetap ter-match otomatis.
-    KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI: {
-        "kode": ["216000"],
-        "nama_exact": ["Hutang Belum Teridentifikasi (Penampung)"],
-        "nama_like": ["%belum teridentifikasi%", "%penampung%", "%suspense%"],
-    },
-    # === Update #03 — penampung penerimaan (liabilitas, AR kontrol sementara) ===
-    KEY_KAS_PENAMPUNG_PENERIMAAN: {
-        "kode": ["216001"],
-        "nama_exact": ["Penerimaan Kas Belum Teridentifikasi (Penampung)"],
-        "nama_like": ["%penerimaan belum teridentifikasi%"],
-    },
     # === Update AUD-17 — akun PPN untuk posting SI/PI ber-PPN ===
     # COA v2: PPN Keluaran 230100001 (fallback legacy 213005 VAT_OUTPUT),
     # PPN Masukan 116005 (VAT_INPUT).
@@ -235,12 +196,6 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
         "kode": ["116005"],
         "nama_exact": ["PPN Masukan", "PPN Masukan (Input Tax)"],
         "nama_like": ["%ppn masukan%", "%input tax%"],
-    },
-    # === Update #03 — penampung pembayaran (aset, AP kontrol sementara) ===
-    KEY_KAS_PENAMPUNG_PEMBAYARAN: {
-        "kode": ["117004"],
-        "nama_exact": ["Pembayaran Kas Belum Teridentifikasi (Penampung)"],
-        "nama_like": ["%pembayaran belum teridentifikasi%"],
     },
 }
 
@@ -312,8 +267,7 @@ def auto_configure_missing(db: Session, key: str) -> Optional[UUID]:
     DB (bukan hanya cache). Cache bisa stale bila setting dibuat di luar
     proses ini (migration, worker lain, sesi paralel) — tanpa re-check,
     auto-configure akan INSERT duplikat yang memicu UniqueViolation pada
-    key yang sama (kasus: migration cp0000000012 menambah setting
-    KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI setelah cache startup termuat).
+    key yang sama.
     """
     if not _cache:
         _load_all_settings(db)
@@ -357,12 +311,11 @@ def ensure_fallback_settings(db: Session) -> list[str]:
 
 
 def get_setting_akun_id_optional(db: Session, key: str) -> Optional[UUID]:
-    """Update #03 — baca setting akun TANPA raise dan TANPA auto-configure.
+    """Baca setting akun TANPA raise dan TANPA auto-configure.
 
-    Dipakai untuk pemilihan akun penampung arah-spesifik: bila setting belum
-    ada, pemanggil boleh jatuh ke fallback lain (mis. key gabungan Update #02)
-    tanpa memicu auto-configure yang bisa memilih kandidat salah arah.
-    Cache lokal dibaca/diisi agar tidak query berulang dalam satu request.
+    Bila setting belum ada, pemanggil boleh jatuh ke fallback lain tanpa
+    memicu auto-configure. Cache lokal dibaca/diisi agar tidak query
+    berulang dalam satu request.
     """
     if key in _cache:
         return _cache[key] or None

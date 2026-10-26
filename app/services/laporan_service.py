@@ -337,10 +337,6 @@ def validate_reports(db, date_from, date_to):
 from app.models import PurchaseInvoice, SalesRetur as _SalesRetur, PurchaseRetur as _PurchaseRetur
 from app.models import PenerimaanKas as _PenerimaanKas, PembayaranKas as _PembayaranKas
 from app.models import PaymentAllocation as _PaymentAllocation
-from app.models.transaksi.kas_bank.kas_identifikasi import (
-    KasIdentifikasi as _KasIdentifikasi,
-    KasIdentifikasiRincian as _KasIdentifikasiRincian,
-)
 from app.models import Pelanggan as _Pelanggan, Supplier as _Supplier, JurnalUmum as _JurnalUmum
 
 
@@ -446,7 +442,7 @@ def get_rekap_pph23(db, date_from, date_to):
     """Rekap PPh 23 per pihak — dua sisi:
     - DIPOTONG_DARI_KITA (AR): pelanggan memotong PPh23 dari pembayaran kita (Dr 116003).
     - KITA_POTONG (AP): kita memotong PPh23 dari pembayaran supplier (Cr 213002).
-    Sumber: alokasi pelunasan (payment_allocation) + identifikasi kas (rincian)."""
+    Sumber: alokasi pelunasan (payment_allocation)."""
     from app.models import SalesInvoice as _SI, PurchaseInvoice as _PI
 
     scope = gl._report_scope(db) if hasattr(gl, '_report_scope') else None
@@ -496,38 +492,6 @@ def get_rekap_pph23(db, date_from, date_to):
             'no_bukti': no_bukti, 'no_invoice': no_inv,
             'dasar': a.nilai or gl.ZERO, 'pph23': a.pph23 or gl.ZERO,
             'sumber': 'PELUNASAN', 'sisi': sisi,
-        })
-
-    # --- sumber 2: identifikasi kas (rincian PIUTANG / HUTANG) ---
-    q = (db.query(_KasIdentifikasiRincian)
-         .join(_KasIdentifikasi, _KasIdentifikasiRincian.identifikasi_id == _KasIdentifikasi.id)
-         .filter(_KasIdentifikasiRincian.pph23 > 0)
-         .filter(_KasIdentifikasi.tanggal >= date_from, _KasIdentifikasi.tanggal <= date_to))
-    for r in q.all():
-        ident = db.get(_KasIdentifikasi, r.identifikasi_id)
-        if ident is None:
-            continue
-        tgl = _tax_day(ident.tanggal)
-        if not (d0 <= tgl <= d1):
-            continue
-        if ident.jenis == 'PIUTANG':
-            pihak = db.get(_Pelanggan, ident.pelanggan_id) if ident.pelanggan_id else None
-            sisi = 'DIPOTONG_DARI_KITA'
-            inv = db.get(_SI, r.sales_invoice_id) if r.sales_invoice_id else None
-            no_inv = inv.no_invoice if inv else None
-        elif ident.jenis == 'HUTANG':
-            pihak = db.get(_Supplier, ident.supplier_id) if ident.supplier_id else None
-            sisi = 'KITA_POTONG'
-            inv = db.get(_PI, r.purchase_invoice_id) if r.purchase_invoice_id else None
-            no_inv = inv.no_form if inv else None
-        else:
-            continue
-        rows.append({
-            'tanggal': tgl, 'pihak': pihak.nama if pihak else None,
-            'npwp': (pihak.npwp if pihak else None),
-            'no_bukti': ident.no_bukti, 'no_invoice': no_inv,
-            'dasar': r.nilai or gl.ZERO, 'pph23': r.pph23 or gl.ZERO,
-            'sumber': 'IDENTIFIKASI', 'sisi': sisi,
         })
 
     rows.sort(key=lambda x: (x['tanggal'], x['no_bukti'] or ''))

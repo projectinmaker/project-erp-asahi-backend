@@ -38,11 +38,6 @@ class PaymentAllocation(BaseModel, BaseMixin):
     # Snapshot sisa tagihan faktur SEBELUM pembayaran ini (untuk kolom
     # "Terutang" di layout cetak Bayar Pemasok).
     terutang = Column(Numeric(18, 2), nullable=True)
-    # === Update #03 — tautan sesi identifikasi (dokumen Belum Teridentifikasi
-    # yang kemudian diidentifikasi ke pelanggan/supplier + invoice). Referensi
-    # lunak (tanpa FK): baris dihapus saat sesi identifikasi dibatalkan agar
-    # outstanding invoice pulih, sementara jurnal pembalik tetap utuh.
-    kas_identifikasi_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     # === AUD-08 (update #04) — bukti potong & masa pajak per alokasi ===
     # no_bukti_potong = nomor bukti potong (BUPTI) yang diterbitkan pelanggan
     #   (piutang — kita dipotong) atau yang kita terbitkan (hutang — kita

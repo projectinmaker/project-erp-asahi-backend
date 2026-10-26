@@ -159,8 +159,7 @@ def get_rekap_ppn(db: Session, dari: date, sampai: date) -> dict:
 def _allocation_rows(db: Session, dari: date, sampai: date, side: str):
     """Baris payment_allocation ber-pph23 pada satu sisi (piutang/hutang).
 
-    sumber: PELUNASAN (dokumen kas langsung) / IDENTIFIKASI (sesi identifikasi
-    dokumen Belum Teridentifikasi — tanpa jurnal bank ganda).
+    sumber: PELUNASAN (dokumen kas langsung).
     """
     start, end = gl.day_start(dari), gl.day_end(sampai)
     query = db.query(PaymentAllocation).filter(PaymentAllocation.pph23 > 0)
@@ -195,7 +194,7 @@ def _allocation_rows(db: Session, dari: date, sampai: date, side: str):
             "pph23": alloc.pph23,
             "no_bukti_potong": alloc.no_bukti_potong,   # AUD-08
             "masa_pajak": alloc.masa_pajak,             # AUD-08
-            "sumber": "IDENTIFIKASI" if alloc.kas_identifikasi_id else "PELUNASAN",
+            "sumber": "PELUNASAN",
         })
     out.sort(key=lambda r: r["tanggal"])
     return out

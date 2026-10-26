@@ -34,7 +34,6 @@ from app.models.transaksi.kas_bank.pembayaran import (
 )
 from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas
 from app.models.transaksi.kas_bank.transfer_bank import TransferBank
-from app.models.transaksi.kas_bank.kas_identifikasi import KasIdentifikasi, KasIdentifikasiRincian
 
 # Transaksi - Penjualan
 from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
@@ -112,8 +111,6 @@ __all__ = [
     # Transaksi - Kas & Bank
     "PembayaranKas",
     "PenerimaanKas",
-    "KasIdentifikasi",
-    "KasIdentifikasiRincian",
     "JENIS_TRANSAKSI_KAS",
     "TransferBank",
     # Transaksi - Penjualan

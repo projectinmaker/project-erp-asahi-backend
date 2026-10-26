@@ -252,13 +252,12 @@ def _get_ar_ap_reconciliation(db: Session, jenis: str, as_of: datetime) -> Dict:
             f"Aging outstanding: {total_outstanding}, GL (kontrol + subledger): {gl_balance_positive}"
         )
         if not match:
-            # Reklasifikasi identifikasi/pelunasan yang tercatat SETELAH as_of
-            # mengurangi outstanding secara retroaktif (aging memakai tanggal
-            # efektif pembayaran; GL memakai tanggal jurnal) — beda waktu, bukan
-            # selisih data. Default as-of (hari berjalan ≥ semua jurnal) bebas
-            # dari artefak ini.
+            # Pelunasan yang tercatat SETELAH as_of mengurangi outstanding
+            # secara retroaktif (aging memakai tanggal efektif pembayaran; GL
+            # memakai tanggal jurnal) — beda waktu, bukan selisih data.
+            # Default as-of (hari berjalan ≥ semua jurnal) bebas dari artefak ini.
             detail += (
-                ". Periksa jurnal identifikasi/pelunasan bertanggal SETELAH as-of "
+                ". Periksa jurnal pelunasan bertanggal SETELAH as-of "
                 "(reklasifikasi retroaktif) — bila tidak ada, selisih ini perlu "
                 "ditelusuri (subledger vs GL)."
             )

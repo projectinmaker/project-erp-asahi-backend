@@ -524,8 +524,8 @@ def get_rekap_pph23(
     current_user: Pengguna = Depends(get_current_user),
 ):
     """Rekap PPh 23 per pihak: dipotong pelanggan dari kita (Dibayar di Muka)
-    vs dipotong kita dari supplier (Hutang PPh 23) — sumber pelunasan &
-    identifikasi kas, reversal-aware."""
+    vs dipotong kita dari supplier (Hutang PPh 23) — sumber pelunasan,
+    reversal-aware."""
     try:
         date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
         date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))

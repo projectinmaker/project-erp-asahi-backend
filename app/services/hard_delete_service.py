@@ -183,20 +183,6 @@ def _apply_guards(db: Session, document_type: str, obj):
                 'Hapus dokumen lanjutan terlebih dahulu.'
             )
 
-    # === Update #02 — dokumen kas Belum Teridentifikasi yang sudah punya sesi
-    # identifikasi tidak boleh dihapus permanen: jurnal identifikasinya
-    # (ref_id = kas_identifikasi.id) tidak ter-cascade oleh penghapusan
-    # dokumen kas, sehingga general ledger akan rusak. Batalkan identifikasi
-    # terkait terlebih dahulu (endpoint cancel menghasilkan jurnal pembalik).
-    if document_type in ('penerimaan_kas', 'pembayaran_kas'):
-        from app.models.transaksi.kas_bank.kas_identifikasi import KasIdentifikasi
-        col = KasIdentifikasi.penerimaan_id if document_type == 'penerimaan_kas' else KasIdentifikasi.pembayaran_id
-        if db.query(KasIdentifikasi.id).filter(col == obj.id).first() is not None:
-            raise ValueError(
-                'Dokumen kas masih memiliki riwayat Identifikasi & Alokasi. '
-                'Batalkan identifikasi terkait terlebih dahulu, lalu hapus dokumen ini.'
-            )
-
     # 4. Transaksi aset POSTED -> hanya yang terakhir; pulihkan state aset (sebelum).
     if document_type == 'asset_event' and status == 'POSTED':
         _revert_asset_event(db, obj)

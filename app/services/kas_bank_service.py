@@ -17,14 +17,13 @@ from typing import List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.akun_perkiraan import AkunPerkiraan
 from app.models.transaksi.kas_bank.pembayaran import (
     PembayaranKas, StatusTransaksi,
     JENIS_TRANSAKSI_PELUNASAN_INVOICE, JENIS_TRANSAKSI_LAINNYA,
-    JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI, JENIS_TRANSAKSI_KAS,
+    JENIS_TRANSAKSI_KAS,
 )
 from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas
 from app.models.transaksi.kas_bank.transfer_bank import TransferBank
@@ -36,11 +35,9 @@ from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.setting_akun_service import (
-    get_akun_id_or_raise, get_setting_akun_id_optional,
+    get_akun_id_or_raise,
     KEY_BEBAN_TRANSFER_BANK, KEY_POTONGAN_HUTANG,
     KEY_HUTANG_PPH23, KEY_PPH23_DIBAYAR_DIMUKA,
-    KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI,
-    KEY_KAS_PENAMPUNG_PENERIMAAN, KEY_KAS_PENAMPUNG_PEMBAYARAN,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
@@ -107,55 +104,13 @@ def _validate_akun_lawan_bukan_piutang_hutang(db: Session, akun_id) -> AkunPerki
     return akun
 
 
-def _key_penampung(jenis_doc: str) -> str:
-    """Update #03 — setting akun penampung arah-spesifik.
+def _guard_jenis_transaksi_immutable(db_obj, jenis_transaksi) -> None:
+    """Update #02 — jenis transaksi dokumen kas immutable setelah create.
 
-    Penerimaan (kas masuk tidak diketahui asalnya) → liabilitas
-    KAS_PENAMPUNG_PENERIMAAN (default 216001); pembayaran (kas keluar tidak
-    diketahui tujuannya) → aset KAS_PENAMPUNG_PEMBAYARAN (default 117004).
-    Keduanya terpisah dari akun piutang/hutang operasional sehingga neraca
-    menyajikan kontrol sementara dengan benar (catatan-update-03).
-    Key gabungan Update #02 (216000) tetap dipakai sebagai fallback bila
-    setting arah-spesifik belum terkonfigurasi.
-    """
-    if jenis_doc.startswith("penerimaan"):
-        return KEY_KAS_PENAMPUNG_PENERIMAAN
-    return KEY_KAS_PENAMPUNG_PEMBAYARAN
-
-
-def _resolve_rincian_belum_teridentifikasi(db: Session, nilai, jenis_doc: str) -> list:
-    """Update #02/#03 — rincian dokumen Belum Teridentifikasi: tepat satu
-    baris ke akun penampung arah-spesifik (penerimaan → liabilitas
-    KAS_PENAMPUNG_PENERIMAAN; pembayaran → aset KAS_PENAMPUNG_PEMBAYARAN;
-    fallback key gabungan Update #02 bila setting arah-spesifik kosong).
-
-    User hanya memasukkan satu nilai total; akun lawan dipilih sistem dari
-    konfigurasi per perusahaan (Pengaturan → Setting Akun) — bukan dari COA
-    bebas — supaya mutasi tidak teridentifikasi selalu terkumpul di akun
-    penampung yang bisa direkonsiliasi.
-    """
-    if nilai is None:
-        raise ValueError("Nilai wajib diisi untuk jenis transaksi 'Belum Teridentifikasi'")
-    nilai = Decimal(str(nilai))
-    if not nilai.is_finite() or nilai <= 0:
-        raise ValueError("Nilai harus positif untuk jenis transaksi 'Belum Teridentifikasi'")
-    from app.services.setting_akun_service import get_setting_akun_id_optional  # noqa: F811
-    akun_id = get_setting_akun_id_optional(db, _key_penampung(jenis_doc))
-    if akun_id is None:
-        akun_id = get_akun_id_or_raise(
-            db, KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI, "Belum Teridentifikasi"
-        )
-    return [{"akun_perkiraan_id": akun_id, "nilai": nilai}]
-
-
-def _patch_jenis_transaksi_dan_nilai(db: Session, db_obj, jenis_transaksi, nilai, rincian_model, fk_attr: str) -> None:
-    """Update #02 — patch jenis transaksi (immutable) & nilai Belum Teridentifikasi.
-
-    Dipakai update_penerimaan/update_pembayaran. ``jenis_transaksi`` hanya
-    boleh dikirim sama dengan nilai tersimpan (guard perubahan jenis);
-    ``nilai`` hanya berlaku untuk dokumen BELUM_TERIDENTIFIKASI — rebuild
-    rincian menjadi 1 baris akun penampung (sumber akun mengikuti setting
-    saat update; dokumen belum posted jadi jurnal belum tersentuh).
+    Dipakai update_penerimaan/update_pembayaran: ``jenis_transaksi`` hanya
+    boleh dikirim sama dengan nilai tersimpan (guard perubahan jenis).
+    (Update #14 — cabang nilai tunggal BELUM_TERIDENTIFIKASI dihapus bersama
+    fitur Identifikasi & Alokasi.)
     """
     if jenis_transaksi is not None:
         jenis_baru = (jenis_transaksi or "").strip().upper()
@@ -165,55 +120,6 @@ def _patch_jenis_transaksi_dan_nilai(db: Session, db_obj, jenis_transaksi, nilai
                 "Jenis transaksi tidak dapat diubah setelah dokumen dibuat — "
                 "batalkan dokumen ini dan buat dokumen baru dengan jenis yang tepat"
             )
-    if nilai is not None:
-        jenis_lama = (getattr(db_obj, "jenis_transaksi", None) or JENIS_TRANSAKSI_LAINNYA)
-        if jenis_lama != JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI:
-            raise ValueError(
-                "Field nilai hanya berlaku untuk dokumen 'Belum Teridentifikasi'; "
-                "dokumen lain mengubah nilai lewat rincian (Transaksi Lainnya) "
-                "atau alokasi invoice (Pelunasan Invoice)"
-            )
-        nilai_dec = Decimal(str(nilai))
-        if not nilai_dec.is_finite() or nilai_dec <= 0:
-            raise ValueError("Nilai harus positif")
-        # Update #03 — akun penampung arah-spesifik (penerimaan vs pembayaran);
-        # fallback key gabungan Update #02 bila setting arah-spesifik kosong.
-        jenis_doc = "penerimaan" if fk_attr == "penerimaan_id" else "pembayaran"
-        akun_id = get_setting_akun_id_optional(db, _key_penampung(jenis_doc))
-        if akun_id is None:
-            akun_id = get_akun_id_or_raise(
-                db, KEY_KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI, "Belum Teridentifikasi"
-            )
-        db_obj.rincian.clear()
-        db.flush()  # lepas baris lama sebelum insert baru
-        row = rincian_model(**{fk_attr: db_obj.id, "akun_perkiraan_id": akun_id, "nilai": nilai_dec})
-        db_obj.rincian.append(row)
-        db.flush()
-
-
-def _annotate_sisa_belum_teridentifikasi(db: Session, data: list, model) -> None:
-    """Update #02 — atribut transient sisa/teridentifikasi utk list/detail.
-
-    Hanya dokumen BELUM_TERIDENTIFIKASI yang dianotasi (dokumen lain tidak
-    berubah). Nilai = total_nilai − Σ identifikasi aktif (status != BATAL).
-    Atribut transient (bukan kolom) dibaca schema response via
-    from_attributes — tidak persisten.
-    """
-    from app.models.transaksi.kas_bank.kas_identifikasi import KasIdentifikasi
-    target = [d for d in data if getattr(d, "jenis_transaksi", None) == JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI]
-    if not target:
-        return
-    col = KasIdentifikasi.penerimaan_id if model is PenerimaanKas else KasIdentifikasi.pembayaran_id
-    rows = db.query(col, func.coalesce(func.sum(KasIdentifikasi.total_nilai), 0)).filter(
-        col.in_([d.id for d in target]),
-        KasIdentifikasi.status != StatusTransaksi.BATAL,
-    ).group_by(col).all()
-    done = {r[0]: Decimal(str(r[1] or 0)) for r in rows}
-    for d in target:
-        total = Decimal(str(d.total_nilai or 0))
-        teridentifikasi = done.get(d.id, Decimal("0"))
-        d.teridentifikasi = teridentifikasi
-        d.sisa_belum_teridentifikasi = max(Decimal("0"), total - teridentifikasi)
 
 
 def rincian(doc) -> list:
@@ -227,7 +133,6 @@ def _guard_post_jenis_transaksi(db: Session, doc, rincian_rows) -> None:
     - TRANSAKSI_LAINNYA: akun rincian tidak boleh piutang/hutang (guard yang
       sama dengan create — juga melindungi draft lama yang dibuat sebelum
       validasi jenis transaksi ada).
-    - BELUM_TERIDENTIFIKASI: rincian harus tepat satu baris akun penampung.
     - PELUNASAN_INVOICE: invariant alokasi sudah divalidasi
       settlement_service.validate_payment (dipanggil sebelum guard ini).
     """
@@ -235,12 +140,6 @@ def _guard_post_jenis_transaksi(db: Session, doc, rincian_rows) -> None:
     if jenis == JENIS_TRANSAKSI_LAINNYA:
         for r in rincian_rows:
             _validate_akun_lawan_bukan_piutang_hutang(db, r.akun_perkiraan_id)
-    elif jenis == JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI:
-        if len(rincian_rows) != 1:
-            raise ValueError(
-                "Dokumen 'Belum Teridentifikasi' harus punya tepat satu baris "
-                "rincian akun penampung"
-            )
 
 
 # ==========================================
@@ -262,8 +161,7 @@ def get_pembayaran_list(
     """Ambil daftar pembayaran kas dengan filter & pagination.
 
     Update #02 — filter ``jenis_transaksi`` (PELUNASAN_INVOICE /
-    TRANSAKSI_LAINNYA / BELUM_TERIDENTIFIKASI) + anotasi sisa belum
-    teridentifikasi pada dokumen BELUM_TERIDENTIFIKASI.
+    TRANSAKSI_LAINNYA).
     """
     query = db.query(PembayaranKas).options(
         joinedload(PembayaranKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
@@ -304,13 +202,11 @@ def get_pembayaran_list(
 
     total = query.count()
     data = query.order_by(PembayaranKas.created_at.desc()).offset(skip).limit(limit).all()
-    _annotate_sisa_belum_teridentifikasi(db, data, PembayaranKas)
     return data, total
 
 
 def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[PembayaranKas]:
-    """Ambil 1 pembayaran berdasarkan ID dengan rincian (Update #02: anotasi
-    sisa belum teridentifikasi bila dokumen BELUM_TERIDENTIFIKASI)."""
+    """Ambil 1 pembayaran berdasarkan ID dengan rincian."""
     item = (
         db.query(PembayaranKas)
         .options(
@@ -324,8 +220,6 @@ def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[Pembayara
         .filter(PembayaranKas.id == pembayaran_id)
         .first()
     )
-    if item is not None:
-        _annotate_sisa_belum_teridentifikasi(db, [item], PembayaranKas)
     return item
 
 
@@ -347,7 +241,6 @@ def create_pembayaran(
     mata_uang: Optional[str] = None,
     nilai_tukar: Optional[Decimal] = None,
     jenis_transaksi: Optional[str] = None,
-    nilai: Optional[Decimal] = None,
 ) -> PembayaranKas:
     """
     Buat PembayaranKas baru beserta rincian.
@@ -362,11 +255,9 @@ def create_pembayaran(
         tanggal_cek / jumlah_cek / mata_uang / nilai_tukar:
             Update cetak "Bayar Pemasok" — info header tambahan untuk layout
             cetak (tgl cek, jumlah cek, mata uang, nilai tukar).
-        jenis_transaksi / nilai: Update #02 — tiga jenis transaksi Kas & Bank.
-            TRANSAKSI_LAINNYA (default; rincian akun lawan dari COA, dilarang
-            akun piutang/hutang), BELUM_TERIDENTIFIKASI (hanya `nilai`;
-            rincian otomatis 1 baris ke akun penampung). PELUNASAN_INVOICE
-            ditolak di sini — harus lewat alur settlement.
+        jenis_transaksi: Update #02 — jenis transaksi Kas & Bank
+            (TRANSAKSI_LAINNYA default; PELUNASAN_INVOICE ditolak di sini —
+            harus lewat alur settlement).
     """
     try:
         # Phase G: validate kas_bank ACTIVE
@@ -375,14 +266,7 @@ def create_pembayaran(
 
         # === Update #02 — resolusi jenis transaksi + rincian ===
         jenis = normalize_jenis_transaksi(jenis_transaksi, is_settlement)
-        if jenis == JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI:
-            if rincian_data:
-                raise ValueError(
-                    "Jenis 'Belum Teridentifikasi' tidak memakai rincian akun lawan — "
-                    "kirim nilai total saja; sistem otomatis posting ke akun penampung"
-                )
-            rincian_data = _resolve_rincian_belum_teridentifikasi(db, nilai, "pembayaran")
-        elif not is_settlement:
+        if not is_settlement:
             if not rincian_data:
                 raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
             for r in rincian_data:
@@ -473,21 +357,15 @@ def update_pembayaran(
     mata_uang: Optional[str] = None,
     nilai_tukar: Optional[Decimal] = None,
     jenis_transaksi: Optional[str] = None,
-    nilai: Optional[Decimal] = None,
 ) -> PembayaranKas:
     """Update data pembayaran (hanya field yang diberikan).
 
     Update #02 — ``jenis_transaksi`` hanya boleh dikirim sama dengan jenis
     saat ini (tidak bisa berubah jenis; batalkan dokumen bila salah jenis).
-    ``nilai`` khusus dokumen BELUM_TERIDENTIFIKASI (rebuild rincian 1 baris
-    akun penampung) — dokumen lain mengubah lewat rincian/alokasi masing-masing.
     """
     require_unposted(db_obj)
-    # === Update #02 — patch jenis transaksi / nilai ===
-    _patch_jenis_transaksi_dan_nilai(
-        db, db_obj, jenis_transaksi, nilai,
-        rincian_model=PembayaranRincian, fk_attr="pembayaran_id",
-    )
+    # === Update #02 — guard jenis transaksi immutable ===
+    _guard_jenis_transaksi_immutable(db_obj, jenis_transaksi)
     if tanggal is not None:
         db_obj.tanggal = tanggal
     if kas_bank_id is not None:
@@ -556,8 +434,7 @@ def get_penerimaan_list(
 ) -> Tuple[List[PenerimaanKas], int]:
     """Ambil daftar penerimaan kas dengan filter & pagination.
 
-    Update #02 — filter ``jenis_transaksi`` + anotasi sisa belum
-    teridentifikasi pada dokumen BELUM_TERIDENTIFIKASI.
+    Update #02 — filter ``jenis_transaksi``.
     """
     query = db.query(PenerimaanKas).options(
         joinedload(PenerimaanKas.kas_bank).joinedload(KasBankAkun.akun_perkiraan),
@@ -597,13 +474,11 @@ def get_penerimaan_list(
 
     total = query.count()
     data = query.order_by(PenerimaanKas.created_at.desc()).offset(skip).limit(limit).all()
-    _annotate_sisa_belum_teridentifikasi(db, data, PenerimaanKas)
     return data, total
 
 
 def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[PenerimaanKas]:
-    """Ambil 1 penerimaan berdasarkan ID dengan rincian (Update #02: anotasi
-    sisa belum teridentifikasi bila dokumen BELUM_TERIDENTIFIKASI)."""
+    """Ambil 1 penerimaan berdasarkan ID dengan rincian."""
     item = (
         db.query(PenerimaanKas)
         .options(
@@ -617,8 +492,6 @@ def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[Penerimaa
         .filter(PenerimaanKas.id == penerimaan_id)
         .first()
     )
-    if item is not None:
-        _annotate_sisa_belum_teridentifikasi(db, [item], PenerimaanKas)
     return item
 
 
@@ -636,7 +509,6 @@ def create_penerimaan(
     created_by: UUID = None,
     is_settlement: bool = False,
     jenis_transaksi: Optional[str] = None,
-    nilai: Optional[Decimal] = None,
 ) -> PenerimaanKas:
     """Buat PenerimaanKas baru beserta rincian + auto-post jurnal.
 
@@ -644,9 +516,8 @@ def create_penerimaan(
         is_settlement: True kalau ini adalah pelunasan AR (punya allocation
             ke sales_invoice). Akan memakai RefModule.AR_SETTLEMENT
             (canonical) di jurnal + jenis_transaksi PELUNASAN_INVOICE.
-        jenis_transaksi / nilai: Update #02 — tiga jenis transaksi Kas & Bank
-            (TRANSAKSI_LAINNYA default / BELUM_TERIDENTIFIKASI dengan `nilai`
-            tunggal ke akun penampung / PELUNASAN_INVOICE lewat alur
+        jenis_transaksi: Update #02 — jenis transaksi Kas & Bank
+            (TRANSAKSI_LAINNYA default / PELUNASAN_INVOICE lewat alur
             settlement — lihat normalize_jenis_transaksi).
     """
     try:
@@ -656,14 +527,7 @@ def create_penerimaan(
 
         # === Update #02 — resolusi jenis transaksi + rincian ===
         jenis = normalize_jenis_transaksi(jenis_transaksi, is_settlement)
-        if jenis == JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI:
-            if rincian_data:
-                raise ValueError(
-                    "Jenis 'Belum Teridentifikasi' tidak memakai rincian akun lawan — "
-                    "kirim nilai total saja; sistem otomatis posting ke akun penampung"
-                )
-            rincian_data = _resolve_rincian_belum_teridentifikasi(db, nilai, "penerimaan")
-        elif not is_settlement:
+        if not is_settlement:
             if not rincian_data:
                 raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
             for r in rincian_data:
@@ -731,19 +595,14 @@ def update_penerimaan(
     catatan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
     jenis_transaksi: Optional[str] = None,
-    nilai: Optional[Decimal] = None,
 ) -> PenerimaanKas:
     """Update data penerimaan.
 
-    Update #02 — ``jenis_transaksi`` immutable (guard), ``nilai`` khusus
-    dokumen BELUM_TERIDENTIFIKASI (rebuild rincian penampung).
+    Update #02 — ``jenis_transaksi`` immutable (guard).
     """
     require_unposted(db_obj)
-    # === Update #02 — patch jenis transaksi / nilai ===
-    _patch_jenis_transaksi_dan_nilai(
-        db, db_obj, jenis_transaksi, nilai,
-        rincian_model=PenerimaanRincian, fk_attr="penerimaan_id",
-    )
+    # === Update #02 — guard jenis transaksi immutable ===
+    _guard_jenis_transaksi_immutable(db_obj, jenis_transaksi)
     if tanggal is not None:
         db_obj.tanggal = tanggal
     if kas_bank_id is not None:
@@ -1067,9 +926,6 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
         else f"Pembayaran Kas {no_bukti}"
     )
     # === Update #02 — penanda jenis pada keterangan jurnal ===
-    jenis_transaksi = (getattr(pembayaran, "jenis_transaksi", None) or JENIS_TRANSAKSI_LAINNYA)
-    if jenis_transaksi == JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI:
-        keterangan += " (Belum Teridentifikasi — akun penampung)"
     if penalti > 0:
         keterangan += f" (termasuk penalti {penalti})"
     if total_diskon > 0:
@@ -1167,9 +1023,6 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
         else f"Penerimaan Kas {no_bukti}"
     )
     # === Update #02 — penanda jenis pada keterangan jurnal ===
-    jenis_transaksi = (getattr(penerimaan, "jenis_transaksi", None) or JENIS_TRANSAKSI_LAINNYA)
-    if jenis_transaksi == JENIS_TRANSAKSI_BELUM_TERIDENTIFIKASI:
-        keterangan += " (Belum Teridentifikasi — akun penampung)"
     if penalti > 0:
         keterangan += f" (termasuk penalti {penalti})"
     if total_pph23 > 0:

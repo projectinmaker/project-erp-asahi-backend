@@ -32,9 +32,8 @@ Efek turunannya otomatis tanpa perubahan modul lain:
 Guard yang dipertahankan (reuse ``hard_delete_service._apply_guards``):
 periode ditutup → tolak; invoice dengan alokasi/retur/penerimaan aktif →
 tolak; order yang direferensikan dokumen lanjutan → tolak; dokumen stok
-SELESAI (retur/penyesuaian/pengiriman) → tolak; dokumen kas dengan riwayat
-identifikasi aktif → tolak; transaksi aset hanya boleh yang terakhir +
-state dipulihkan.
+SELESAI (retur/penyesuaian/pengiriman) → tolak; transaksi aset hanya boleh
+yang terakhir + state dipulihkan.
 """
 from datetime import datetime, timezone
 from uuid import UUID
@@ -146,11 +145,8 @@ def _cancel_posted_document(db: Session, document_type: str, obj, user, reason: 
 
     # AUD2-E1 — bersihkan baris alokasi pelunasan milik pembayaran ini.
     # Alokasi adalah data turunan ("draft children"): outstanding dihitung
-    # dari jurnal, dan guard identifikasi sudah memastikan tidak ada sesi
-    # identifikasi aktif yang menautkan dokumen ini. Tanpa pembersihan,
-    # baris residu akan memblokir pembatalan invoice terkait selamanya
-    # (pola yang sama dengan pembatalan sesi identifikasi yang menghapus
-    # alokasinya). Jurnal pembalik tetap utuh sebagai audit trail.
+    # dari jurnal. Tanpa pembersihan, baris residu akan memblokir pembatalan
+    # invoice terkait selamanya. Jurnal pembalik tetap utuh sebagai audit trail.
     removed_allocations = 0
     if document_type in ('penerimaan_kas', 'pembayaran_kas'):
         payment_col = (PaymentAllocation.penerimaan_id if document_type == 'penerimaan_kas'

@@ -17,14 +17,9 @@ from app.schemas.kas_bank import (
     PembayaranKasCreate, PembayaranKasUpdate, PembayaranKasResponse,
     PenerimaanKasCreate, PenerimaanKasUpdate, PenerimaanKasResponse,
     TransferBankCreate, TransferBankUpdate, TransferBankResponse,
-    KasIdentifikasiCreate, KasIdentifikasiResponse, KasIdentifikasiListResponse,
-    IdentifikasiPiutangCreate, IdentifikasiHutangCreate,
-    PenampungMonitoringResponse,
-    KasBankSimpleResponse, AkunPerkiraanSimpleResponse,
 )
 from app.schemas.workflow import HardDeleteRequest
 from app.services import kas_bank_service as svc
-from app.services import kas_identifikasi_service as identifikasi_svc
 from app.services import workflow_service
 from app.services.cancel_document_service import cancel_document
 
@@ -52,47 +47,6 @@ def _pembayaran_response(item):
     return resp
 
 
-def _kas_bank_simple(kas_bank):
-    """Update #02 — nested kas/bank utk KasIdentifikasiListResponse."""
-    if kas_bank is None:
-        return None
-    akun = getattr(kas_bank, "akun_perkiraan", None)
-    return KasBankSimpleResponse(
-        id=kas_bank.id, kode=kas_bank.kode, nama=kas_bank.nama,
-        jenis=getattr(kas_bank, "jenis", ""),
-        akun_perkiraan=(
-            AkunPerkiraanSimpleResponse(id=akun.id, kode=akun.kode, nama=akun.nama)
-            if akun is not None else None
-        ),
-    )
-
-
-def _identifikasi_list_response(result) -> KasIdentifikasiListResponse:
-    """Update #02 — map hasil get_identifikasi_list ke response schema."""
-    dokumen = result["dokumen"]
-    rincian = list(getattr(dokumen, "rincian", None) or [])
-    penampung = None
-    if rincian:
-        akun = getattr(rincian[0], "akun_perkiraan", None)
-        if akun is not None:
-            penampung = AkunPerkiraanSimpleResponse(id=akun.id, kode=akun.kode, nama=akun.nama)
-    status = getattr(dokumen.status, "value", dokumen.status)
-    return KasIdentifikasiListResponse(
-        dokumen_id=dokumen.id,
-        jenis_dokumen=("penerimaan" if hasattr(dokumen, "pemberi") else "pembayaran"),
-        no_bukti_dokumen=dokumen.no_bukti,
-        tanggal_dokumen=dokumen.tanggal,
-        total_nilai_dokumen=dokumen.total_nilai,
-        jenis_transaksi_dokumen=(getattr(dokumen, "jenis_transaksi", None) or "TRANSAKSI_LAINNYA"),
-        status_dokumen=str(status),
-        kas_bank=_kas_bank_simple(getattr(dokumen, "kas_bank", None)),
-        penampung_akun=penampung,
-        teridentifikasi=result["teridentifikasi"],
-        sisa_belum_teridentifikasi=result["sisa"],
-        identifikasi=result["identifikasi"],
-    )
-
-
 # ==========================================
 # PEMBAYARAN KAS
 # ==========================================
@@ -108,7 +62,7 @@ def get_pembayaran_list(
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
     jenis_transaksi: Optional[str] = Query(
         None, description="Update #02 — filter jenis transaksi "
-        "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA / BELUM_TERIDENTIFIKASI)"),
+        "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA / PELUNASAN_PAJAK)"),
     company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
@@ -148,9 +102,8 @@ def create_pembayaran(
             jumlah_cek=data_in.jumlah_cek,
             mata_uang=data_in.mata_uang,
             nilai_tukar=data_in.nilai_tukar,
-            # === Update #02 — jenis transaksi & nilai tunggal ===
+            # === Update #02 — jenis transaksi ===
             jenis_transaksi=data_in.jenis_transaksi,
-            nilai=data_in.nilai,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         workflow_service.direct_complete(db, current_user, 'pembayaran_kas', obj.id)
@@ -230,7 +183,7 @@ def get_penerimaan_list(
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
     jenis_transaksi: Optional[str] = Query(
         None, description="Update #02 — filter jenis transaksi "
-        "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA / BELUM_TERIDENTIFIKASI)"),
+        "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA)"),
     company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
@@ -265,9 +218,8 @@ def create_penerimaan(
             catatan=data_in.catatan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
-            # === Update #02 — jenis transaksi & nilai tunggal ===
+            # === Update #02 — jenis transaksi ===
             jenis_transaksi=data_in.jenis_transaksi,
-            nilai=data_in.nilai,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         workflow_service.direct_complete(db, current_user, 'penerimaan_kas', obj.id)
@@ -473,222 +425,3 @@ def reverse_transfer(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-# ==========================================
-# UPDATE #02 — IDENTIFIKASI & ALOKASI
-# (dokumen BELUM_TERIDENTIFIKASI)
-# ==========================================
-
-@router.get("/penerimaan/{penerimaan_id}/identifikasi", response_model=KasIdentifikasiListResponse)
-def get_penerimaan_identifikasi(
-    penerimaan_id: UUID,
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #02 — histori identifikasi + sisa belum teridentifikasi satu Penerimaan Kas."""
-    try:
-        result = identifikasi_svc.get_identifikasi_list(db, "penerimaan", penerimaan_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return _identifikasi_list_response(result)
-
-
-@router.post(
-    "/penerimaan/{penerimaan_id}/identifikasi",
-    response_model=KasIdentifikasiResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_penerimaan_identifikasi(
-    penerimaan_id: UUID,
-    data_in: KasIdentifikasiCreate,
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #02 — Identifikasi & Alokasi Penerimaan Kas Belum Teridentifikasi.
-
-    Pindahkan nilai dari akun penampung ke akun-akun yang benar (bisa
-    bertahap) lewat jurnal reklasifikasi — sisi Kas/Bank tidak dijurnal
-    ulang (tidak ada jurnal bank ganda). Langsung posted + bisa dibatalkan
-    (jurnal pembalik) lewat endpoint cancel.
-    """
-    try:
-        obj = identifikasi_svc.create_identifikasi(
-            db, "penerimaan", penerimaan_id,
-            tanggal=data_in.tanggal,
-            alokasi_data=[r.model_dump() for r in data_in.alokasi],
-            catatan=data_in.catatan,
-            created_by=current_user.id,
-        )
-        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
-        return refreshed or obj
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.post(
-    "/pembayaran/{pembayaran_id}/identifikasi",
-    response_model=KasIdentifikasiResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_pembayaran_identifikasi(
-    pembayaran_id: UUID,
-    data_in: KasIdentifikasiCreate,
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #02 — Identifikasi & Alokasi Pembayaran Kas Belum Teridentifikasi."""
-    try:
-        obj = identifikasi_svc.create_identifikasi(
-            db, "pembayaran", pembayaran_id,
-            tanggal=data_in.tanggal,
-            alokasi_data=[r.model_dump() for r in data_in.alokasi],
-            catatan=data_in.catatan,
-            created_by=current_user.id,
-        )
-        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
-        return refreshed or obj
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.get("/pembayaran/{pembayaran_id}/identifikasi", response_model=KasIdentifikasiListResponse)
-def get_pembayaran_identifikasi(
-    pembayaran_id: UUID,
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #02 — histori identifikasi + sisa belum teridentifikasi satu Pembayaran Kas."""
-    try:
-        result = identifikasi_svc.get_identifikasi_list(db, "pembayaran", pembayaran_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return _identifikasi_list_response(result)
-
-
-# ==========================================
-# UPDATE #03 — IDENTIFIKASI PIUTANG / HUTANG
-# (dokumen BELUM_TERIDENTIFIKASI → pihak + invoice)
-# ==========================================
-
-@router.post(
-    "/penerimaan/{penerimaan_id}/identifikasi-piutang",
-    response_model=KasIdentifikasiResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_penerimaan_identifikasi_piutang(
-    penerimaan_id: UUID,
-    data_in: IdentifikasiPiutangCreate,
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #03 — Identifikasi penerimaan Belum Teridentifikasi ke pelanggan.
-
-    User membuka transaksi penerimaan, memilih pelanggan + invoice penjualan
-    outstanding, lalu sistem mereklasifikasi akun penampung ke akun piutang
-    pelanggan (Dr Penampung / Dr PPh 23 Dibayar di Muka / Cr Piutang) DAN
-    membuat alokasi invoice — outstanding invoice terbarui tanpa jurnal
-    penerimaan bank ganda. Identifikasi penuh → dokumen menjadi
-    PELUNASAN_INVOICE; pembatalan via endpoint cancel sesi.
-    """
-    try:
-        obj = identifikasi_svc.create_identifikasi_piutang(
-            db, penerimaan_id, data_in.pelanggan_id,
-            tanggal=data_in.tanggal,
-            alokasi_data=[r.model_dump() for r in data_in.alokasi],
-            catatan=data_in.catatan,
-            created_by=current_user.id,
-        )
-        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
-        return refreshed or obj
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.post(
-    "/pembayaran/{pembayaran_id}/identifikasi-hutang",
-    response_model=KasIdentifikasiResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_pembayaran_identifikasi_hutang(
-    pembayaran_id: UUID,
-    data_in: IdentifikasiHutangCreate,
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #03 — Identifikasi pembayaran Belum Teridentifikasi ke supplier.
-
-    Pilih supplier + invoice pembelian outstanding → jurnal reklasifikasi
-    Cr Penampung / Dr Hutang supplier / Cr Potongan Hutang / Cr Hutang PPh 23
-    + alokasi invoice; outstanding terbarui tanpa jurnal bank ganda.
-    """
-    try:
-        obj = identifikasi_svc.create_identifikasi_hutang(
-            db, pembayaran_id, data_in.supplier_id,
-            tanggal=data_in.tanggal,
-            alokasi_data=[r.model_dump() for r in data_in.alokasi],
-            catatan=data_in.catatan,
-            created_by=current_user.id,
-        )
-        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
-        return refreshed or obj
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.get("/penampung/monitoring", response_model=PenampungMonitoringResponse)
-def get_penerimaan_penampung_monitoring(
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #03 — monitoring saldo akun penampung + rekonsiliasi ke nol.
-
-    Saldo GL tiap akun penampung (penerimaan 216001 / pembayaran 117004 /
-    legacy 216000 + akun aktual dokumen lama) dibandingkan dengan Σ sisa
-    dokumen Belum Teridentifikasi aktif; plus cek jurnal balance, jurnal
-    identifikasi tidak menyentuh kas, dan tidak ada outstanding negatif
-    (subledger vs General Ledger konsisten).
-    """
-    return identifikasi_svc.get_penampung_monitoring(db)
-
-
-@router.post("/identifikasi/penerimaan/{identifikasi_id}/cancel", response_model=KasIdentifikasiResponse)
-def cancel_penerimaan_identifikasi(
-    identifikasi_id: UUID,
-    payload: Optional[HardDeleteRequest] = Body(None),
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #02 — batalkan sesi identifikasi penerimaan (jurnal pembalik).
-
-    Jurnal identifikasi asli tetap POSTED (audit trail); sisa belum
-    teridentifikasi dokumen naik kembali.
-    """
-    try:
-        obj = identifikasi_svc.cancel_identifikasi(
-            db, identifikasi_id, current_user.id,
-            reason=payload.reason if payload else None,
-        )
-        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
-        return refreshed or obj
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-@router.post("/identifikasi/pembayaran/{identifikasi_id}/cancel", response_model=KasIdentifikasiResponse)
-def cancel_pembayaran_identifikasi(
-    identifikasi_id: UUID,
-    payload: Optional[HardDeleteRequest] = Body(None),
-    db: Session = Depends(get_current_db),
-    current_user: Pengguna = Depends(get_current_user),
-):
-    """Update #02 — batalkan sesi identifikasi pembayaran (jurnal pembalik)."""
-    try:
-        obj = identifikasi_svc.cancel_identifikasi(
-            db, identifikasi_id, current_user.id,
-            reason=payload.reason if payload else None,
-        )
-        refreshed = identifikasi_svc.get_identifikasi_by_id(db, obj.id)
-        return refreshed or obj
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

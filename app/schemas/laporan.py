@@ -440,15 +440,15 @@ class RekapPpnResponse(BaseSchema):
 
 
 class RekapPph23Item(BaseSchema):
-    """Satu baris pemotongan PPh 23 (dari pelunasan / identifikasi kas)."""
+    """Satu baris pemotongan PPh 23 (dari pelunasan)."""
     tanggal: date
     pihak: Optional[str] = None
     npwp: Optional[str] = None
-    no_bukti: str  # no dokumen kas / identifikasi
+    no_bukti: str  # no dokumen kas
     no_invoice: Optional[str] = None
     dasar: Decimal = Decimal("0")
     pph23: Decimal = Decimal("0")
-    sumber: str  # PELUNASAN | IDENTIFIKASI
+    sumber: str  # PELUNASAN
     sisi: str  # DIPOTONG_DARI_KITA (AR) | KITA_POTONG (AP)
 
 

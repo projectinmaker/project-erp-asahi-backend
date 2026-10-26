@@ -18,7 +18,9 @@ from app.schemas.settlement import AllocationResponse
 # === Update #02 — jenis transaksi kas (lihat model JENIS_TRANSAKSI_KAS) ===
 # AUD-11 (update #04): + PELUNASAN_PAJAK — pembayaran hutang pajak ke kas/bank
 # (akun lawan wajib akun hutang pajak 213xxx, divalidasi service).
-JENIS_TRANSAKSI_KAS_VALUES = ("TRANSAKSI_LAINNYA", "BELUM_TERIDENTIFIKASI", "PELUNASAN_INVOICE", "PELUNASAN_PAJAK")
+# Update #14 — BELUM_TERIDENTIFIKASI dihapus (fitur Identifikasi & Alokasi
+# dicabut; dokumen lama dikonversi migration cp0000000021).
+JENIS_TRANSAKSI_KAS_VALUES = ("TRANSAKSI_LAINNYA", "PELUNASAN_INVOICE", "PELUNASAN_PAJAK")
 
 
 # ==========================================
@@ -98,9 +100,9 @@ class PembayaranKasBase(BaseSchema):
 
 class PembayaranKasCreate(PembayaranKasBase):
     rincian: List[PembayaranRincianCreate] = []
-    # === Update #02 — jenis transaksi & nilai tunggal (Belum Teridentifikasi) ===
+    # === Update #02 — jenis transaksi (Update #14: nilai tunggal Belum
+    # Teridentifikasi dihapus bersama fiturnya) ===
     jenis_transaksi: Optional[str] = None
-    nilai: Optional[Decimal] = Field(default=None, gt=0, max_digits=18, decimal_places=2)
 
     @model_validator(mode="after")
     def _validasi_jenis_transaksi(self):
@@ -116,19 +118,8 @@ class PembayaranKasCreate(PembayaranKasBase):
                 f"Jenis transaksi tidak dikenal: {self.jenis_transaksi} "
                 f"(pilihan: {', '.join(JENIS_TRANSAKSI_KAS_VALUES)})"
             )
-        if jenis == "BELUM_TERIDENTIFIKASI":
-            if self.rincian:
-                raise ValueError(
-                    "Jenis 'Belum Teridentifikasi' tidak memakai rincian akun lawan — "
-                    "kirim nilai total saja"
-                )
-            if self.nilai is None:
-                raise ValueError("Nilai wajib diisi untuk jenis 'Belum Teridentifikasi'")
-        else:
-            if self.nilai is not None:
-                raise ValueError("Field nilai hanya untuk jenis 'Belum Teridentifikasi'")
-            if not self.rincian:
-                raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
+        if not self.rincian:
+            raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
         self.jenis_transaksi = jenis
         return self
 
@@ -146,10 +137,8 @@ class PembayaranKasUpdate(BaseSchema):
     penerima: Optional[str] = None
     catatan: Optional[str] = None
     auto_post_jurnal: Optional[bool] = None
-    # === Update #02 — jenis immutable (guard service); nilai khusus
-    # dokumen BELUM_TERIDENTIFIKASI ===
+    # === Update #02 — jenis immutable (guard service) ===
     jenis_transaksi: Optional[str] = None
-    nilai: Optional[Decimal] = Field(default=None, gt=0, max_digits=18, decimal_places=2)
 
 
 class PembayaranKasResponse(PembayaranKasBase):
@@ -171,10 +160,8 @@ class PembayaranKasResponse(PembayaranKasBase):
     creator: Optional[PenggunaSimpleResponse] = None
     rincian: List[PembayaranRincianResponse] = []
     jurnal: Optional[JurnalSimpleResponse] = None
-    # === Update #02 — jenis transaksi + progres identifikasi ===
+    # === Update #02 — jenis transaksi ===
     jenis_transaksi: str = "TRANSAKSI_LAINNYA"
-    teridentifikasi: Optional[Decimal] = None
-    sisa_belum_teridentifikasi: Optional[Decimal] = None
 
 
 # ==========================================
@@ -206,9 +193,9 @@ class PenerimaanKasBase(BaseSchema):
 
 class PenerimaanKasCreate(PenerimaanKasBase):
     rincian: List[PenerimaanRincianCreate] = []
-    # === Update #02 — jenis transaksi & nilai tunggal (Belum Teridentifikasi) ===
+    # === Update #02 — jenis transaksi (Update #14: nilai tunggal Belum
+    # Teridentifikasi dihapus bersama fiturnya) ===
     jenis_transaksi: Optional[str] = None
-    nilai: Optional[Decimal] = Field(default=None, gt=0, max_digits=18, decimal_places=2)
 
     @model_validator(mode="after")
     def _validasi_jenis_transaksi(self):
@@ -230,19 +217,8 @@ class PenerimaanKasCreate(PenerimaanKasBase):
                 f"Jenis transaksi tidak dikenal: {self.jenis_transaksi} "
                 f"(pilihan: {', '.join(JENIS_TRANSAKSI_KAS_VALUES)})"
             )
-        if jenis == "BELUM_TERIDENTIFIKASI":
-            if self.rincian:
-                raise ValueError(
-                    "Jenis 'Belum Teridentifikasi' tidak memakai rincian akun lawan — "
-                    "kirim nilai total saja"
-                )
-            if self.nilai is None:
-                raise ValueError("Nilai wajib diisi untuk jenis 'Belum Teridentifikasi'")
-        else:
-            if self.nilai is not None:
-                raise ValueError("Field nilai hanya untuk jenis 'Belum Teridentifikasi'")
-            if not self.rincian:
-                raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
+        if not self.rincian:
+            raise ValueError("Rincian akun lawan wajib diisi untuk Transaksi Lainnya")
         self.jenis_transaksi = jenis
         return self
 
@@ -255,10 +231,8 @@ class PenerimaanKasUpdate(BaseSchema):
     pemberi: Optional[str] = None
     catatan: Optional[str] = None
     auto_post_jurnal: Optional[bool] = None
-    # === Update #02 — jenis immutable (guard service); nilai khusus
-    # dokumen BELUM_TERIDENTIFIKASI ===
+    # === Update #02 — jenis immutable (guard service) ===
     jenis_transaksi: Optional[str] = None
-    nilai: Optional[Decimal] = Field(default=None, gt=0, max_digits=18, decimal_places=2)
 
 
 class PenerimaanKasResponse(PenerimaanKasBase):
@@ -280,10 +254,8 @@ class PenerimaanKasResponse(PenerimaanKasBase):
     creator: Optional[PenggunaSimpleResponse] = None
     rincian: List[PenerimaanRincianResponse] = []
     jurnal: Optional[JurnalSimpleResponse] = None
-    # === Update #02 — jenis transaksi + progres identifikasi ===
+    # === Update #02 — jenis transaksi ===
     jenis_transaksi: str = "TRANSAKSI_LAINNYA"
-    teridentifikasi: Optional[Decimal] = None
-    sisa_belum_teridentifikasi: Optional[Decimal] = None
 
 
 # ==========================================
@@ -325,155 +297,6 @@ class TransferBankResponse(TransferBankBase):
     ke_kas_bank: Optional[KasBankSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     jurnal: Optional[JurnalSimpleResponse] = None
-
-# ==========================================
-# UPDATE #02 — IDENTIFIKASI & ALOKASI KAS
-# (dokumen BELUM_TERIDENTIFIKASI)
-# ==========================================
-class IdentifikasiAlokasiCreate(BaseSchema):
-    """Satu baris alokasi identifikasi: akun tujuan + nilai (+ keterangan)."""
-    akun_perkiraan_id: UUID
-    nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
-    keterangan: Optional[str] = Field(default=None, max_length=255)
-
-
-class KasIdentifikasiCreate(BaseSchema):
-    """Payload sesi Identifikasi & Alokasi atas satu dokumen kas."""
-    tanggal: datetime
-    alokasi: List[IdentifikasiAlokasiCreate] = Field(min_length=1, max_length=100)
-    catatan: Optional[str] = None
-
-
-# === Update #03 — Identifikasi Piutang/Hutang (pihak + invoice) ===
-class IdentifikasiPiutangAlokasiCreate(BaseSchema):
-    """Satu baris alokasi identifikasi piutang: sales invoice + nilai (+ PPh 23)."""
-    sales_invoice_id: UUID
-    nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
-    pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
-    # === AUD-08 (update #04) — bukti potong + masa pajak per faktur ===
-    no_bukti_potong: Optional[str] = Field(default=None, max_length=50)
-    masa_pajak: Optional[str] = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
-
-
-class IdentifikasiPiutangCreate(BaseSchema):
-    """Payload identifikasi penerimaan Belum Teridentifikasi ke pelanggan.
-
-    Jurnal reklasifikasi: Dr Penampung / Dr PPh 23 Dibayar di Muka /
-    Cr Piutang pelanggan + alokasi invoice (outstanding terbarui).
-    """
-    pelanggan_id: UUID
-    tanggal: datetime
-    alokasi: List[IdentifikasiPiutangAlokasiCreate] = Field(min_length=1, max_length=100)
-    catatan: Optional[str] = None
-
-
-class IdentifikasiHutangAlokasiCreate(BaseSchema):
-    """Satu baris alokasi identifikasi hutang: purchase invoice + nilai (+ diskon + PPh 23)."""
-    purchase_invoice_id: UUID
-    nilai: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
-    diskon: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
-    pph23: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=2)
-    # === AUD-08 (update #04) — bukti potong + masa pajak per faktur ===
-    no_bukti_potong: Optional[str] = Field(default=None, max_length=50)
-    masa_pajak: Optional[str] = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
-
-
-class IdentifikasiHutangCreate(BaseSchema):
-    """Payload identifikasi pembayaran Belum Teridentifikasi ke supplier.
-
-    Jurnal reklasifikasi: Cr Penampung / Dr Hutang supplier / Cr Potongan
-    Hutang / Cr Hutang PPh 23 + alokasi invoice (outstanding terbarui).
-    """
-    supplier_id: UUID
-    tanggal: datetime
-    alokasi: List[IdentifikasiHutangAlokasiCreate] = Field(min_length=1, max_length=100)
-    catatan: Optional[str] = None
-
-
-class IdentifikasiRincianResponse(BaseSchema):
-    id: UUID
-    akun_perkiraan_id: UUID
-    nilai: Decimal
-    keterangan: Optional[str] = None
-    akun_perkiraan: Optional[AkunPerkiraanSimpleResponse] = None
-    # Update #03 — snapshot invoice + potongan per faktur (sesi PIUTANG/HUTANG)
-    sales_invoice_id: Optional[UUID] = None
-    # AUD-08 (update #04) — bukti potong + masa pajak per faktur
-    no_bukti_potong: Optional[str] = None
-    masa_pajak: Optional[str] = None
-    purchase_invoice_id: Optional[UUID] = None
-    diskon: Decimal = Decimal("0")
-    pph23: Decimal = Decimal("0")
-
-
-class KasIdentifikasiResponse(BaseSchema):
-    id: UUID
-    no_bukti: str
-    tanggal: datetime
-    penerimaan_id: Optional[UUID] = None
-    pembayaran_id: Optional[UUID] = None
-    catatan: Optional[str] = None
-    total_nilai: Decimal
-    status: str
-    jurnal_umum_id: Optional[UUID] = None
-    created_by: UUID
-    created_at: datetime
-    updated_at: datetime
-    jurnal: Optional[JurnalSimpleResponse] = None
-    creator: Optional[PenggunaSimpleResponse] = None
-    rincian: List[IdentifikasiRincianResponse] = []
-    # Update #03 — jenis sesi + pihak yang diidentifikasi
-    jenis: str = "LAINNYA"
-    pelanggan_id: Optional[UUID] = None
-    supplier_id: Optional[UUID] = None
-
-
-class KasIdentifikasiListResponse(BaseSchema):
-    """Dokumen kas + histori identifikasi + progres teridentifikasi/sisa."""
-    dokumen_id: UUID
-    jenis_dokumen: str
-    no_bukti_dokumen: str
-    tanggal_dokumen: datetime
-    total_nilai_dokumen: Decimal
-    jenis_transaksi_dokumen: str
-    status_dokumen: str
-    kas_bank: Optional[KasBankSimpleResponse] = None
-    penampung_akun: Optional[AkunPerkiraanSimpleResponse] = None
-    teridentifikasi: Decimal
-    sisa_belum_teridentifikasi: Decimal
-    identifikasi: List[KasIdentifikasiResponse] = []
-
-
-# === Update #03 — Monitoring & rekonsiliasi akun penampung ===
-class PenampungAkunMonitoringResponse(BaseSchema):
-    """Saldo satu akun penampung + Σ sisa dokumen Belum Teridentifikasi."""
-    akun: AkunPerkiraanSimpleResponse
-    setting_key: Optional[str] = None
-    arah: str
-    saldo_gl: Decimal
-    jumlah_dokumen_aktif: int
-    sisa_penerimaan: Decimal = Decimal("0")
-    sisa_pembayaran: Decimal = Decimal("0")
-    total_sisa_dokumen: Decimal
-    selisih: Decimal
-    konsisten: bool
-
-
-class PenampungCheckResponse(BaseSchema):
-    """Hasil satu cek rekonsiliasi penampung."""
-    kode: str
-    label: str
-    ok: bool
-    detail: Optional[str] = None
-
-
-class PenampungMonitoringResponse(BaseSchema):
-    """Monitoring & rekonsiliasi semua akun penampung (penerimaan + pembayaran)."""
-    akun: List[PenampungAkunMonitoringResponse] = []
-    total_sisa: Decimal = Decimal("0")
-    rekonsiliasi_ok: bool
-    checks: List[PenampungCheckResponse] = []
-
 
 # ==========================================
 # === AUD-11 (update #04) — Monitoring hutang pajak ===
