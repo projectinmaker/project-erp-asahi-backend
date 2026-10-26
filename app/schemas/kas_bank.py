@@ -72,6 +72,9 @@ class PelangganSimpleResponse(BaseSchema):
 class PembayaranRincianBase(BaseSchema):
     akun_perkiraan_id: UUID
     nilai: Decimal = Decimal("0")
+    # === Update #16 — keterangan per baris rincian (kolom Catatan pada grid
+    # detail, paritas Accurate "Pembayaran Lain") ===
+    keterangan: Optional[str] = None
 
 
 class PembayaranRincianCreate(PembayaranRincianBase):
@@ -86,8 +89,13 @@ class PembayaranRincianResponse(PembayaranRincianBase):
 class PembayaranKasBase(BaseSchema):
     tanggal: datetime
     kas_bank_id: UUID
-    no_nukti: str
+    # === Update #16 — no_nukti kini opsional (field dihapus dari form ASAHI
+    # ala Accurate); kosong → service auto-isi = nomor dokumen (no_bukti). ===
+    no_nukti: Optional[str] = None
     no_cek: Optional[str] = None
+    # === Update #16 — "Cek Kosong" (paritas Accurate): True = pembayaran via
+    # cek kosong, No. Cek boleh kosong ===
+    cek_kosong: bool = False
     # === Update cetak "Bayar Pemasok" — info cek & mata uang ===
     tanggal_cek: Optional[date] = None
     jumlah_cek: Optional[Decimal] = None
@@ -129,6 +137,8 @@ class PembayaranKasUpdate(BaseSchema):
     kas_bank_id: Optional[UUID] = None
     no_nukti: Optional[str] = None
     no_cek: Optional[str] = None
+    # === Update #16 — "Cek Kosong" (paritas Accurate) ===
+    cek_kosong: Optional[bool] = None
     # === Update cetak "Bayar Pemasok" — info cek & mata uang (editable) ===
     tanggal_cek: Optional[date] = None
     jumlah_cek: Optional[Decimal] = None
@@ -170,6 +180,9 @@ class PembayaranKasResponse(PembayaranKasBase):
 class PenerimaanRincianBase(BaseSchema):
     akun_perkiraan_id: UUID
     nilai: Decimal = Decimal("0")
+    # === Update #16 — keterangan per baris rincian (kolom Catatan pada grid
+    # detail, paritas Accurate "Penerimaan Lain") ===
+    keterangan: Optional[str] = None
 
 
 class PenerimaanRincianCreate(PenerimaanRincianBase):
@@ -184,7 +197,9 @@ class PenerimaanRincianResponse(PenerimaanRincianBase):
 class PenerimaanKasBase(BaseSchema):
     tanggal: datetime
     kas_bank_id: UUID
-    no_nukti: str
+    # === Update #16 — no_nukti kini opsional (field dihapus dari form ASAHI
+    # ala Accurate); kosong → service auto-isi = nomor dokumen (no_bukti). ===
+    no_nukti: Optional[str] = None
     no_cek: Optional[str] = None
     pemberi: Optional[str] = None
     catatan: Optional[str] = None
@@ -331,3 +346,21 @@ class PajakMonitoringResponse(BaseSchema):
     total_hutang: Decimal = Decimal("0")
     total_dibayar_lebih: Decimal = Decimal("0")
     riwayat_pelunasan: List[PajakPelunasanRiwayatResponse] = []
+
+
+# ==========================================
+# Update #16 — PREVIEW NOMOR DOKUMEN (form ala Accurate)
+# ==========================================
+class NomorPreviewResponse(BaseSchema):
+    """Nomor dokumen BERIKUTNYA untuk ditampilkan di form (indikatif).
+
+    Prefix per jenis transaksi (reset tahunan, sequence terpisah):
+    - Pembayaran: PELUNASAN_INVOICE → "PAY ASI/YYYY/NNN" (tetap);
+      lainnya (TRANSAKSI_LAINNYA / PELUNASAN_PAJAK) → "VC ASI/YYYY/NNN"
+    - Penerimaan: PELUNASAN_INVOICE → "REC ASI/YYYY/NNN" (tetap);
+      lainnya → "PB ASI/YYYY/NNN"
+
+    Angka bisa bergeser bila ada dokumen lain dibuat lebih dulu — nomor final
+    tetap di-generate ulang service saat create (preview tidak menyimpan state).
+    """
+    nomor: str

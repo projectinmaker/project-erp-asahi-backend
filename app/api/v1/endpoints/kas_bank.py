@@ -17,6 +17,7 @@ from app.schemas.kas_bank import (
     PembayaranKasCreate, PembayaranKasUpdate, PembayaranKasResponse,
     PenerimaanKasCreate, PenerimaanKasUpdate, PenerimaanKasResponse,
     TransferBankCreate, TransferBankUpdate, TransferBankResponse,
+    NomorPreviewResponse,  # Update #16 — preview nomor dokumen di form
 )
 from app.schemas.workflow import HardDeleteRequest
 from app.services import kas_bank_service as svc
@@ -83,7 +84,12 @@ def create_pembayaran(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat Pembayaran Kas baru (auto-generate no bukti + auto-post jurnal)."""
+    """Buat Pembayaran Kas baru (auto-generate no bukti + auto-post jurnal).
+
+    Update #16 — nomor dokumen per jenis (paritas Accurate Desktop):
+    Transaksi Lainnya → "VC ASI/YYYY/NNN"; Pelunasan Invoice → "PAY ASI/YYYY/NNN".
+    no_nukti opsional — kosong → auto-isi = nomor dokumen.
+    """
     try:
         rincian_data = [r.model_dump() for r in data_in.rincian]
         obj = svc.create_pembayaran(
@@ -93,6 +99,7 @@ def create_pembayaran(
             kas_bank_id=data_in.kas_bank_id,
             rincian_data=rincian_data,
             no_cek=data_in.no_cek,
+            cek_kosong=data_in.cek_kosong,  # Update #16 — paritas Accurate
             penerima=data_in.penerima,
             catatan=data_in.catatan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
@@ -111,6 +118,24 @@ def create_pembayaran(
         return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/pembayaran/next-nomor", response_model=NomorPreviewResponse)
+def get_next_nomor_pembayaran(
+    jenis: Optional[str] = Query(
+        None, description="Update #16 — jenis transaksi untuk menentukan prefix "
+        "(PELUNASAN_INVOICE → PAY; lainnya → VC, ala Accurate Desktop)"),
+    tanggal: Optional[date] = Query(
+        None, description="Tanggal dokumen (YYYY-MM-DD) — menentukan tahun sequence"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Preview nomor dokumen pembayaran BERIKUTNYA (indikatif, tanpa create).
+
+    Dipakai form Pembayaran ala Accurate untuk menampilkan nomor voucher yang
+    akan dipakai sebelum submit. Nomor final di-generate ulang saat create.
+    """
+    return {"nomor": svc.peek_nomor_pembayaran(db, jenis=jenis, tanggal=tanggal)}
 
 
 @router.get("/pembayaran/{pembayaran_id}", response_model=PembayaranKasResponse)
@@ -204,7 +229,12 @@ def create_penerimaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat Penerimaan Kas baru (auto-generate no bukti + auto-post jurnal)."""
+    """Buat Penerimaan Kas baru (auto-generate no bukti + auto-post jurnal).
+
+    Update #16 — nomor dokumen per jenis (paritas Accurate Desktop):
+    Transaksi Lainnya → "PB ASI/YYYY/NNN"; Pelunasan Invoice → "REC ASI/YYYY/NNN".
+    no_nukti opsional — kosong → auto-isi = nomor dokumen.
+    """
     try:
         rincian_data = [r.model_dump() for r in data_in.rincian]
         obj = svc.create_penerimaan(
@@ -227,6 +257,24 @@ def create_penerimaan(
         return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/penerimaan/next-nomor", response_model=NomorPreviewResponse)
+def get_next_nomor_penerimaan(
+    jenis: Optional[str] = Query(
+        None, description="Update #16 — jenis transaksi untuk menentukan prefix "
+        "(PELUNASAN_INVOICE → REC; lainnya → PB, ala Accurate Desktop)"),
+    tanggal: Optional[date] = Query(
+        None, description="Tanggal dokumen (YYYY-MM-DD) — menentukan tahun sequence"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Preview nomor dokumen penerimaan BERIKUTNYA (indikatif, tanpa create).
+
+    Dipakai form Penerimaan ala Accurate untuk menampilkan nomor voucher yang
+    akan dipakai sebelum submit. Nomor final di-generate ulang saat create.
+    """
+    return {"nomor": svc.peek_nomor_penerimaan(db, jenis=jenis, tanggal=tanggal)}
 
 
 @router.get("/penerimaan/{penerimaan_id}", response_model=PenerimaanKasResponse)

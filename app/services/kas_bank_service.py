@@ -223,14 +223,52 @@ def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[Pembayara
     return item
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Update #16 — Preview nomor dokumen berikutnya (form ala Accurate Desktop)
+# ═══════════════════════════════════════════════════════════════════════════
+def _prefix_nomor_pembayaran(jenis: Optional[str]) -> str:
+    """Prefix nomor dokumen pembayaran per jenis (kaidah Update #16):
+    PELUNASAN_INVOICE → "PAY" (bayar invoice); lainnya → "VC" (Pembayaran Lain)."""
+    return "PAY" if (jenis or "").strip().upper() == "PELUNASAN_INVOICE" else "VC"
+
+
+def _prefix_nomor_penerimaan(jenis: Optional[str]) -> str:
+    """Prefix nomor dokumen penerimaan per jenis (kaidah Update #16):
+    PELUNASAN_INVOICE → "REC" (terima pelunasan); lainnya → "PB" (Penerimaan Lain)."""
+    return "REC" if (jenis or "").strip().upper() == "PELUNASAN_INVOICE" else "PB"
+
+
+def peek_nomor_pembayaran(db: Session, jenis: Optional[str] = None, tanggal: Optional[date] = None) -> str:
+    """Hitung nomor dokumen pembayaran BERIKUTNYA tanpa membuat dokumen.
+
+    Indikatif saja (bisa bergeser bila ada dokumen lain dibuat lebih dulu);
+    nomor final tetap di-generate ulang create_pembayaran saat create.
+    """
+    tgl = tanggal or date.today()
+    return get_nomor_dokumen_tahunan(
+        db, PembayaranKas, prefix=_prefix_nomor_pembayaran(jenis),
+        no_column="no_bukti", tanggal=tgl,
+    )
+
+
+def peek_nomor_penerimaan(db: Session, jenis: Optional[str] = None, tanggal: Optional[date] = None) -> str:
+    """Hitung nomor dokumen penerimaan BERIKUTNYA tanpa membuat dokumen."""
+    tgl = tanggal or date.today()
+    return get_nomor_dokumen_tahunan(
+        db, PenerimaanKas, prefix=_prefix_nomor_penerimaan(jenis),
+        no_column="no_bukti", tanggal=tgl,
+    )
+
+
 @atomic_accounting_write
 def create_pembayaran(
     db: Session,
-    no_nukti: str,
+    no_nukti: Optional[str],  # Update #16 — boleh None (auto-isi = no_bukti)
     tanggal: datetime,
     kas_bank_id: UUID,
     rincian_data: list,
     no_cek: Optional[str] = None,
+    cek_kosong: bool = False,  # Update #16 — paritas Accurate "Cek Kosong"
     penerima: Optional[str] = None,
     catatan: Optional[str] = None,
     auto_post_jurnal: bool = False,
@@ -274,10 +312,22 @@ def create_pembayaran(
 
         # Generate nomor bukti (pembayaran/pengeluaran kas)
         # Update ASAHI: pola penomoran seragam "PAY ASI/YYYY/NNN" (reset tahunan).
+        # Update #16 — prefix PER JENIS transaksi (paritas Accurate Desktop):
+        #   PELUNASAN_INVOICE (bayar invoice/pemasok) → "PAY" (tetap, menunggu
+        #       konfirmasi klien);
+        #   lainnya (TRANSAKSI_LAINNYA = "Pembayaran Lain", PELUNASAN_PAJAK)
+        #       → "VC" (voucher pengeluaran, ala Accurate).
+        # Sequence terpisah per prefix + reset tahunan (lihat
+        # get_nomor_dokumen_tahunan) — dokumen lama "PAY ASI/..." tetap aman.
+        _prefix_byr = _prefix_nomor_pembayaran(jenis)
         no_bukti = get_nomor_dokumen_tahunan(
-            db, PembayaranKas, prefix="PAY",
+            db, PembayaranKas, prefix=_prefix_byr,
             no_column="no_bukti", tanggal=tanggal.date()
         )
+
+        # Update #16 — no_nukti (no bukti fisik) kini opsional ala Accurate:
+        # kosong → auto-isi = nomor dokumen sistem (no_bukti).
+        no_nukti_final = (no_nukti or "").strip() or no_bukti
 
         # Hitung total dari rincian
         total_nilai = sum(Decimal(str(r.get("nilai", 0))) for r in rincian_data)
@@ -297,8 +347,9 @@ def create_pembayaran(
             no_bukti=no_bukti,
             tanggal=tanggal,
             kas_bank_id=kas_bank_id,
-            no_nukti=no_nukti,
+            no_nukti=no_nukti_final,
             no_cek=no_cek,
+            cek_kosong=cek_kosong,  # Update #16 — paritas Accurate
             tanggal_cek=tanggal_cek,
             jumlah_cek=jumlah_cek,
             mata_uang=mata_uang,
@@ -320,6 +371,8 @@ def create_pembayaran(
                 pembayaran_id=pembayaran.id,
                 akun_perkiraan_id=r["akun_perkiraan_id"],
                 nilai=Decimal(str(r["nilai"])),
+                # Update #16 — keterangan per baris rincian (opsional)
+                keterangan=(r.get("keterangan") or None),
             )
             db.add(detail)
 
@@ -349,6 +402,7 @@ def update_pembayaran(
     kas_bank_id: Optional[UUID] = None,
     no_nukti: Optional[str] = None,
     no_cek: Optional[str] = None,
+    cek_kosong: Optional[bool] = None,  # Update #16 — paritas Accurate
     penerima: Optional[str] = None,
     catatan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
@@ -374,6 +428,9 @@ def update_pembayaran(
         db_obj.no_nukti = no_nukti
     if no_cek is not None:
         db_obj.no_cek = no_cek
+    # Update #16 — "Cek Kosong" (paritas Accurate)
+    if cek_kosong is not None:
+        db_obj.cek_kosong = cek_kosong
     # Update cetak "Bayar Pemasok" — info cek & mata uang
     if tanggal_cek is not None:
         db_obj.tanggal_cek = tanggal_cek
@@ -498,7 +555,7 @@ def get_penerimaan_by_id(db: Session, penerimaan_id: UUID) -> Optional[Penerimaa
 @atomic_accounting_write
 def create_penerimaan(
     db: Session,
-    no_nukti: str,
+    no_nukti: Optional[str],  # Update #16 — boleh None (auto-isi = no_bukti)
     tanggal: datetime,
     kas_bank_id: UUID,
     rincian_data: list,
@@ -534,10 +591,22 @@ def create_penerimaan(
                 _validate_akun_lawan_bukan_piutang_hutang(db, r.get("akun_perkiraan_id"))
 
         # Update ASAHI: pola penomoran seragam "REC ASI/YYYY/NNN" (reset tahunan).
+        # Update #16 — prefix PER JENIS transaksi (paritas Accurate Desktop):
+        #   PELUNASAN_INVOICE (terima pelunasan piutang/pelanggan) → "REC"
+        #       (tetap, menunggu konfirmasi klien);
+        #   lainnya (TRANSAKSI_LAINNYA = "Penerimaan Lain") → "PB"
+        #       (voucher penerimaan, ala Accurate "Penerimaan lain").
+        # Sequence terpisah per prefix + reset tahunan — dokumen lama
+        # "REC ASI/..." tetap aman.
+        _prefix_trm = _prefix_nomor_penerimaan(jenis)
         no_bukti = get_nomor_dokumen_tahunan(
-            db, PenerimaanKas, prefix="REC",
+            db, PenerimaanKas, prefix=_prefix_trm,
             no_column="no_bukti", tanggal=tanggal.date()
         )
+
+        # Update #16 — no_nukti (no bukti fisik) kini opsional ala Accurate:
+        # kosong → auto-isi = nomor dokumen sistem (no_bukti).
+        no_nukti_final = (no_nukti or "").strip() or no_bukti
 
         total_nilai = sum(Decimal(str(r.get("nilai", 0))) for r in rincian_data)
 
@@ -545,7 +614,7 @@ def create_penerimaan(
             no_bukti=no_bukti,
             tanggal=tanggal,
             kas_bank_id=kas_bank_id,
-            no_nukti=no_nukti,
+            no_nukti=no_nukti_final,
             no_cek=no_cek,
             pemberi=pemberi,
             catatan=catatan,
@@ -563,6 +632,8 @@ def create_penerimaan(
                 penerimaan_id=penerimaan.id,
                 akun_perkiraan_id=r["akun_perkiraan_id"],
                 nilai=Decimal(str(r["nilai"])),
+                # Update #16 — keterangan per baris rincian (opsional)
+                keterangan=(r.get("keterangan") or None),
             )
             db.add(detail)
 

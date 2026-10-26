@@ -53,6 +53,10 @@ class PembayaranKas(BaseModel, BaseMixin):
     kas_bank_id = Column(UUID(as_uuid=True), ForeignKey("kas_bank_akun.id"), nullable=False)
     no_nukti = Column(String(50), nullable=False)
     no_cek = Column(String(50), nullable=True)
+    # === Update #16 — "Cek Kosong" (paritas Accurate Desktop "Pembayaran Lain"):
+    # True = pembayaran via cek kosong (nomor cek diisi belakangan saat cek
+    # diformulirkan); No. Cek boleh kosong dan tidak wajib diisi saat create. ===
+    cek_kosong = Column(Boolean, nullable=False, default=False, server_default="false")
     # === Update cetak "Bayar Pemasok" — info cek & mata uang untuk layout print ===
     tanggal_cek = Column(Date, nullable=True)
     jumlah_cek = Column(Numeric(18, 2), nullable=True)
