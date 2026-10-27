@@ -184,6 +184,55 @@ def get_request_order_part_by_id(db: Session, rop_id: UUID) -> Optional[RequestO
     )
 
 
+def get_request_order_part_options(db: Session, limit_so: int = 200) -> Dict[str, Any]:
+    """Dropdown form ROP dalam satu endpoint (update ASAHI #018).
+
+    Role Staf Engineering kini HANYA membawa permission produksi — form ROP
+    tetap membutuhkan daftar SO aktif (customer ditarik otomatis dari SO) dan
+    supplier aktif (kolom SUPPLIER per baris part). Endpoint ini menggantikan
+    dua panggilan lama (GET /penjualan/sales-order + /master/supplier-dropdown)
+    sehingga modul produksi mandiri tanpa membuka akses modul lain.
+
+    Payload sengaja ringan dan non-finansial:
+    - SO: id, no_pesanan, customer_po_number, tanggal, status, pelanggan nama.
+    - Supplier: id, kode, nama (hanya status AKTIF).
+    """
+    sos = (
+        db.query(SalesOrder)
+        .options(joinedload(SalesOrder.pelanggan))
+        .filter(SalesOrder.status != "DIBATALKAN")
+        .order_by(SalesOrder.tanggal.desc())
+        .limit(limit_so)
+        .all()
+    )
+    suppliers = (
+        db.query(Supplier)
+        .filter(Supplier.status == "AKTIF")
+        .order_by(Supplier.nama)
+        .all()
+    )
+    return {
+        "sales_orders": [
+            {
+                "id": str(so.id),
+                "no_pesanan": so.no_pesanan,
+                "customer_po_number": so.customer_po_number,
+                "tanggal": so.tanggal,
+                "status": getattr(so.status, "value", so.status) if so.status else None,
+                "pelanggan": (
+                    {"id": str(so.pelanggan.id), "kode": so.pelanggan.kode, "nama": so.pelanggan.nama}
+                    if so.pelanggan
+                    else None
+                ),
+            }
+            for so in sos
+        ],
+        "suppliers": [
+            {"id": str(s.id), "kode": s.kode, "nama": s.nama} for s in suppliers
+        ],
+    }
+
+
 # ==========================================
 # WRITE
 # ==========================================

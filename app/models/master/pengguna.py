@@ -11,6 +11,11 @@ class RolePengguna(str, enum.Enum):
     STAFF_AKUNTANSI = "STAFF_AKUNTANSI"
     STAFF_GUDANG = "STAFF_GUDANG"
     STAFF_PENJUALAN = "STAFF_PENJUALAN"
+    # Update ASAHI #018 — enum role untuk template Staf Pembelian &
+    # Staf Engineering (template RBAC-nya sudah ada: PURCHASING_STAFF &
+    # ENGINEERING_STAFF; kini bisa dipilih langsung saat membuat pengguna).
+    STAFF_PEMBELIAN = "STAFF_PEMBELIAN"
+    STAFF_ENGINEERING = "STAFF_ENGINEERING"
 
 
 class Pengguna(BaseModel, BaseMixin):

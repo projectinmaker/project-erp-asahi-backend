@@ -109,17 +109,84 @@ class AccountingHealthSummaryWidget(BaseSchema):
     error: Optional[str] = None
 
 
+# === Update ASAHI #018 — Widget Produksi & Pembelian (dashboard per role) ===
+
+class ProduksiRopTerbaruItem(BaseSchema):
+    """ROP terbaru untuk widget Produksi."""
+    id: str
+    no_rop: str
+    tanggal: Optional[str] = None
+    project_name: str = ""
+    model: Optional[str] = None
+    status: str = "DRAFT"
+    total_item: int = 0
+
+
+class ProduksiWidget(BaseSchema):
+    """Ringkasan Request Order Part (modul Produksi) — #018.
+
+    Ditampilkan bila user punya production.request_order_part.view
+    (role Staf Engineering, Manajer Keuangan, Viewer Management, dll.).
+    """
+    total_rop: int = 0
+    draft: int = 0
+    dibuat: int = 0
+    total_part: int = 0
+    terbaru: List[ProduksiRopTerbaruItem] = []
+
+
+class PembelianPoItem(BaseSchema):
+    """PO terbaru untuk widget Pembelian."""
+    id: str
+    no_pesanan: str
+    tanggal: Optional[str] = None
+    supplier: str = ""
+    grand_total: Decimal = Decimal("0")
+    status: str = "DRAFT"
+
+
+class PembelianWidget(BaseSchema):
+    """Ringkasan Purchase Order — #018.
+
+    Ditampilkan bila user punya purchase.purchase_order.view
+    (role Staf Pembelian, Manajer Keuangan, dll.).
+    """
+    total_po: int = 0
+    draft: int = 0
+    diproses: int = 0
+    selesai: int = 0
+    dibatalkan: int = 0
+    nilai_open: Decimal = Decimal("0")
+    terbaru: List[PembelianPoItem] = []
+
+
 class DashboardSummaryResponse(BaseSchema):
-    laba_rugi: LabaRugiWidget
-    cashflow: CashflowWidget
-    beban_biaya: BebanBiayaWidget
-    tren_penjualan: TrenPenjualanWidget
-    faktur_jatuh_tempo: FakturJatuhTempoWidget
-    aktivitas_terbaru: AktivitasTerbaruWidget
-    # Phase 10 — 3 widget baru
+    """Response /dashboard/summary — SEMUA section kini opsional (#018).
+
+    Sebelum #018 semua widget dikirim ke semua role. Kini setiap section
+    hanya dihitung & dikirim bila user punya permission terkait — dashboard
+    menjadi berbeda per role (lihat endpoint dashboard.py untuk pemetaan
+    section → permission code).
+    """
+    # Keuangan — reports.financial.view
+    laba_rugi: Optional[LabaRugiWidget] = None
+    beban_biaya: Optional[BebanBiayaWidget] = None
+    # Kas & Bank — reports.cashbank.view
+    cashflow: Optional[CashflowWidget] = None
+    # Penjualan — sales.sales_invoice.view
+    tren_penjualan: Optional[TrenPenjualanWidget] = None
+    faktur_jatuh_tempo: Optional[FakturJatuhTempoWidget] = None
+    # Aktivitas — selalu tersedia untuk semua role
+    aktivitas_terbaru: Optional[AktivitasTerbaruWidget] = None
+    # Persediaan — inventory.stock.view
     inventory_value: Optional[InventoryValueWidget] = None
     low_stock: Optional[LowStockWidget] = None
+    # Kesehatan akuntansi — reports.reconciliation_report.view
     accounting_health: Optional[AccountingHealthSummaryWidget] = None
-    # Phase I — 2 widget baru
+    # Neraca KPI & margin — reports.financial.view
     balance_sheet_kpi: Optional[dict] = None
     margin: Optional[dict] = None
+    # Produksi — production.request_order_part.view (#018)
+    produksi: Optional[ProduksiWidget] = None
+    # Pembelian — purchase.purchase_order.view (#018)
+    pembelian: Optional[PembelianWidget] = None

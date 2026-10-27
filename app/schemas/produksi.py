@@ -149,3 +149,32 @@ class RequestOrderPartResponse(RequestOrderPartBase):
     pelanggan: Optional[PelangganSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
     items: List[RequestOrderPartItemResponse] = []
+
+
+# ==========================================
+# OPSI/DROPDOWN FORM ROP (update ASAHI #018)
+# ==========================================
+class RopSalesOrderOption(BaseSchema):
+    """Opsi SO ringan untuk dropdown form ROP (endpoint /opsi).
+
+    Hanya field yang dipakai form: nomor SO (label), nama pelanggan (subtitle),
+    info kartu SO (Customer PO Number, tanggal, status) — tanpa nilai finansial.
+    """
+    id: UUID
+    no_pesanan: str
+    customer_po_number: Optional[str] = None
+    tanggal: Optional[datetime] = None
+    status: Optional[str] = None
+    pelanggan: Optional[PelangganSimpleResponse] = None
+
+
+class RequestOrderPartOptionsResponse(BaseSchema):
+    """Dropdown form ROP digabung satu endpoint, scoped permission produksi.
+
+    Sebelum #018 form memanggil GET /penjualan/sales-order (butuh
+    sales.sales_order.view) dan GET /master/supplier-dropdown (butuh
+    master.supplier.view). Role Staf Engineering kini hanya berpermission
+    produksi — kedua sumber data itu dilayani endpoint ini.
+    """
+    sales_orders: List[RopSalesOrderOption] = []
+    suppliers: List[SupplierSimpleResponse] = []

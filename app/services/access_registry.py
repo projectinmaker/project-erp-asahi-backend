@@ -399,9 +399,11 @@ ROLE_TEMPLATES = {
     },
     'ENGINEERING_STAFF': {
         'name': 'Staf Engineering',
-        'description': 'Mengisi dan memfinalisasi Request Order Part (form '
-                       'pre-PO — Simpan lalu "Buat ROP") untuk kebutuhan '
-                       'produksi/project. Melihat SO terkait tanpa akses finansial.',
+        'description': 'Hanya modul Produksi (update ASAHI #018): mengisi, '
+                       'memfinalisasi (Simpan → "Buat ROP"), dan mencetak '
+                       'Request Order Part. Dropdown SO & supplier form ROP '
+                       'dilayani endpoint /produksi/request-order-part/opsi '
+                       'tanpa perlu akses modul lain.',
         'is_system': True,
         'super': False,
         'permissions': _expand([
@@ -411,12 +413,6 @@ ROLE_TEMPLATES = {
             # yang menfinalisasi lewat tombol "Buat ROP" (endpoint /buat).
             'production.request_order_part.approve',
             'production.request_order_part.print',
-            # Update ASAHI #005 — LPPB: Engineering/QC mengisi & memfinalisasi
-            # Laporan Pemeriksaan dan Pengujian Barang (dokumen QMS mereka).
-            'purchase.lppb.view', 'purchase.lppb.create', 'purchase.lppb.edit',
-            'purchase.lppb.cancel', 'purchase.lppb.execute', 'purchase.lppb.print',
-            'sales.sales_order.view',
-            'master.barang.view', 'master.supplier.view', 'master.company_profile.view',
             'dashboard.operational.view',
         ]),
     },
@@ -437,6 +433,10 @@ LEGACY_TEMPLATE = {
     'STAFF_AKUNTANSI': 'FINANCE_STAFF',
     'STAFF_PENJUALAN': 'SALES_STAFF',
     'STAFF_GUDANG': 'WAREHOUSE_STAFF',
+    # Update ASAHI #018 — enum baru (migration rbac00000002) supaya role
+    # Pembelian/Engineering bisa dipilih langsung di form Pengguna.
+    'STAFF_PEMBELIAN': 'PURCHASING_STAFF',
+    'STAFF_ENGINEERING': 'ENGINEERING_STAFF',
 }
 
 

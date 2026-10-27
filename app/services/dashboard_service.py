@@ -378,3 +378,156 @@ def get_margin_widget(
             "periode": {"bulan": bulan, "tahun": tahun},
             "error": str(e),
         }
+
+
+# ==========================================
+# Update ASAHI #018 — Widget Produksi & Pembelian (dashboard per role)
+# ==========================================
+
+def get_production_widget(db: Session, limit_terbaru: int = 5) -> Dict:
+    """Ringkasan Request Order Part untuk widget Produksi (#018).
+
+    Dipanggil endpoint /dashboard/summary hanya bila user memiliki
+    production.request_order_part.view. Status ROP: DRAFT (masih disusun)
+    dan DIBUAT (final — hasil tombol "Buat ROP"); cancel = hard delete
+    sehingga tidak ada status lain.
+
+    Return:
+        {
+            "total_rop": 12,
+            "draft": 3,
+            "dibuat": 9,
+            "total_part": 87,        # jumlah baris part semua ROP
+            "terbaru": [ {id, no_rop, tanggal, project_name, model,
+                          status, total_item}, ... max 5 ]
+        }
+    """
+    from app.models.transaksi.produksi.request_order_part import (
+        RequestOrderPart, RequestOrderPartItem, StatusRequestOrderPart,
+    )
+
+    def _status_val(s) -> str:
+        return getattr(s, "value", str(s))
+
+    rows = (
+        db.query(
+            RequestOrderPart.status,
+            func.count(RequestOrderPart.id),
+        )
+        .group_by(RequestOrderPart.status)
+        .all()
+    )
+    by_status = {_status_val(s): int(c or 0) for s, c in rows}
+    draft = by_status.get(StatusRequestOrderPart.DRAFT.value, 0)
+    dibuat = by_status.get(StatusRequestOrderPart.DIBUAT.value, 0)
+
+    total_part = int(
+        db.query(func.count(RequestOrderPartItem.id)).scalar() or 0
+    )
+
+    terbaru_rows = (
+        db.query(RequestOrderPart)
+        .order_by(RequestOrderPart.created_at.desc())
+        .limit(limit_terbaru)
+        .all()
+    )
+    # jumlah baris part untuk 5 ROP terbaru (query terpisah — sederhana & cepat)
+    counts: Dict = {}
+    if terbaru_rows:
+        ids = [r.id for r in terbaru_rows]
+        count_rows = (
+            db.query(
+                RequestOrderPartItem.request_order_part_id,
+                func.count(RequestOrderPartItem.id),
+            )
+            .filter(RequestOrderPartItem.request_order_part_id.in_(ids))
+            .group_by(RequestOrderPartItem.request_order_part_id)
+            .all()
+        )
+        counts = {rid: int(c or 0) for rid, c in count_rows}
+
+    return {
+        "total_rop": draft + dibuat,
+        "draft": draft,
+        "dibuat": dibuat,
+        "total_part": total_part,
+        "terbaru": [
+            {
+                "id": str(r.id),
+                "no_rop": r.no_rop,
+                "tanggal": r.tanggal.isoformat() if r.tanggal else None,
+                "project_name": r.project_name or "",
+                "model": r.model,
+                "status": _status_val(r.status),
+                "total_item": counts.get(r.id, 0),
+            }
+            for r in terbaru_rows
+        ],
+    }
+
+
+def get_purchase_widget(db: Session, limit_terbaru: int = 5) -> Dict:
+    """Ringkasan Purchase Order untuk widget Pembelian (#018).
+
+    Dipanggil endpoint /dashboard/summary hanya bila user memiliki
+    purchase.purchase_order.view. Status PO: DRAFT / DIPROSES /
+    SELESAI / DIBATALKAN.
+
+    Return:
+        {
+            "total_po": 20,
+            "draft": 4, "diproses": 10, "selesai": 5, "dibatalkan": 1,
+            "nilai_open": "12345000.00",   # Σ grand_total PO DRAFT+DIPROSES
+            "terbaru": [ {id, no_pesanan, tanggal, supplier, grand_total,
+                          status}, ... max 5 ]
+        }
+    """
+    from app.models.transaksi.pembelian.purchase_order import PurchaseOrder
+
+    def _status_val(s) -> str:
+        return getattr(s, "value", str(s))
+
+    rows = (
+        db.query(PurchaseOrder.status, func.count(PurchaseOrder.id))
+        .group_by(PurchaseOrder.status)
+        .all()
+    )
+    by_status = {_status_val(s): int(c or 0) for s, c in rows}
+    draft = by_status.get("DRAFT", 0)
+    diproses = by_status.get("DIPROSES", 0)
+    selesai = by_status.get("SELESAI", 0)
+    dibatalkan = by_status.get("DIBATALKAN", 0)
+
+    nilai_open = (
+        db.query(func.coalesce(func.sum(PurchaseOrder.grand_total), 0))
+        .filter(PurchaseOrder.status.in_(["DRAFT", "DIPROSES"]))
+        .scalar()
+    )
+    nilai_open = Decimal(str(nilai_open or 0))
+
+    terbaru_rows = (
+        db.query(PurchaseOrder)
+        .order_by(PurchaseOrder.created_at.desc())
+        .limit(limit_terbaru)
+        .all()
+    )
+
+    return {
+        "total_po": draft + diproses + selesai + dibatalkan,
+        "draft": draft,
+        "diproses": diproses,
+        "selesai": selesai,
+        "dibatalkan": dibatalkan,
+        "nilai_open": str(nilai_open),
+        "terbaru": [
+            {
+                "id": str(r.id),
+                "no_pesanan": r.no_pesanan,
+                "tanggal": r.tanggal.isoformat() if r.tanggal else None,
+                "supplier": (r.supplier.nama if r.supplier else "") or "",
+                "grand_total": str(r.grand_total or 0),
+                "status": _status_val(r.status),
+            }
+            for r in terbaru_rows
+        ],
+    }

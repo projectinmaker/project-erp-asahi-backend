@@ -18,6 +18,7 @@ from app.schemas.produksi import (
     RequestOrderPartUpdate,
     RequestOrderPartResponse,
     RequestOrderPartListResponse,
+    RequestOrderPartOptionsResponse,
 )
 from app.services import produksi_service as svc
 
@@ -27,6 +28,23 @@ router = APIRouter()
 # ==========================================
 # REQUEST ORDER PART
 # ==========================================
+
+# PENTING: endpoint /opsi harus dideklarasikan SEBELUM /{rop_id} agar
+# path "opsi" tidak tertangkap sebagai UUID (pencocokan route berurutan).
+@router.get("/request-order-part/opsi", response_model=RequestOrderPartOptionsResponse)
+def get_request_order_part_opsi(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Dropdown form ROP — SO aktif + supplier aktif dalam 1 response (#018).
+
+    Dipetakan ke permission production.request_order_part.view oleh
+    access_registry (router produksi → simple map, GET → .view). Dengan ini
+    role Staf Engineering (yang hanya berpermission produksi) tetap bisa
+    mengisi form: pilih SO (customer terisi otomatis) & supplier per baris.
+    """
+    return svc.get_request_order_part_options(db)
+
 
 @router.get("/request-order-part", response_model=PaginatedResponse[RequestOrderPartListResponse])
 def get_request_order_part_list(
