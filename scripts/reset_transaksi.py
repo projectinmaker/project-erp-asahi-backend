@@ -17,7 +17,6 @@ menyentuh:
   - Pengaturan perusahaan: Company Profile, Mata Uang, Rekening Bank,
     Alamat Pengiriman
   - Pengguna + password + RBAC (roles, permissions, override)
-  - Organisasi + Klasifikasi Arus Kas
 
 Gunakan --reset-master bila master data tertentu juga ingin dikosongkan
 (Pelanggan, Supplier, Gudang, Kategori Barang, Satuan, Karyawan — lihat
@@ -110,7 +109,7 @@ Opsi:
                           keduanya dengan FK NOT NULL).
                           Master lain TETAP dipertahankan: Kas/Bank Akun,
                           Kategori Aset, Syarat Bayar, Biaya Tambahan,
-                          COA, Pengguna/RBAC, Organisasi.
+                          COA, Pengguna/RBAC.
                           BACKUP OTOMATIS (update #13): reset yang menyentuh
                           pelanggan/supplier menulis backup JSON lengkap ke
                           backups/ SEBELUM menghapus — reset dibatalkan bila
@@ -284,9 +283,6 @@ KEEP_TABLES = frozenset({
     "user_roles",
     "user_permission_overrides",
     "access_audit_logs",
-    # Organisasi & klasifikasi arus kas
-    "organization_unit",
-    "cash_flow_classification",
 })
 
 # Transaksi — dikosongkan saat reset
@@ -345,8 +341,6 @@ WIPE_TABLES = frozenset({
     "idempotent_operation",
     "deleted_document_log",
     "document_cancellation",
-    "document_organization",
-    "reporting_audit",
 }) | STOK_TABLES
 
 # Grup tampilan (urutan yang rapi untuk output konsol)
@@ -378,7 +372,6 @@ WIPE_GROUPS = [
         "transaksi_biaya", "payment_allocation", "penutupan_periode",
         "penutupan_tahun", "document_workflow", "workflow_event",
         "idempotent_operation", "deleted_document_log", "document_cancellation",
-        "document_organization", "reporting_audit",
     ]),
 ]
 
@@ -397,7 +390,6 @@ KEEP_GROUPS = [
         "roles", "permissions", "role_permissions", "user_roles",
         "user_permission_overrides", "access_audit_logs",
     ]),
-    ("Organisasi", ["organization_unit", "cash_flow_classification"]),
 ]
 
 # ============================================================
