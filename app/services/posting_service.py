@@ -86,6 +86,7 @@ def auto_posting_jurnal(
     no_jurnal: Optional[str] = None,
     allow_inactive_accounts: bool = False,
     is_manual: bool = False,
+    allow_closed_period: bool = False,
 ) -> JurnalUmum:
     """
     Membuat Jurnal Umum otomatis beserta detailnya (double-entry).
@@ -109,6 +110,12 @@ def auto_posting_jurnal(
             (RefModule.MANUAL). False kalau auto-posting dari modul sistem.
             Dipakai untuk enforce control account rule: control account
             (AR/AP/INVENTORY) tidak boleh diposting manual, hanya sistem.
+        allow_closed_period: True untuk bypass guard "periode ditutup"
+            (AUD-14 update #04). Hanya untuk jurnal penutupan SISTEM yang
+            memang jatuh di periode terkunci — mis. jurnal transfer tahunan
+            CL-YEAR-{tahun} tanggal 31/12 (syarat tutup tahun = 12 bulan
+            sudah DITUTUP, jurnalnya pasti jatuh di bulan terkunci).
+            Default False — semua caller lain tetap di-guard.
 
     Return:
         JurnalUmum object (flushed, belum committed — caller harus commit)
@@ -129,7 +136,9 @@ def auto_posting_jurnal(
         from app.services.reporting_ledger import local_datetime
         tanggal = local_datetime(tanggal or datetime.now(timezone.utc))
         # Validasi: cek periode tidak ditutup (inline query untuk menghindari circular import)
-        if tanggal:
+        # AUD-14 (update #04): allow_closed_period=True hanya untuk jurnal
+        # penutupan sistem (closing tahunan) yang jatuh di periode terkunci.
+        if tanggal and not allow_closed_period:
             _periode_closed = (
                 db.query(PenutupanPeriode)
                 .filter(
@@ -295,11 +304,16 @@ def sync_kas_bank_saldo(db: Session, akun_perkiraan_ids=None) -> int:
     return updated
 
 
-def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = "Pembatalan") -> JurnalUmum:
+def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = "Pembatalan",
+                    allow_closed_period: bool = False) -> JurnalUmum:
     """Create one linked reversal on the original date; caller commits atomically.
 
     Closed periods must be reopened through the authorized period workflow.
     The original journal and its POSTED status remain intact for audit.
+
+    AUD-14 (update #04): allow_closed_period=True dipakai buka_tahun — jurnal
+    transfer CL-YEAR bertanggal 31/12 tahun terkunci sementara bulan-bulan
+    memang sengaja tetap DITUTUP (buka bulan dilakukan terpisah setelahnya).
     """
     from app.models.transaksi.asset_event import AssetEvent
     if db.query(AssetEvent).filter(AssetEvent.source_journal_id == journal_id, AssetEvent.status != 'BATAL').first():
@@ -320,6 +334,7 @@ def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = 
         entries=[JurnalEntryItem(d.akun_perkiraan_id, debit=d.kredit, kredit=d.debit,
                                 keterangan=f"Pembalik {original.no_jurnal}") for d in original.details],
         allow_inactive_accounts=True,
+        allow_closed_period=allow_closed_period,
     )
     reversal.reversal_of_id = original.id
     db.flush()

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.models.transaksi.penutupan_periode import PenutupanPeriode, StatusPeriode
+from app.models.transaksi.penutupan_tahun import PenutupanTahun, StatusTahun  # AUD-14 (update #04)
 from app.models.transaksi.jurnal import JurnalUmum, StatusJurnal, RefModule
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA, TingkatAkun, SaldoNormal
@@ -451,6 +452,25 @@ def buka_periode(
     if not pp:
         raise ValueError(f"Periode {tahun}-{bulan:02d} tidak ditemukan atau tidak dalam status DITUTUP.")
 
+    # === AUD-14 (update #04): tahun buku harus dibuka DULU ===
+    # Bulan di tahun yang sudah ditutup tahunannya tidak bisa dibuka
+    # langsung — buka tahunnya dulu (reversal jurnal transfer laba), baru
+    # buka bulan spesifik secara berurutan.
+    tahun_rec = (
+        db.query(PenutupanTahun)
+        .filter(
+            PenutupanTahun.tahun == tahun,
+            PenutupanTahun.status == StatusTahun.DITUTUP.value,
+        )
+        .first()
+    )
+    if tahun_rec:
+        raise ValueError(
+            f"Tahun buku {tahun} sudah ditutup (penutupan tahunan). "
+            f"Buka tahun {tahun} terlebih dahulu lewat bagian \"Tahun Buku\", "
+            f"baru buka bulan {bulan:02d} secara berurutan."
+        )
+
     # === Phase 8: Enforce sequential reopen ===
     _validate_sequential_reopen(db, tahun, bulan)
 
@@ -627,3 +647,379 @@ def _close_period_gl(db, tahun, bulan, date_from, date_to, user_id):
     return _create_closing_entry(db, tahun, bulan, date_from, date_to, gl.profit(rows),
         gl.header_items(rows, HeaderCOA.PENDAPATAN), gl.header_items(rows, HeaderCOA.HPP),
         gl.header_items(rows, HeaderCOA.BEBAN), user_id)
+
+
+# ============================================================
+# AUD-14 (update #04) — CLOSING TAHUNAN (TAHUN BUKU)
+# Transfer laba berjalan (322000) → laba ditahan (321000).
+# ============================================================
+
+def _akun_transfer_tahun(db: Session) -> Tuple[UUID, UUID]:
+    """Resolve (akun Laba/Rugi Tahun Berjalan, akun Laba Ditahan) dari
+    Setting Akun. Raise ValueError dengan pesan jelas bila belum lengkap."""
+    akun_lrb_id = (
+        sa_cfg.get_setting_akun_id_optional(db, sa_cfg.KEY_LABA_RUGI_BERJALAN)
+        or sa_cfg.get_setting_akun_id_optional(db, sa_cfg.KEY_LABA_RUGI_TAHUN_BERJALAN)
+    )
+    akun_ld_id = sa_cfg.get_setting_akun_id_optional(db, sa_cfg.KEY_LABA_DITAHAN)
+    missing = []
+    if not akun_lrb_id:
+        missing.append("LABA_RUGI_TAHUN_BERJALAN (COA v2: 322000)")
+    if not akun_ld_id:
+        missing.append("LABA_DITAHAN (COA v2: 321000)")
+    if missing:
+        raise ValueError(
+            "Setting akun belum lengkap untuk penutupan tahun: "
+            + ", ".join(missing)
+            + ". Konfigurasikan melalui Pengaturan → Setting Akun."
+        )
+    for label, akun_id in (
+        ("Laba (Rugi) Tahun Berjalan", akun_lrb_id),
+        ("Laba (Rugi) Ditahan", akun_ld_id),
+    ):
+        akun = db.get(AkunPerkiraan, akun_id)
+        if akun is None or akun.header != HeaderCOA.MODAL:
+            raise ValueError(
+                f"Akun {label} harus bertipe MODAL (ekuitas) — periksa "
+                "konfigurasi Setting Akun."
+            )
+        if akun.active is False:
+            raise ValueError(
+                f"Akun {label} ({akun.kode}) sudah non-aktif — aktifkan "
+                "kembali atau ganti akun di Setting Akun sebelum menutup tahun."
+            )
+    return akun_lrb_id, akun_ld_id
+
+
+def _saldo_akun_sampai(db: Session, akun_id: UUID, sampai: datetime) -> Decimal:
+    """Saldo kumulatif (kredit − debit) sebuah akun s/d batas waktu
+    (inclusive, end-of-day Jakarta). Termasuk jurnal penutupan bulanan
+    CL-YYYY-MM — jurnal-jurnal itulah mekanisme akumulasi laba di akun
+    322000, jadi tidak boleh dikecualikan."""
+    row = (
+        db.query(
+            func.coalesce(func.sum(JurnalDetail.debit), 0),
+            func.coalesce(func.sum(JurnalDetail.kredit), 0),
+        )
+        .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id == akun_id,
+            JurnalUmum.status == StatusJurnal.POSTED,
+            JurnalUmum.tanggal <= sampai,
+        )
+        .first()
+    )
+    return Decimal(row[1] or 0) - Decimal(row[0] or 0)
+
+
+def _serialize_tahun(rec: PenutupanTahun, bulan_ditutup: int) -> dict:
+    """Serialisasi record PenutupanTahun → dict camelCase (kontrak wire
+    frontend PenutupanTahunItem — src/types/api.ts)."""
+
+    def _iso(dt):
+        return dt.isoformat() if dt else None
+
+    return {
+        "tahun": rec.tahun,
+        "status": rec.status,
+        "labaRugi": str(rec.laba_rugi) if rec.laba_rugi is not None else None,
+        "keterangan": rec.keterangan,
+        "jurnalPenutupanId": str(rec.jurnal_penutupan_id) if rec.jurnal_penutupan_id else None,
+        "closedAt": _iso(rec.closed_at),
+        "reopenedAt": _iso(rec.reopened_at),
+        "reopenAlasan": rec.reopen_alasan,
+        "bulanDitutup": bulan_ditutup,
+        "semuaBulanDitutup": bulan_ditutup >= 12,
+    }
+
+
+def get_tahun_list(db: Session) -> List[dict]:
+    """Daftar tahun buku + status penutupan tahunan + progres bulan terkunci.
+
+    Satu baris per tahun yang punya record PenutupanPeriode (minimal satu
+    bulan pernah ditutup). Kontrak camelCase — frontend menampilkan
+    bulanDitutup/12 dan tombol \"Tutup Tahun\" hanya aktif kalau
+    semuaBulanDitutup (12/12)."""
+    tahun_rows = (
+        db.query(PenutupanPeriode.tahun)
+        .distinct()
+        .order_by(PenutupanPeriode.tahun.desc())
+        .all()
+    )
+    out: List[dict] = []
+    for (tahun,) in tahun_rows:
+        closed_months = (
+            db.query(PenutupanPeriode)
+            .filter(
+                PenutupanPeriode.tahun == tahun,
+                PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+            )
+            .count()
+        )
+        rec = db.query(PenutupanTahun).filter(PenutupanTahun.tahun == tahun).first()
+        if rec is not None:
+            out.append(_serialize_tahun(rec, closed_months))
+            continue
+        # Tahun belum pernah ditutup tahunan — laba berjalan = agregat
+        # laba_rugi bulan-bulan yang sudah DITUTUP (akun P&L sudah di-zero-out
+        # per bulan oleh jurnal CL-YYYY-MM, jadi tidak bisa dihitung dari
+        # mutasi akun sepanjang tahun).
+        laba = (
+            db.query(func.sum(PenutupanPeriode.laba_rugi))
+            .filter(
+                PenutupanPeriode.tahun == tahun,
+                PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+                PenutupanPeriode.laba_rugi.isnot(None),
+            )
+            .scalar()
+        )
+        out.append({
+            "tahun": tahun,
+            "status": "TERBUKA",
+            "labaRugi": str(laba) if laba is not None else None,
+            "keterangan": None,
+            "jurnalPenutupanId": None,
+            "closedAt": None,
+            "reopenedAt": None,
+            "reopenAlasan": None,
+            "bulanDitutup": closed_months,
+            "semuaBulanDitutup": closed_months >= 12,
+        })
+    return out
+
+
+@atomic_accounting_write
+def tutup_tahun(
+    db: Session,
+    tahun: int,
+    user_id: UUID,
+    keterangan: Optional[str] = None,
+    with_closing_entry: bool = True,
+) -> PenutupanTahun:
+    """Tutup tahun buku: transfer saldo Laba (Rugi) Tahun Berjalan (322000)
+    → Laba (Rugi) Ditahan (321000) — jurnal CL-YEAR-{tahun}, ref_module
+    PENUTUPAN_PERIODE (otomatis dikecualikan dari laporan laba rugi).
+
+    Syarat: tahun sudah berlalu + 12 bulan periode DITUTUP.
+    Nilai transfer = saldo KUMULATIF akun 322000 s/d 31/12 (mencakup sisa
+    tahun-tahun sebelumnya yang belum pernah ditutup tahunan), sedangkan
+    field laba_rugi di record = laba/rugi tahun tsb (agregat 12 bulan).
+    Jurnal dibuat SEBELUM flag DITUTUP dengan allow_closed_period=True —
+    31/12 pasti terkunci karena syaratnya memang 12 bulan DITUTUP.
+    """
+    from app.services.reporting_ledger import JAKARTA, month_bounds
+
+    now = datetime.now(JAKARTA)
+    if tahun >= now.year:
+        raise ValueError(
+            f"Tahun buku {tahun} belum berlalu — penutupan tahun hanya untuk "
+            f"tahun sebelum tahun berjalan ({now.year})."
+        )
+
+    existing = db.query(PenutupanTahun).filter(PenutupanTahun.tahun == tahun).first()
+    if existing and existing.status == StatusTahun.DITUTUP.value:
+        raise ValueError(f"Tahun buku {tahun} sudah ditutup.")
+
+    closed_months = (
+        db.query(PenutupanPeriode)
+        .filter(
+            PenutupanPeriode.tahun == tahun,
+            PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+        )
+        .count()
+    )
+    if closed_months < 12:
+        raise ValueError(
+            f"Tahun buku {tahun} belum bisa ditutup: baru {closed_months}/12 bulan "
+            "DITUTUP. Tutup semua bulan tahun tersebut terlebih dahulu."
+        )
+
+    # Laba/rugi tahun = agregat laba_rugi 12 bulan terkunci.
+    laba_tahun = (
+        db.query(func.sum(PenutupanPeriode.laba_rugi))
+        .filter(
+            PenutupanPeriode.tahun == tahun,
+            PenutupanPeriode.status == StatusPeriode.DITUTUP.value,
+        )
+        .scalar()
+    ) or Decimal("0")
+
+    # Jurnal transfer (opsional): Dr 322000 / Cr 321000 (laba) atau
+    # kebalikannya (rugi). Bypass rules posting user-facing via
+    # allow_inactive_accounts — nilai akun sistem memang dihasilkan
+    # jurnal closing ini (aktifitas akun sudah divalidasi di helper).
+    jurnal_id = None
+    if with_closing_entry:
+        akun_lrb_id, akun_ld_id = _akun_transfer_tahun(db)
+        _, date_to = month_bounds(tahun, 12)
+        saldo_lrb = _saldo_akun_sampai(db, akun_lrb_id, date_to)
+        if saldo_lrb != 0:
+            if saldo_lrb > 0:
+                entries = [
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_lrb_id,
+                        debit=saldo_lrb,
+                        keterangan=f"Transfer laba tahun buku {tahun}",
+                    ),
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_ld_id,
+                        kredit=saldo_lrb,
+                        keterangan=f"Tambahan laba ditahan (tahun {tahun})",
+                    ),
+                ]
+            else:
+                entries = [
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_lrb_id,
+                        kredit=abs(saldo_lrb),
+                        keterangan=f"Transfer rugi tahun buku {tahun}",
+                    ),
+                    JurnalEntryItem(
+                        akun_perkiraan_id=akun_ld_id,
+                        debit=abs(saldo_lrb),
+                        keterangan=f"Tambahan rugi ditahan (tahun {tahun})",
+                    ),
+                ]
+            jurnal = auto_posting_jurnal(
+                db=db,
+                ref_module=RefModule.PENUTUPAN_PERIODE,
+                ref_no=f"CL-YEAR-{tahun}",
+                entries=entries,
+                keterangan=(
+                    f"Jurnal Penutupan Tahun Buku {tahun} | "
+                    f"Laba/Rugi tahun: {laba_tahun}"
+                ),
+                tanggal=date_to,
+                created_by=user_id,
+                status=StatusJurnal.POSTED,
+                allow_inactive_accounts=True,
+                allow_closed_period=True,
+            )
+            jurnal_id = jurnal.id
+        else:
+            logger.info(
+                f"Tahun {tahun}: saldo Laba (Rugi) Tahun Berjalan = 0 — "
+                "tanpa jurnal transfer."
+            )
+
+    if existing:
+        rec = existing
+        rec.status = StatusTahun.DITUTUP.value
+        rec.laba_rugi = laba_tahun
+        rec.keterangan = keterangan
+        rec.closed_by = user_id
+        rec.closed_at = now
+        rec.reopened_by = None
+        rec.reopened_at = None
+        rec.reopen_alasan = None
+        rec.jurnal_penutupan_id = jurnal_id
+    else:
+        rec = PenutupanTahun(
+            tahun=tahun,
+            status=StatusTahun.DITUTUP.value,
+            laba_rugi=laba_tahun,
+            keterangan=keterangan,
+            closed_by=user_id,
+            closed_at=now,
+            created_by=user_id,
+            jurnal_penutupan_id=jurnal_id,
+        )
+        db.add(rec)
+
+    db.commit()
+    db.refresh(rec)
+    logger.info(
+        f"Tahun buku {tahun} ditutup | laba_rugi={laba_tahun} | "
+        f"transfer={'YA' if jurnal_id else 'TIDAK'}"
+    )
+    return rec
+
+
+@atomic_accounting_write
+def buka_tahun(
+    db: Session,
+    tahun: int,
+    user_id: UUID,
+    alasan: Optional[str] = None,
+    user=None,
+) -> PenutupanTahun:
+    """Buka kembali tahun buku (reversal jurnal transfer CL-YEAR-{tahun}).
+
+    - Alasan wajib + hanya manajer/admin (mirror buka_periode).
+    - Sequential: tahun SETELAHNYA yang masih DITUTUP harus dibuka dulu.
+    - Bulan-bulan TETAP terkunci — buka bulan lewat endpoint
+      /penutupan-periode/buka setelah tahun dibuka.
+    - Reversal diberi allow_closed_period=True karena jurnal sumber
+      bertanggal 31/12 tahun yang bulannya memang masih DITUTUP.
+    """
+    if user is not None:
+        _validate_reopen_authorization(user)
+    if not alasan or not alasan.strip():
+        raise ValueError(
+            "Alasan pembukaan kembali tahun buku wajib diisi. "
+            "Contoh: 'Koreksi jurnal tahun berjalan', 'Adjustment audit', dll."
+        )
+
+    rec = (
+        db.query(PenutupanTahun)
+        .filter(
+            PenutupanTahun.tahun == tahun,
+            PenutupanTahun.status == StatusTahun.DITUTUP.value,
+        )
+        .first()
+    )
+    if not rec:
+        raise ValueError(
+            f"Tahun buku {tahun} tidak ditemukan atau tidak dalam status DITUTUP."
+        )
+
+    later_closed = (
+        db.query(PenutupanTahun)
+        .filter(
+            PenutupanTahun.tahun > tahun,
+            PenutupanTahun.status == StatusTahun.DITUTUP.value,
+        )
+        .order_by(PenutupanTahun.tahun.desc())
+        .first()
+    )
+    if later_closed:
+        raise ValueError(
+            f"Tidak bisa membuka tahun {tahun} karena tahun setelahnya masih "
+            f"DITUTUP: {later_closed.tahun}. Buka tahun terbaru "
+            f"({later_closed.tahun}) terlebih dahulu, lalu secara berurutan."
+        )
+
+    now = datetime.now(timezone.utc)
+    rec.status = StatusTahun.DIBUKA.value
+    db.flush()
+
+    # Balik semua jurnal transfer tahun ini (by ref_no + jurnal di record).
+    closing_journals = (
+        db.query(JurnalUmum)
+        .filter(
+            JurnalUmum.ref_module == RefModule.PENUTUPAN_PERIODE,
+            JurnalUmum.ref_no == f"CL-YEAR-{tahun}",
+            JurnalUmum.reversal_of_id.is_(None),
+        )
+        .all()
+    )
+    identifiers = {j.id for j in closing_journals}
+    if rec.jurnal_penutupan_id:
+        identifiers.add(rec.jurnal_penutupan_id)
+    for identifier in sorted(identifiers, key=str):
+        reverse_journal(
+            db, identifier, user_id,
+            f"Buka kembali tahun buku {tahun}",
+            allow_closed_period=True,
+        )
+
+    rec.reopened_by = user_id
+    rec.reopened_at = now
+    rec.reopen_alasan = alasan.strip()
+
+    db.commit()
+    db.refresh(rec)
+    logger.info(
+        f"Tahun buku {tahun} dibuka kembali oleh user {user_id} | alasan: {alasan}"
+    )
+    return rec

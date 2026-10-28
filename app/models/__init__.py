@@ -68,6 +68,7 @@ from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.transaksi.stok_mutasi import StokMutasi, TipeMutasiStok
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
 from app.models.transaksi.penutupan_periode import PenutupanPeriode, StatusPeriode
+from app.models.transaksi.penutupan_tahun import PenutupanTahun, StatusTahun  # AUD-14 (update #04)
 from app.models.transaksi.stok_kartu_layer import StokKartuLayer
 
 # Detail / Child Tables
