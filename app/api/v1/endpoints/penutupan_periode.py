@@ -24,28 +24,16 @@ router = APIRouter()
 def get_periode_list(
     tahun: Optional[int] = Query(None, description="Filter tahun"),
     status_filter: Optional[str] = Query(None, alias="status", description="Filter status (DITUTUP/DIBUKA)"),
-    company_id: Optional[str] = Query(None, alias="companyId", description="AUD-17: scope perusahaan (global bila kosong)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Ambil daftar penutupan periode (AUD-17: filter scope perusahaan)."""
+    """Ambil daftar penutupan periode."""
     data, total = svc.get_periode_list(
         db, tahun=tahun, status=status_filter, skip=skip, limit=limit,
-        company_id=_uuid_or_none(company_id),
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
-
-
-def _uuid_or_none(value: Optional[str]):
-    if not value:
-        return None
-    from uuid import UUID as _UUID
-    try:
-        return _UUID(value)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="companyId tidak valid")
 
 
 @router.get("/penutupan-periode/status", response_model=dict)
@@ -65,11 +53,7 @@ def tutup_periode(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Tutup periode (lock + opsional jurnal penutupan).
-
-    AUD-17: body boleh membawa companyId → tutup khusus perusahaan tsb
-    (bila kosong = global, mengunci semua perusahaan).
-    """
+    """Tutup periode (lock + opsional jurnal penutupan)."""
     try:
         return svc.tutup_periode(
             db=db,
@@ -78,7 +62,6 @@ def tutup_periode(
             user_id=current_user.id,
             keterangan=data_in.keterangan,
             with_closing_entry=data_in.with_closing_entry,
-            company_id=getattr(data_in, "company_id", None),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -106,7 +89,6 @@ def buka_periode(
             user_id=current_user.id,
             alasan=data_in.alasan,
             user=current_user,  # ← Phase 8: pass user untuk authorization check
-            company_id=getattr(data_in, "company_id", None),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -258,18 +240,16 @@ def _tahun_payload(rec) -> dict:
     return {
         "tahun": rec.tahun, "status": rec.status, "labaRugi": str(rec.laba_rugi) if rec.laba_rugi is not None else None,
         "keterangan": rec.keterangan, "jurnalPenutupanId": str(rec.jurnal_penutupan_id) if rec.jurnal_penutupan_id else None,
-        "companyId": str(rec.company_id) if getattr(rec, "company_id", None) else None,
         "closedAt": _iso(rec.closed_at), "reopenedAt": _iso(rec.reopened_at),
         "reopenAlasan": rec.reopen_alasan,
     }
 @router.get("/penutupan-periode/tahun")
 def get_tahun_list(
-    company_id: Optional[str] = Query(None, alias="companyId", description="AUD-17: scope perusahaan"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Daftar tahun buku + status penutupan tahun (AUD-14; AUD-17 scope company)."""
-    return svc.get_tahun_list(db, company_id=_uuid_or_none(company_id))
+    """Daftar tahun buku + status penutupan tahun (AUD-14)."""
+    return svc.get_tahun_list(db)
 
 
 @router.post("/penutupan-periode/tutup-tahun/{tahun}")
@@ -293,7 +273,6 @@ def tutup_tahun(
             user_id=current_user.id,
             keterangan=payload.get("keterangan"),
             with_closing_entry=payload.get("withClosingEntry", True),
-            company_id=_uuid_or_none(payload.get("companyId")),
         )
         return _tahun_payload(rec)
     except ValueError as e:
@@ -318,7 +297,6 @@ def buka_tahun(
             user_id=current_user.id,
             alasan=payload.get("alasan"),
             user=current_user,
-            company_id=_uuid_or_none(payload.get("companyId")),
         )
         return _tahun_payload(rec)
     except ValueError as e:

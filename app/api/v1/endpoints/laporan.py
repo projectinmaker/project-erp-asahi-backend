@@ -28,9 +28,7 @@ from app.services import laporan_service
 from app.services import rekonsiliasi_persediaan_service
 from app.services.reporting_ledger import day_start, day_end
 
-from app.api.reporting import report_scope
-
-router = APIRouter(dependencies=[Depends(report_scope)])
+router = APIRouter()
 
 
 # ==========================================
@@ -286,10 +284,10 @@ def get_rekonsiliasi_persediaan(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Rekonsiliasi saldo stok terkini (seluruh gudang/organisasi) dan seluruh jurnal POSTED.
+    """Rekonsiliasi saldo stok terkini (seluruh gudang) dan seluruh jurnal POSTED.
 
     Termasuk jurnal bertanggal masa depan yang telah diposting. Tanggal historis
-    dan filter organisasi ditolak karena stok belum memiliki snapshot tersebut.
+    ditolak karena stok belum memiliki snapshot tersebut.
     Mapping barang diprioritaskan; fallback kategori mengikuti resolver posting.
     """
     from datetime import datetime

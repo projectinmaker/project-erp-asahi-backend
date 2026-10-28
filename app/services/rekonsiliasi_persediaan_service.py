@@ -33,11 +33,6 @@ def _qty(db, barang):
     return qty if qty is not None else (barang.stok or 0)
 
 
-def _require_global_scope(db):
-    if any(db.info.get('report_scope', {}).values()):
-        raise HTTPException(400, 'Rekonsiliasi/audit persediaan hanya tersedia untuk seluruh organisasi; saldo stok belum memiliki dimensi organisasi')
-
-
 def _saldo_akun_persediaan_di_buku_besar(db: Session, akun_id: UUID, as_of: Optional[datetime] = None) -> Decimal:
     """Saldo akun Persediaan di buku besar sampai tanggal as_of.
 
@@ -116,7 +111,6 @@ def get_rekonsiliasi_persediaan(
 
     Historical dates are rejected until dated stock balance snapshots exist.
     """
-    _require_global_scope(db)
     now = datetime.now(JAKARTA)
     if as_of is not None and local_datetime(as_of).date() != now.date():
         raise HTTPException(400, 'Rekonsiliasi historis belum tersedia; gunakan tanggal hari ini atau tanpa as_of')
@@ -256,7 +250,6 @@ def audit_transaksi_persediaan(
     from app.models.transaksi.persediaan.penyesuaian_stok import PenyesuaianStok
     from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 
-    _require_global_scope(db)
     from app.services.reporting_ledger import day_start
     date_from = day_start(date_from or datetime(2000, 1, 1))
     date_to = day_end(date_to or datetime.now(JAKARTA))

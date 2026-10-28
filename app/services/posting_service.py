@@ -85,7 +85,6 @@ def auto_posting_jurnal(
     status: StatusJurnal = StatusJurnal.POSTED,
     no_jurnal: Optional[str] = None,
     allow_inactive_accounts: bool = False,
-    organization: Optional[dict] = None,
     is_manual: bool = False,
 ) -> JurnalUmum:
     """
@@ -106,7 +105,6 @@ def auto_posting_jurnal(
         allow_inactive_accounts: True untuk bypass active check (dipakai
             reversal jurnal lama supaya bisa membaca akun yang sudah
             inactive post-migration). Default False.
-        organization: Snapshot org unit (company/branch/dll).
         is_manual: True kalau jurnal ini user-initiated manual journal
             (RefModule.MANUAL). False kalau auto-posting dari modul sistem.
             Dipakai untuk enforce control account rule: control account
@@ -179,17 +177,7 @@ def auto_posting_jurnal(
             )
 
         # Buat header Jurnal Umum
-        from app.services.organization_service import for_source, validate
-        organization = organization if organization is not None else validate(db, for_source(db, ref_id))
-        # === Update AUD-12 — jurnal baru minimal terikat perusahaan default
-        # (ASAHI) supaya pelaporan per-dimensi konsisten; dimensi organisasi
-        # eksplisit (DocumentOrganization) tetap menang bila sudah di-assign. ===
-        if not (organization or {}).get('company_id'):
-            from app.services.organization_service import get_default_company_id
-            organization = dict(organization or {})
-            organization['company_id'] = get_default_company_id(db)
         jurnal = JurnalUmum(
-            **organization,
             no_jurnal=no_jurnal,
             tanggal=tanggal,
             tipe_transaksi=tipe_transaksi or ref_module.value,
@@ -332,7 +320,6 @@ def reverse_journal(db: Session, journal_id: UUID, user_id: UUID, reason: str = 
         entries=[JurnalEntryItem(d.akun_perkiraan_id, debit=d.kredit, kredit=d.debit,
                                 keterangan=f"Pembalik {original.no_jurnal}") for d in original.details],
         allow_inactive_accounts=True,
-        organization={field: getattr(original, field) for field in ("company_id", "branch_id", "department_id", "cost_center_id", "project_id")},
     )
     reversal.reversal_of_id = original.id
     db.flush()

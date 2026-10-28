@@ -571,7 +571,6 @@ def get_purchase_invoice_list(
     supplier_id: Optional[UUID] = None,
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
-    company_id: Optional[UUID] = None,
 ) -> Tuple[List[PurchaseInvoice], int]:
     """Ambil daftar purchase invoice dengan filter & pagination."""
     query = db.query(PurchaseInvoice).options(
@@ -583,10 +582,6 @@ def get_purchase_invoice_list(
         joinedload(PurchaseInvoice.details).joinedload(PurchaseInvoiceDetail.satuan),
         joinedload(PurchaseInvoice.biaya_tambahan),
     )
-
-    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
-    if company_id is not None:
-        query = query.filter(PurchaseInvoice.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"

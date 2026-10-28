@@ -7,8 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_db, get_current_user
-from app.api.reporting import report_scope
-from app.services.organization_service import apply_scope
 from app.models.master.pengguna import Pengguna
 from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.detail.jurnal_detail import JurnalDetail
@@ -65,10 +63,7 @@ def _update_manual(db, db_obj, data_in, actor):
     from app.services.penutupan_periode_service import validate_periode_not_closed
     if actor.id != db_obj.created_by and role(actor) not in APPROVERS:
         raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengedit draft')
-    # AUD-17: jurnal manual — periode dicek per perusahaan jurnal (data baru
-    # boleh membawa dimensi perusahaan; guard mengikuti company hasil update).
-    company_baru = getattr(data_in, 'company_id', None) or getattr(db_obj, 'company_id', None)
-    validate_periode_not_closed(db, data_in.tanggal, company_id=company_baru)
+    validate_periode_not_closed(db, data_in.tanggal)
     entries = [JurnalEntryItem(d.akun_perkiraan_id, d.debit, d.kredit, d.keterangan) for d in data_in.details]
     debit, kredit = validate_entries(db, entries, is_manual=True)
     db_obj.details.clear()
@@ -108,10 +103,9 @@ def get_jurnal_list(
     tanggal_akhir: Optional[datetime] = Query(None, alias="tanggalAkhir", description="Filter tanggal akhir"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
-    _scope=Depends(report_scope),
 ):
     """List semua jurnal umum dengan filter dan pagination."""
-    query = apply_scope(db, db.query(JurnalUmum).options(joinedload(JurnalUmum.creator)), JurnalUmum)
+    query = db.query(JurnalUmum).options(joinedload(JurnalUmum.creator))
 
     # Search filter
     if search:

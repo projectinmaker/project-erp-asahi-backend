@@ -10,9 +10,7 @@ from app.services import laporan_service
 from app.services import dashboard_service
 from app.services.access_service import effective_permissions
 
-from app.api.reporting import report_scope
-
-router = APIRouter(dependencies=[Depends(report_scope)])
+router = APIRouter()
 
 # ── Update ASAHI #018 — pemetaan section dashboard → permission code ──────
 # Section hanya dihitung & dikirim bila user berhak melihatnya, sehingga

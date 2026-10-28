@@ -7,7 +7,6 @@ from sqlalchemy.orm import aliased
 from app.models.akun_perkiraan import AkunPerkiraan as Account, HeaderCOA, TingkatAkun
 from app.models.detail.jurnal_detail import JurnalDetail as Line
 from app.models.transaksi.jurnal import JurnalUmum as Journal, StatusJurnal, RefModule
-from app.services.organization_service import apply_scope
 
 ZERO = Decimal('0')
 JAKARTA = timezone(timedelta(hours=7))
@@ -46,7 +45,7 @@ def closing_condition():
 
 
 def posted(db, query, start=None, end=None, before=None, performance=False, fiscal_year=None):
-    query = apply_scope(db, query, Journal).filter(Journal.status == StatusJurnal.POSTED)
+    query = query.filter(Journal.status == StatusJurnal.POSTED)
     # === AUD-15 (update #04) — mode tahun buku ===
     # Mutasi periode hanya menghitung jurnal non-SALDO_AWAL mulai 1 Jan tahun
     # buku; saldo awal tahun dibaca terpisah lewat fiscal_opening_totals()

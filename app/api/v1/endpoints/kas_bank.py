@@ -64,7 +64,6 @@ def get_pembayaran_list(
     jenis_transaksi: Optional[str] = Query(
         None, description="Update #02 — filter jenis transaksi "
         "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA / PELUNASAN_PAJAK)"),
-    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -73,7 +72,7 @@ def get_pembayaran_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, kas_bank_id=kas_bank_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
-        jenis_transaksi=jenis_transaksi, company_id=company_id,
+        jenis_transaksi=jenis_transaksi,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
@@ -209,7 +208,6 @@ def get_penerimaan_list(
     jenis_transaksi: Optional[str] = Query(
         None, description="Update #02 — filter jenis transaksi "
         "(PELUNASAN_INVOICE / TRANSAKSI_LAINNYA)"),
-    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -218,7 +216,7 @@ def get_penerimaan_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, kas_bank_id=kas_bank_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
-        jenis_transaksi=jenis_transaksi, company_id=company_id,
+        jenis_transaksi=jenis_transaksi,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
@@ -344,7 +342,6 @@ def get_transfer_list(
     status_filter: Optional[str] = Query(None, alias="status", description="Filter status"),
     tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
-    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -353,7 +350,6 @@ def get_transfer_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
-        company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 

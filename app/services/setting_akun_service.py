@@ -388,3 +388,35 @@ def check_critical_settings(db: Session) -> list[str]:
     if not _cache:
         _load_all_settings(db)
     return [key for key in CRITICAL_KEYS if not _cache.get(key)]
+
+
+def validate_setting_account(db: Session, key: str, akun_perkiraan_id: UUID) -> UUID:
+    """AUD2-B3: validasi save-time — akun harus ada, DETAIL, dan aktif.
+
+    Dipakai endpoint PUT /master/setting-akun/{key} supaya salah konfigurasi
+    (akun HEADER/GROUP atau akun non-aktif) ditolak saat disimpan, bukan baru
+    terasa saat transaksi berikutnya gagal posting (mirror
+    ``inventory_receipt_control.validate_grni_account``).
+
+    Return ``akun_perkiraan_id`` bila lolos; raise ValueError (pesan
+    Indonesia) bila tidak.
+    """
+    account = db.get(AkunPerkiraan, akun_perkiraan_id)
+    if account is None:
+        raise ValueError(
+            f"Akun perkiraan tidak ditemukan untuk setting '{key}' "
+            f"(akun_perkiraan_id tidak valid)."
+        )
+    if account.tingkat != TingkatAkun.DETAIL:
+        raise ValueError(
+            f"Setting akun '{key}' wajib memakai akun tingkat DETAIL, bukan "
+            f"HEADER/GROUP ({account.kode} — {account.nama})."
+        )
+    # Dua flag aktif: `active` (COA v2) + fallback legacy `status` (bisa None
+    # bila migration v2 belum dijalankan) — pola posting_service.validate_entries.
+    if account.active is False or account.status not in (None, "AKTIF"):
+        raise ValueError(
+            f"Akun {account.kode} ({account.nama}) tidak aktif — tidak bisa "
+            f"dipakai untuk setting akun '{key}'."
+        )
+    return akun_perkiraan_id

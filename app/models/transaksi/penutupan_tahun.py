@@ -7,7 +7,7 @@ SEBELUM flag DITUTUP (guard periode), dibalik saat tahun dibuka kembali.
 import enum
 
 from sqlalchemy import (Column, String, Integer, Text, ForeignKey, DateTime,
-    UniqueConstraint, Numeric, Index)
+    UniqueConstraint, Numeric)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -22,17 +22,12 @@ class StatusTahun(str, enum.Enum):
 class PenutupanTahun(BaseModel, BaseMixin):
     __tablename__ = "penutupan_tahun"
     __table_args__ = (
-        # AUD-17 (update #05): tutup tahun global (NULL) atau per perusahaan.
-        UniqueConstraint("tahun", "company_id", name="uq_penutupan_tahun_tahun_company",
-                        postgresql_nulls_not_distinct=True),
-        Index("ix_penutupan_tahun_company", "company_id"),
+        UniqueConstraint("tahun", name="uq_penutupan_tahun_tahun"),
     )
 
     tahun = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default=StatusTahun.DITUTUP.value)
     keterangan = Column(Text, nullable=True)
-    # AUD-17: NULL = global; terisi = khusus perusahaan.
-    company_id = Column(UUID(as_uuid=True), ForeignKey("organization_unit.id"), nullable=True)
     # Jurnal transfer: Dr 322000 Laba (Rugi) Tahun Berjalan / Cr 321000 Laba
     # (Rugi) Ditahan (laba) — atau kebalikannya untuk rugi. ref_no CL-YEAR-YYYY,
     # ref_module PENUTUPAN_PERIODE (otomatis dikecualikan dari laba rugi).

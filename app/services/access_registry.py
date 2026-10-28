@@ -38,7 +38,7 @@ MODULES = {
 RESOURCE_NAMES = {
     # system
     'users': 'Pengguna', 'roles': 'Role Template', 'access': 'Role & Akses Karyawan',
-    'audit': 'Audit Akses', 'organisation': 'Organisasi',
+    'audit': 'Audit Akses',
     # master
     'pelanggan': 'Pelanggan', 'supplier': 'Supplier', 'barang': 'Barang & Jasa',
     'gudang': 'Gudang', 'satuan': 'Satuan', 'kategori_barang': 'Kategori Barang',
@@ -110,7 +110,6 @@ REGISTRY: list = (
     + _res('system', 'roles', ['view', 'create', 'edit'], sensitive_extra=('edit',))
     + _res('system', 'access', ['view', 'edit'], sensitive_extra=('view', 'edit'))
     + _res('system', 'audit', ['view'])
-    + _res('system', 'organisation', ['view', 'edit'])
     # ── Master ────────────────────────────────────────────────────────────
     + _res('master', 'pelanggan', ['view', 'create', 'edit', 'delete', 'export', 'import'])
     + _res('master', 'supplier', ['view', 'create', 'edit', 'delete', 'export', 'import'])
@@ -235,7 +234,7 @@ ROLE_TEMPLATES = {
         'super': False,
         'permissions': _expand([
             'system.users.*', 'system.roles.*', 'system.access.*', 'system.audit.view',
-            'system.organisation.*', 'dashboard.operational.view',
+            'dashboard.operational.view',
             'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view',
             'master.mata_uang.create', 'master.mata_uang.edit', 'master.mata_uang.delete',
             'master.alamat_pengiriman.create', 'master.alamat_pengiriman.edit', 'master.alamat_pengiriman.delete',
@@ -270,7 +269,7 @@ ROLE_TEMPLATES = {
             # Update ASAHI #019 — menu Preferensi: wildcard 'master.*' di atas sudah
             # mencakup master.preference.view + master.preference.edit (tidak perlu
             # entri eksplisit — _expand membaca REGISTRY_CODES saat import).
-            'system.audit.view', 'system.organisation.view', 'system.organisation.edit',
+            'system.audit.view',
         ]),
     },
     'FINANCE_STAFF': {
@@ -655,15 +654,6 @@ _EXPLICIT = {
     # workflow
     'get_queue': 'workflow.queue.view',
     'get_capabilities': 'workflow.queue.view',
-    # organisasi
-    'list_organization_units': 'system.organisation.view',
-    'create_organization_unit': 'system.organisation.edit',
-    'edit_organization_unit': 'system.organisation.edit',
-    'get_document_organization': 'system.organisation.view',
-    'assign_document_organization': 'system.organisation.edit',
-    'list_reporting_audit': 'system.audit.view',
-    'list_cashflow_classifications': 'system.organisation.view',
-    'set_cashflow_classification': 'system.organisation.edit',
     # pelunasan (jenis via path: piutang/hutang)
     'get_outstanding': None,       # dinamis via path
     'get_invoice_settlement': None,

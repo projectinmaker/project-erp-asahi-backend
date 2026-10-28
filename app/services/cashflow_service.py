@@ -1,39 +1,14 @@
-"""Cash-flow classification with explicit, audited overrides and reconciliation."""
+"""Cash-flow classification with heuristic allocation and reconciliation."""
 from sqlalchemy.orm import selectinload
 from app.models import KasBankAkun, Pelanggan, Supplier, SalesInvoice, PurchaseInvoice
 from app.models.master.setting_akun import SettingAkun
-from app.models.organization import CashFlowClassification
 from app.services import reporting_ledger as gl
-from app.services.accounting_control import atomic_accounting_write
-from app.services.organization_service import audit
 
 CATEGORIES = ('OPERASIONAL', 'INVESTASI', 'PEMBIAYAAN', 'BELUM_DIKLASIFIKASIKAN')
 
 
 def cash_accounts(db):
     return {r[0] for r in db.query(KasBankAkun.akun_perkiraan_id).all() if r[0]}
-
-
-@atomic_accounting_write
-def set_classification(db, data, user):
-    model = gl.Account if data['target_type'] == 'ACCOUNT' else gl.Journal
-    obj = db.get(model, data['target_id'])
-    if obj is None:
-        raise ValueError('Akun/jurnal tidak ditemukan')
-    if model == gl.Account and (obj.tingkat != gl.TingkatAkun.DETAIL or obj.id in cash_accounts(db)):
-        raise ValueError('Klasifikasi akun memakai akun DETAIL lawan kas/bank')
-    if model == gl.Journal and (obj.status != gl.StatusJurnal.POSTED or obj.reversal_of_id):
-        raise ValueError('Klasifikasi jurnal hanya pada jurnal sumber POSTED; pembalik mengikuti sumber')
-    row = db.query(CashFlowClassification).filter_by(target_type=data['target_type'], target_id=obj.id).first()
-    before = {'category': row.category} if row else None
-    if row is None:
-        row = CashFlowClassification(**data)
-        db.add(row)
-    else:
-        row.category = data['category']
-    db.flush()
-    audit(db, 'cash_flow_classification', row.id, 'classify', before, data, user)
-    return row
 
 
 def cash_journals(db, start, end):
@@ -109,7 +84,7 @@ def _allocate_cashflow_rows(cash_delta, counters):
     counter_sum = sum((value for _, value, _ in counters), gl.ZERO)
     if counter_sum != cash_delta:
         # Jurnal tidak balance — jangan percaya alokasi; seluruh nilai masuk
-        # review (BELUM_DIKLASIFIKASIKAN) kecuali ada override jurnal eksplisit.
+        # review (BELUM_DIKLASIFIKASIKAN).
         return [{'account': None, 'jumlah': cash_delta, 'line_description': None,
                  'allocation_status': 'MIXED_UNALLOCATED', 'counter_accounts': counter_accounts,
                  'force_unclassified': True}]
@@ -128,18 +103,14 @@ def _allocate_cashflow_rows(cash_delta, counters):
              'allocation_status': 'MIXED_UNALLOCATED', 'counter_accounts': counter_accounts}]
 
 
-def _classify_rows(rows, counters, explicit, source, category):
+def _classify_rows(rows, counters, source, category):
     """Kategori tiap baris alokasi (tanpa menghilangkan detail akun lawan).
 
-    - Override jurnal eksplisit → kategori override untuk semua baris
-      (identitas akun tetap ditampilkan).
     - ASET_KAPITALISASI/ASET_PELEPASAN → INVESTASI.
     - Baris EXACT → kategori akun lawan baris tersebut.
     - Baris MIXED → kategori tunggal jika semua akun lawan satu kategori,
-      selain itu BELUM_DIKLASIFIKASIKAN (kecuali override jurnal).
+      selain itu BELUM_DIKLASIFIKASIKAN.
     """
-    if explicit:
-        return [explicit for _ in rows]
     if source.tipe_transaksi in ('ASET_KAPITALISASI', 'ASET_PELEPASAN'):
         return ['INVESTASI' for _ in rows]
     result = []
@@ -220,7 +191,6 @@ def _aggregate_by_account(items):
 
 def report(db, start, end):
     journals, ids = cash_journals(db, start, end)
-    overrides = {(r.target_type, r.target_id): r.category for r in db.query(CashFlowClassification).all()}
     operating = {r[0] for r in db.query(Pelanggan.akun_piutang_id).all()} | {r[0] for r in db.query(Supplier.akun_hutang_id).all()}
     # Invoice snapshots preserve historical AR/AP classification after master remapping.
     for model in (SalesInvoice, PurchaseInvoice):
@@ -232,7 +202,6 @@ def report(db, start, end):
     # operasional tapi tidak tertangkap heuristik di atas:
     # - Akun PPh 23 pelunasan (PPH23_DIBAYAR_DIMUKA / HUTANG_PPH23): potongan
     #   pajak yang melekat pada settlement piutang/hutang.
-    # Override ACCOUNT eksplisit tetap menang atas default ini.
     operating |= {r.akun_perkiraan_id for r in db.query(SettingAkun).filter(SettingAkun.key.in_(
         ('PPH23_DIBAYAR_DIMUKA', 'HUTANG_PPH23'))).all()}
     sections = {name: {'items': [], 'total': gl.ZERO} for name in CATEGORIES}
@@ -243,9 +212,6 @@ def report(db, start, end):
         gl.Journal.id.in_(reversal_ids)).all()) if reversal_ids else {}
 
     def category(account):
-        explicit = overrides.get(('ACCOUNT', account.id))
-        if explicit:
-            return explicit
         if account.id in operating or account.header in gl.PROFIT:
             return 'OPERASIONAL'
         # Assets and liabilities also contain loans, deposits, advances, etc.
@@ -261,11 +227,10 @@ def report(db, start, end):
         cash_identity = _cash_account_identity(cash_rows)
 
         source = db.get(gl.Journal, journal.reversal_of_id) if journal.reversal_of_id else journal
-        explicit = overrides.get(('JOURNAL', source.id))
         counters = _counter_snapshot(_counter_movement_rows(journal, ids))
 
         rows = _allocate_cashflow_rows(amount, counters)
-        row_categories = _classify_rows(rows, counters, explicit, source, category)
+        row_categories = _classify_rows(rows, counters, source, category)
         if any(c == 'BELUM_DIKLASIFIKASIKAN' for c in row_categories):
             unknown += 1
         for row, kind in zip(rows, row_categories):

@@ -156,7 +156,6 @@ def get_pembayaran_list(
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
     jenis_transaksi: Optional[str] = None,
-    company_id: Optional[UUID] = None,
 ) -> Tuple[List[PembayaranKas], int]:
     """Ambil daftar pembayaran kas dengan filter & pagination.
 
@@ -175,10 +174,6 @@ def get_pembayaran_list(
         joinedload(PembayaranKas.supplier),
         joinedload(PembayaranKas.alokasi),
     )
-
-    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
-    if company_id is not None:
-        query = query.filter(PembayaranKas.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"
@@ -499,7 +494,6 @@ def get_penerimaan_list(
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
     jenis_transaksi: Optional[str] = None,
-    company_id: Optional[UUID] = None,
 ) -> Tuple[List[PenerimaanKas], int]:
     """Ambil daftar penerimaan kas dengan filter & pagination.
 
@@ -516,10 +510,6 @@ def get_penerimaan_list(
         joinedload(PenerimaanKas.pelanggan),
         joinedload(PenerimaanKas.alokasi),
     )
-
-    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
-    if company_id is not None:
-        query = query.filter(PenerimaanKas.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"
@@ -736,7 +726,6 @@ def get_transfer_list(
     status: Optional[str] = None,
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
-    company_id: Optional[UUID] = None,
 ) -> Tuple[List[TransferBank], int]:
     """Ambil daftar transfer bank dengan filter & pagination."""
     query = db.query(TransferBank).options(
@@ -745,10 +734,6 @@ def get_transfer_list(
         joinedload(TransferBank.creator),
         joinedload(TransferBank.jurnal),
     )
-
-    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
-    if company_id is not None:
-        query = query.filter(TransferBank.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"

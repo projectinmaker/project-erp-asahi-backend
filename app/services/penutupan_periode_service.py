@@ -156,7 +156,7 @@ def tutup_periode(
     jurnal_penutupan_id = None
     if with_closing_entry:
         try:
-            jurnal_penutupan_id = _close_by_organization(db, tahun, bulan, date_from, date_to, user_id)
+            jurnal_penutupan_id = _close_period_gl(db, tahun, bulan, date_from, date_to, user_id)
         except Exception as e:
             raise ValueError(f"Jurnal penutupan gagal dibuat: {e}") from e
 
@@ -206,7 +206,6 @@ def _create_closing_entry(
     hpp: List[dict],
     beban: List[dict],
     user_id: UUID,
-    organization: Optional[dict] = None,
 ) -> Optional[UUID]:
     """Buat jurnal penutupan: zero-out PENDAPATAN/HPP/BEBAN, net ke LABA_RUGI_BERJALAN.
 
@@ -315,7 +314,6 @@ def _create_closing_entry(
         created_by=user_id,
         status=StatusJurnal.POSTED,
         allow_inactive_accounts=True,
-        organization=organization,
     )
     logger.info(f"Jurnal penutupan posted: {jurnal.no_jurnal} | {len(entries)} details")
     return jurnal.id
@@ -617,30 +615,15 @@ def get_periode_status(db: Session, tahun: int, bulan: int) -> Optional[dict]:
     }
 
 
-def _close_by_organization(db, tahun, bulan, date_from, date_to, user_id):
-    """Close each exact dimension tuple, retaining balanced branch/project journals."""
-    from app.models.organization import FIELDS
+def _close_period_gl(db, tahun, bulan, date_from, date_to, user_id):
+    """Tutup buku GL periode (global tunggal) — satu jurnal penutupan untuk
+    seluruh akun P&L (PENDAPATAN/HPP/BEBAN) yang bergerak pada periode tsb."""
     from app.services import reporting_ledger as gl
-    columns = [getattr(JurnalUmum, field) for field in FIELDS]
-    groups = db.query(*columns).filter(JurnalUmum.status == StatusJurnal.POSTED,
-        JurnalUmum.tanggal >= date_from, JurnalUmum.tanggal <= date_to).distinct().all() or [tuple(None for _ in FIELDS)]
-    first = None
-    previous_scope = db.info.pop('report_scope', None)
-    try:
-        for group in sorted(groups, key=lambda row: tuple(str(v or '') for v in row)):
-            # Exact tuple, including NULL child dimensions, unlike report filters.
-            q = db.query(AkunPerkiraan, func.sum(JurnalDetail.debit), func.sum(JurnalDetail.kredit)).join(
-                JurnalDetail, JurnalDetail.akun_perkiraan_id == AkunPerkiraan.id).join(
-                JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id).filter(AkunPerkiraan.header.in_(gl.PROFIT))
-            for column, value in zip(columns, group):
-                q = q.filter(column == value)
-            rows = {a.id: {'account': a, 'debit': d, 'kredit': k} for a,d,k in
-                    gl.posted(db, q, date_from, date_to).group_by(AkunPerkiraan.id).all()}
-            identifier = _create_closing_entry(db, tahun, bulan, date_from, date_to, gl.profit(rows),
-                gl.header_items(rows, HeaderCOA.PENDAPATAN), gl.header_items(rows, HeaderCOA.HPP),
-                gl.header_items(rows, HeaderCOA.BEBAN), user_id, dict(zip(FIELDS, group)))
-            first = first or identifier
-    finally:
-        if previous_scope is not None:
-            db.info['report_scope'] = previous_scope
-    return first
+    q = db.query(AkunPerkiraan, func.sum(JurnalDetail.debit), func.sum(JurnalDetail.kredit)).join(
+        JurnalDetail, JurnalDetail.akun_perkiraan_id == AkunPerkiraan.id).join(
+        JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id).filter(AkunPerkiraan.header.in_(gl.PROFIT))
+    rows = {a.id: {'account': a, 'debit': d, 'kredit': k} for a, d, k in
+            gl.posted(db, q, date_from, date_to).group_by(AkunPerkiraan.id).all()}
+    return _create_closing_entry(db, tahun, bulan, date_from, date_to, gl.profit(rows),
+        gl.header_items(rows, HeaderCOA.PENDAPATAN), gl.header_items(rows, HeaderCOA.HPP),
+        gl.header_items(rows, HeaderCOA.BEBAN), user_id)

@@ -210,17 +210,12 @@ def get_penyesuaian_list(
     tipe: Optional[str] = None,
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
-    company_id: Optional[UUID] = None,
 ) -> Tuple[List[PenyesuaianStok], int]:
     """Ambil daftar penyesuaian stok dengan filter & pagination."""
     query = db.query(PenyesuaianStok).options(
         joinedload(PenyesuaianStok.barang),
         joinedload(PenyesuaianStok.creator),
     )
-
-    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
-    if company_id is not None:
-        query = query.filter(PenyesuaianStok.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"

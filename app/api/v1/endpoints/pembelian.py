@@ -240,7 +240,6 @@ def get_purchase_invoice_list(
     supplier_id: Optional[UUID] = Query(None, description="Filter supplier"),
     tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
-    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -249,7 +248,6 @@ def get_purchase_invoice_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, supplier_id=supplier_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
-        company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 

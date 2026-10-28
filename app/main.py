@@ -89,19 +89,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"Check critical settings dilewati: {exc}")
 
-    # === Update AUD-12 — pastikan perusahaan default ada (self-healing,
-    # idempotent). Jurnal & dokumen baru otomatis terikat perusahaan ini. ===
-    try:
-        from app.database import SessionLocal
-        from app.services.organization_service import ensure_default_company
-        with SessionLocal() as db_sess:
-            created = ensure_default_company(db_sess)
-            db_sess.commit()
-            if created:
-                logger.info("✓ Perusahaan default ASAHI dibuat (multi-company foundation)")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Ensure default company dilewati: {exc}")
-
     # M-03 — sync snapshot saldo kas/bank master dari GL (pengganti migrasi
     # backfill; idempotent & self-healing tiap startup).
     try:

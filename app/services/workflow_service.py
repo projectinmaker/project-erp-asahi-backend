@@ -178,11 +178,9 @@ def available_actions(db, user, obj, wf):
 
 
 def describe(db, obj, user):
-    from app.services.organization_service import for_source
     wf = find_workflow(db, obj)
     events = [] if not wf else db.query(WorkflowEvent).filter_by(workflow_id=wf.id).order_by(WorkflowEvent.version).all()
     return {
-        'organization': for_source(db, obj.id),
         'documentType': obj.__tablename__, 'documentId': obj.id,
         'documentNumber': next((getattr(obj, name) for name in ('no_invoice', 'no_form', 'no_retur', 'no_bukti', 'no_transfer', 'no_pesanan', 'no_jurnal', 'no_surat_jalan', 'no_adj', 'no_pemindahan', 'no_permintaan') if hasattr(obj, name)), str(obj.id)),
         'createdBy': obj.created_by, 'submittedBy': wf.submitted_by if wf else None,
@@ -222,9 +220,6 @@ def _direct_complete_tx(db, user, kind, document_id):
     if not is_administrator(db, user):
         return None
     obj = get_document(db, kind, document_id, lock=True)
-    # AUD-17: konteks perusahaan dokumen utk guard periode & setting akun.
-    from app.services.accounting_control import _company_of
-    db.info['posting_company'] = _company_of(db, obj)
     from app.services.penutupan_periode_service import validate_periode_not_closed
     validate_periode_not_closed(db, obj.tanggal)
     wf = find_workflow(db, obj)
@@ -234,8 +229,6 @@ def _direct_complete_tx(db, user, kind, document_id):
         db.flush()
     if effective_state(obj, wf) != 'DRAFT':
         return obj  # Sudah bergerak/berfinal — jangan paksa (idempotent).
-    from app.services.organization_service import validate, for_source
-    validate(db, for_source(db, obj.id))
 
     # 1) Ajukan (DRAFT → PENDING) — logika sama dengan transition('submit').
     if kind == 'asset_event':
@@ -276,9 +269,6 @@ def transition(db, document_type, document_id, action, user, expected_version, r
     if not can_read(db, user, document_type):
         raise HTTPException(403, 'Tidak memiliki akses dokumen ini')
     obj = get_document(db, document_type, document_id, lock=True)
-    # AUD-17: konteks perusahaan dokumen utk guard periode & setting akun.
-    from app.services.accounting_control import _company_of
-    db.info['posting_company'] = _company_of(db, obj)
     from app.services.penutupan_periode_service import validate_periode_not_closed
     validate_periode_not_closed(db, obj.tanggal)
     wf = find_workflow(db, obj)
@@ -297,9 +287,6 @@ def transition(db, document_type, document_id, action, user, expected_version, r
         ):
             raise HTTPException(403, 'Approval memerlukan manajer/admin lain, bukan pembuat atau pengaju dokumen')
         raise HTTPException(409, 'Aksi tidak diizinkan untuk role atau status dokumen saat ini')
-    if action in ('submit', 'post', 'execute'):
-        from app.services.organization_service import validate, for_source
-        validate(db, for_source(db, obj.id))
     if action == 'submit':
         if document_type == 'asset_event':
             from app.services.asset_cycle_service import prepare
@@ -356,8 +343,6 @@ def post_existing(db, obj, actor_id):
         from loguru import logger
         from app.services.posting_service import validate_entries, JurnalEntryItem, sync_kas_bank_saldo
         from app.models.transaksi.jurnal import StatusJurnal
-        # AUD-17: jurnal manual — konteks perusahaan dari jurnal itu sendiri.
-        db.info['posting_company'] = obj.company_id
         entries = [JurnalEntryItem(r.akun_perkiraan_id, r.debit, r.kredit) for r in obj.details]
         debit, kredit = validate_entries(db, entries, is_manual=True)
         if debit != obj.total_debit or kredit != obj.total_kredit:

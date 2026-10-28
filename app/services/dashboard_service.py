@@ -272,9 +272,6 @@ def get_balance_sheet_kpi_widget(
                 r[0] for r in db.query(KasBankAkun.akun_perkiraan_id).all() if r[0]
             ]
             if cash_account_ids:
-                # AUD-17 (update #05): saldo kas mengikuti scope laporan
-                # (dashboard router memasang report_scope ?companyId=).
-                from app.services.organization_service import apply_scope
                 cash_q = (
                     db.query(
                         func.coalesce(func.sum(JurnalDetail.debit), 0),
@@ -287,7 +284,6 @@ def get_balance_sheet_kpi_widget(
                         JurnalUmum.tanggal <= as_of,
                     )
                 )
-                cash_q = apply_scope(db, cash_q, JurnalUmum)
                 row = cash_q.first()
                 cash_total = Decimal(str(row[0] or 0)) - Decimal(str(row[1] or 0))
             else:

@@ -13,7 +13,7 @@ keuangan (jurnal POSTED + payment_allocation + dokumen pajak):
   plus accrual level-invoice: SI ber-PPh23 (Dr PPh23 Dibayar di Muka) dan PI
   ber-PPh23 (Cr Hutang PPh23 sejak invoice — AUD-09).
 
-Semua query PPN memakai reporting_ledger (apply_scope + boundary Jakarta +
+Semua query PPN memakai reporting_ledger (boundary Jakarta +
 status POSTED) sehingga konsisten dengan neraca/buku besar.
 """
 from datetime import date
@@ -37,7 +37,6 @@ from app.models.master.supplier import Supplier
 from app.models.transaksi.payment_allocation import PaymentAllocation
 from app.services import reporting_ledger as gl
 from app.services import setting_akun_service as sa_cfg
-from app.services.organization_service import apply_scope
 
 
 def _local_day(tanggal) -> date:
@@ -98,7 +97,6 @@ def get_rekap_ppn(db: Session, dari: date, sampai: date) -> dict:
                 JurnalUmum.status == StatusJurnal.POSTED,
             )
         )
-        query = apply_scope(db, query, JurnalUmum)
         # Boundary Jakarta inklusif akhir hari (pola reporting_ledger.day_end).
         start, end = gl.day_start(dari), gl.day_end(sampai)
         query = query.filter(JurnalUmum.tanggal >= start, JurnalUmum.tanggal <= end)

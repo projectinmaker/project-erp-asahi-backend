@@ -2,7 +2,6 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional, List
 from app.schemas.base import BaseSchema, PaginatedResponse
-from app.schemas.organization import OrganizationDimensions
 
 
 class WorkflowEventResponse(BaseSchema):
@@ -16,7 +15,6 @@ class WorkflowEventResponse(BaseSchema):
 
 
 class WorkflowSummary(BaseSchema):
-    organization: OrganizationDimensions | None = None
     document_type: str
     document_id: UUID
     document_number: str

@@ -29,7 +29,6 @@ from app.models import (
     AsetTetap, PaymentAllocation, PenerimaanBarang, PengirimanBarang, PurchaseInvoice,
     PurchaseOrder, PurchaseRetur, SalesInvoice, SalesOrder, SalesRetur,
 )
-from app.models.organization import DocumentOrganization
 from app.models.transaksi.asset_event import AssetEvent
 from app.models.transaksi.deleted_document_log import DeletedDocumentLog
 from app.models.transaksi.jurnal import JurnalUmum
@@ -276,13 +275,6 @@ def _build_snapshot(db: Session, document_type: str, obj) -> dict:
                   .order_by(WorkflowEvent.version).all())
     snapshot['events'] = [serialize_row(e) for e in events]
 
-    # Dimensi organisasi dokumen.
-    try:
-        from app.services.organization_service import for_source
-        snapshot['organization'] = serialize_value(for_source(db, obj.id))
-    except Exception:  # pragma: no cover
-        snapshot['organization'] = None
-
     # Paksa JSON-serializable penuh (JSONB menolak tipe Python mentah).
     return json.loads(json.dumps(snapshot, default=str))
 
@@ -341,11 +333,6 @@ def _delete_document(db: Session, document_type: str, obj, journal_id):
                 db.flush()
             db.delete(original)
             db.flush()
-
-    # 4. Dimensi organisasi dokumen (tanpa FK — dibersihkan agar tidak yatim).
-    db.query(DocumentOrganization).filter_by(document_id=doc_id).delete(
-        synchronize_session=False)
-    db.flush()
 
 
 # ============================================================

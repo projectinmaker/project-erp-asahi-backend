@@ -394,7 +394,6 @@ def get_sales_invoice_list(
     pelanggan_id: Optional[UUID] = None,
     tanggal_from: Optional[date] = None,
     tanggal_to: Optional[date] = None,
-    company_id: Optional[UUID] = None,
 ) -> Tuple[List[SalesInvoice], int]:
     """Ambil daftar sales invoice dengan filter & pagination."""
     query = db.query(SalesInvoice).options(
@@ -405,10 +404,6 @@ def get_sales_invoice_list(
         joinedload(SalesInvoice.details).joinedload(SalesInvoiceDetail.barang).joinedload(Barang.satuan),
         joinedload(SalesInvoice.biaya_tambahan),
     )
-
-    # === Update AUD-12 — filter per perusahaan (multi-company foundation) ===
-    if company_id is not None:
-        query = query.filter(SalesInvoice.company_id == company_id)
 
     if search:
         pattern = f"%{search}%"

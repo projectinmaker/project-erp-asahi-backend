@@ -65,11 +65,6 @@ class JurnalUmum(BaseModel, BaseMixin):
         ),
     )
 
-    company_id = Column(UUID(as_uuid=True), ForeignKey('organization_unit.id'), nullable=True, index=True)
-    branch_id = Column(UUID(as_uuid=True), ForeignKey('organization_unit.id'), nullable=True, index=True)
-    department_id = Column(UUID(as_uuid=True), ForeignKey('organization_unit.id'), nullable=True, index=True)
-    cost_center_id = Column(UUID(as_uuid=True), ForeignKey('organization_unit.id'), nullable=True, index=True)
-    project_id = Column(UUID(as_uuid=True), ForeignKey('organization_unit.id'), nullable=True, index=True)
     no_jurnal = Column(String(30), unique=True, nullable=False, index=True)
     tanggal = Column(DateTime(timezone=True), nullable=False)
 

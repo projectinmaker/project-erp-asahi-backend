@@ -40,10 +40,5 @@ class KasBankAkun(BaseModel, BaseMixin):
     # === Operational fields (legitimate, bukan accounting truth) ===
     saldo = Column(Numeric(18, 2), default=0, nullable=False)  # snapshot, bukan source of truth
 
-    # AUD-17 (update #05): akun kas/bank milik satu perusahaan (NULL = GLOBAL,
-    # terlihat & dipakai semua perusahaan). Kode tetap global-unique.
-    company_id = Column(UUID(as_uuid=True), ForeignKey("organization_unit.id"), nullable=True, index=True)
-
     # Relationships
     akun_perkiraan = relationship("AkunPerkiraan", foreign_keys=[akun_perkiraan_id])
-    company = relationship("OrganizationUnit", foreign_keys=[company_id])

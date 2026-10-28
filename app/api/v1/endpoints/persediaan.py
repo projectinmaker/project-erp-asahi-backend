@@ -156,7 +156,6 @@ def get_penyesuaian_list(
     tipe: Optional[str] = Query(None, description="Filter tipe (TAMBAH/KURANG)"),
     tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
-    company_id: Optional[UUID] = Query(None, alias="companyId", description="Filter per perusahaan (AUD-12)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -165,7 +164,6 @@ def get_penyesuaian_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, barang_id=barang_id, tipe=tipe,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
-        company_id=company_id,
     )
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 

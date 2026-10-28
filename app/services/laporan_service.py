@@ -238,7 +238,6 @@ def get_dashboard_tren_penjualan(db, bulan, tahun):
         year, month = divmod(tahun*12+bulan-1-offset, 12)
         start, end = gl.month_bounds(year, month+1)
         active = settlement.active_documents(db, SalesInvoice, end)
-        active = gl.apply_scope(db, active, gl.Journal)
         total = db.query(func.coalesce(func.sum(SalesInvoice.grand_total), 0)).filter(
             SalesInvoice.id.in_(active.scalar_subquery()), SalesInvoice.tanggal >= start, SalesInvoice.tanggal <= end).scalar()
         items.append({'bulan': f'{labels[month]} {year}', 'total': total})
@@ -349,7 +348,7 @@ from sqlalchemy import or_ as _or_
 def _active_tax_documents(db, model, date_from, date_to):
     """Dokumen pajak efektif: posted (ber-jurnal POSTED) dan belum dibatalkan
     (tidak punya jurnal pembalik POSTED — pola settlement_service.active_documents),
-    dalam rentang tanggal. Scope perusahaan (AUD-12) diterapkan bila ada."""
+    dalam rentang tanggal."""
     from sqlalchemy.orm import aliased as _aliased
     reversal = _aliased(_JurnalUmum)
     query = (
@@ -361,10 +360,6 @@ def _active_tax_documents(db, model, date_from, date_to):
                 .filter(reversal.reversal_of_id == _JurnalUmum.id,
                         reversal.status == 'POSTED').exists())
     )
-    scope = gl._report_scope(db) if hasattr(gl, '_report_scope') else None
-    company_id = (scope or {}).get('company_id') if scope else None
-    if company_id is not None and hasattr(model, 'company_id'):
-        query = query.filter(model.company_id == company_id)
     return query.order_by(model.tanggal, model.id).all()
 
 
@@ -445,9 +440,6 @@ def get_rekap_pph23(db, date_from, date_to):
     Sumber: alokasi pelunasan (payment_allocation)."""
     from app.models import SalesInvoice as _SI, PurchaseInvoice as _PI
 
-    scope = gl._report_scope(db) if hasattr(gl, '_report_scope') else None
-    company_id = (scope or {}).get('company_id') if scope else None
-
     # --- sumber 1: alokasi pelunasan (penerimaan AR / pembayaran AP) ---
     # Iterasi alokasi ber-pph23 lalu validasi efektivitas dokumen kas sumber
     # (posted + tanpa jurnal pembalik) dan rentang tanggal.
@@ -474,8 +466,6 @@ def get_rekap_pph23(db, date_from, date_to):
         tgl = _tax_day(kas.tanggal)
         if not (d0 <= tgl <= d1):
             continue
-        if company_id is not None and getattr(kas, 'company_id', None) != company_id:
-            continue  # scope perusahaan (AUD-12)
         if a.penerimaan_id is not None:
             pihak = db.get(_Pelanggan, kas.pelanggan_id) if getattr(kas, 'pelanggan_id', None) else None
             sisi, no_bukti = 'DIPOTONG_DARI_KITA', kas.no_bukti

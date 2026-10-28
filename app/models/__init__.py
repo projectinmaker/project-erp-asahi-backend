@@ -184,5 +184,3 @@ from app.models.transaksi.asset_event import AssetEvent
 
 from app.models.transaksi.deleted_document_log import DeletedDocumentLog
 from app.models.transaksi.document_cancellation import DocumentCancellation
-
-from app.models.organization import OrganizationUnit, DocumentOrganization, ReportingAudit, CashFlowClassification
