@@ -8,6 +8,17 @@ from app.services.aging_service import aging
 from app.services import settlement_service as settlement
 
 
+def get_company_name(db) -> str:
+    """Nama perusahaan untuk kop laporan (export Excel — Update #023).
+
+    Sumber: baris pertama company_profile (urutan insert, sama seperti
+    endpoint /master/company-profile). Fallback '-' bila belum ada baris.
+    """
+    from app.models.master.company_profile import CompanyProfile
+    row = db.query(CompanyProfile).order_by(CompanyProfile.created_at, CompanyProfile.id).first()
+    return (row.nama_perusahaan if row else None) or '-'
+
+
 def _saldo_per_akun_list(db, header, date_from, date_to=None, only_detail=True):
     # Performance excludes closing journals and their reversals, not business reversals.
     rows = gl.totals(db, date_from, date_to, performance=header in gl.PROFIT, header=header)

@@ -16,8 +16,20 @@ from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.accounting_control import require_unposted
 from app.services.posting_service import validate_entries
 from app.services import workflow_service
+from app.services import excel_service
+from app.services.laporan_service import get_company_name
+from app.services.reporting_ledger import local_datetime
+from app.utils.ref_module_label import get_ref_module_label
 
 router = APIRouter()
+
+
+# ===== EXPORT EXCEL (Update #023) =====
+def _xlsx_response(wb, filename: str):
+    """Bungkus workbook menjadi StreamingResponse .xlsx (pola export Update #5)."""
+    from fastapi.responses import StreamingResponse
+    res = excel_service.xlsx_response(wb, filename)
+    return StreamingResponse(res["stream"], media_type=res["media_type"], headers=res["headers"])
 
 
 # ==========================================
@@ -135,6 +147,84 @@ def get_jurnal_list(
         .offset(skip).limit(limit).all()
 
     return {"data": data, "total": total, "skip": skip, "limit": limit}
+
+
+# ===== EXPORT EXCEL (Update #023) =====
+# Route /export WAJIB dideklarasikan SEBELUM /{jurnal_id} — kalau tidak,
+# GET /jurnal/export tertangkap path param {jurnal_id} → 422 (UUID parse error).
+@router.get("/export")
+def export_jurnal_list(
+    search: str | None = Query(None, description="Cari berdasarkan no jurnal, keterangan, atau tipe transaksi"),
+    ref_module: RefModule | None = Query(None, description="Filter berdasarkan modul referensi"),
+    status_filter: StatusJurnal | None = Query(None, alias="status", description="Filter status jurnal"),
+    tanggal_mulai: datetime | None = Query(None, alias="tanggalMulai", description="Filter tanggal mulai"),
+    tanggal_akhir: datetime | None = Query(None, alias="tanggalAkhir", description="Filter tanggal akhir"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export daftar Jurnal Umum ke file .xlsx (Update #023).
+
+    Filter IDENTIK dengan GET /jurnal (search, ref_module, status,
+    tanggalMulai/tanggalAkhir) TANPA pagination — semua baris yang cocok
+    diekspor dengan cap aman 10.000 baris, urutan sama seperti list
+    (tanggal DESC, no jurnal DESC).
+    """
+    query = db.query(JurnalUmum)
+
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            JurnalUmum.no_jurnal.ilike(search_term)
+            | JurnalUmum.keterangan.ilike(search_term)
+            | JurnalUmum.tipe_transaksi.ilike(search_term)
+        )
+    if ref_module:
+        query = query.filter(JurnalUmum.ref_module == ref_module)
+    if status_filter:
+        query = query.filter(JurnalUmum.status == status_filter)
+    if tanggal_mulai:
+        query = query.filter(JurnalUmum.tanggal >= tanggal_mulai)
+    if tanggal_akhir:
+        query = query.filter(JurnalUmum.tanggal <= tanggal_akhir)
+
+    rows_jurnal = query.order_by(
+        JurnalUmum.tanggal.desc(), JurnalUmum.no_jurnal.desc()
+    ).limit(10000).all()
+
+    data: list[tuple[str, list]] = []
+    for j in rows_jurnal:
+        data.append(("item", [
+            j.no_jurnal,
+            local_datetime(j.tanggal).date(),
+            j.tipe_transaksi or "",
+            get_ref_module_label(j.ref_module),
+            j.ref_no or "",
+            j.keterangan or "",
+            j.status.value if j.status else "",
+            float(j.total_debit or 0),
+            float(j.total_kredit or 0),
+        ]))
+
+    if tanggal_mulai and tanggal_akhir:
+        period = f"Periode: {tanggal_mulai:%d/%m/%Y} - {tanggal_akhir:%d/%m/%Y}"
+    elif tanggal_mulai:
+        period = f"Periode: mulai {tanggal_mulai:%d/%m/%Y}"
+    elif tanggal_akhir:
+        period = f"Periode: s.d. {tanggal_akhir:%d/%m/%Y}"
+    else:
+        period = "Semua Periode"
+
+    wb = excel_service.report_sheet(
+        headers=["No Jurnal", "Tanggal", "Tipe Transaksi", "Modul Referensi", "No Referensi",
+                 "Keterangan", "Status", "Total Debit", "Total Kredit"],
+        rows=data, sheet="Jurnal Umum",
+        company=get_company_name(db),
+        title="Daftar Jurnal Umum",
+        period=period,
+        decimal_columns={7, 8}, date_columns={1}, wide_columns={5},
+    )
+    now = datetime.now()
+    return _xlsx_response(wb, f"jurnal-umum_{now:%Y%m%d}_{now:%H%M}.xlsx")
 
 
 @router.get("/{jurnal_id}", response_model=JurnalUmumDetailResponse)

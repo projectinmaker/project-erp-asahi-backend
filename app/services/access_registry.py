@@ -594,6 +594,9 @@ _EXPLICIT = {
     'list_ref_modules': 'accounting.journal.view',
     'create_jurnal_manual': 'accounting.journal.create',
     'update_manual': 'accounting.journal.edit',
+    # Update #023 — export daftar jurnal umum (permission sama seperti
+    # get_jurnal_list yang ter-cover simple-router 'jurnal' → accounting.journal.view).
+    'export_jurnal_list': 'accounting.journal.view',
     # rekonsiliasi bank (detail sub-resource)
     'add_detail': 'finance.bank_reconciliation.create',
     'update_detail': 'finance.bank_reconciliation.edit',
@@ -642,6 +645,21 @@ _EXPLICIT = {
     'get_rekap_kas_bank': 'reports.cashbank.view',
     'get_umur_piutang': 'reports.ar_aging.view',
     'get_umur_hutang': 'reports.ap_aging.view',
+    # laporan — export Excel (Update #023); permission sama dengan endpoint
+    # view terkait (export = bentuk lain dari melihat laporan yang sama).
+    # Catatan: export_rekap_ppn / export_rekap_pph23 SUDAH terdaftar di atas
+    # (AUD-07, update #04) → reports.tax_report.export — tidak diduplikasi.
+    'export_neraca_saldo': 'reports.financial.view',
+    'export_perubahan_modal': 'reports.financial.view',
+    'export_laba_rugi': 'reports.financial.view',
+    'export_neraca': 'reports.financial.view',
+    'export_arus_kas': 'reports.financial.view',
+    'export_buku_besar': 'reports.ledger.view',
+    'export_mutasi_kas': 'reports.cashbank.view',
+    'export_mutasi_bank': 'reports.cashbank.view',
+    'export_rekap_kas_bank': 'reports.cashbank.view',
+    'export_umur_piutang': 'reports.ar_aging.view',
+    'export_umur_hutang': 'reports.ap_aging.view',
     'get_rekonsiliasi_persediaan': 'reports.inventory_report.view',
     'get_ringkasan_rekonsiliasi_persediaan': 'reports.inventory_report.view',
     'get_audit_persediaan': 'reports.inventory_report.view',
