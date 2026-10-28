@@ -149,7 +149,7 @@ def get_jurnal_list(
     return {"data": data, "total": total, "skip": skip, "limit": limit}
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #025 — line-level ala sheet "JURNAL" Master MAS) =====
 # Route /export WAJIB dideklarasikan SEBELUM /{jurnal_id} — kalau tidak,
 # GET /jurnal/export tertangkap path param {jurnal_id} → 422 (UUID parse error).
 @router.get("/export")
@@ -162,12 +162,18 @@ def export_jurnal_list(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export daftar Jurnal Umum ke file .xlsx (Update #023).
+    """Export Jurnal Umum ke .xlsx LEVEL BARIS (line) — Update #025.
+
+    Meniru sheet "JURNAL" workbook Master MAS: satu baris per DETAIL jurnal
+    (akun), kolom Posting (tipe transaksi) / Tanggal Transaksi / No. Voucher /
+    Modul Referensi / No. Referensi / Jurnal (kode - nama akun) / D/C /
+    Debet / Credit / Keterangan / Status + baris TOTAL (jumlah Debet &
+    Credit — idiom SUBTOTAL sheet JURNAL).
 
     Filter IDENTIK dengan GET /jurnal (search, ref_module, status,
-    tanggalMulai/tanggalAkhir) TANPA pagination — semua baris yang cocok
-    diekspor dengan cap aman 10.000 baris, urutan sama seperti list
-    (tanggal DESC, no jurnal DESC).
+    tanggalMulai/tanggalAkhir) TANPA pagination — semua jurnal yang cocok
+    diekspor (cap aman 10.000 jurnal) dengan seluruh baris detailnya,
+    urutan sama seperti list (tanggal DESC, no jurnal DESC).
     """
     query = db.query(JurnalUmum)
 
@@ -187,23 +193,43 @@ def export_jurnal_list(
     if tanggal_akhir:
         query = query.filter(JurnalUmum.tanggal <= tanggal_akhir)
 
-    rows_jurnal = query.order_by(
+    rows_jurnal = query.options(
+        joinedload(JurnalUmum.details).joinedload(JurnalDetail.akun_perkiraan)
+    ).order_by(
         JurnalUmum.tanggal.desc(), JurnalUmum.no_jurnal.desc()
     ).limit(10000).all()
 
     data: list[tuple[str, list]] = []
+    total_debet = Decimal(0)
+    total_kredit = Decimal(0)
     for j in rows_jurnal:
-        data.append(("item", [
-            j.no_jurnal,
-            local_datetime(j.tanggal).date(),
-            j.tipe_transaksi or "",
-            get_ref_module_label(j.ref_module),
-            j.ref_no or "",
-            j.keterangan or "",
-            j.status.value if j.status else "",
-            float(j.total_debit or 0),
-            float(j.total_kredit or 0),
-        ]))
+        tgl = local_datetime(j.tanggal).date()
+        status = j.status.value if j.status else ""
+        ket_umum = j.keterangan or ""
+        modul_label = get_ref_module_label(j.ref_module)
+        for d in (j.details or []):
+            akun = getattr(d, "akun_perkiraan", None)
+            jurnal_cell = f"{akun.kode} - {akun.nama}" if akun else ""
+            debet = d.debit or Decimal(0)
+            kredit = d.kredit or Decimal(0)
+            keterangan = (getattr(d, "keterangan", None) or ket_umum)
+            data.append(("item", [
+                j.tipe_transaksi or "JURNAL",
+                tgl,
+                j.no_jurnal,
+                modul_label,
+                j.ref_no or "",
+                jurnal_cell,
+                "D" if debet > 0 else "C",
+                float(debet) if debet > 0 else None,
+                float(kredit) if kredit > 0 else None,
+                keterangan,
+                status,
+            ]))
+            total_debet += debet
+            total_kredit += kredit
+    data.append(("total", ["TOTAL", None, None, None, None, None, None,
+                           float(total_debet), float(total_kredit), None, None]))
 
     if tanggal_mulai and tanggal_akhir:
         period = f"Periode: {tanggal_mulai:%d/%m/%Y} - {tanggal_akhir:%d/%m/%Y}"
@@ -215,13 +241,13 @@ def export_jurnal_list(
         period = "Semua Periode"
 
     wb = excel_service.report_sheet(
-        headers=["No Jurnal", "Tanggal", "Tipe Transaksi", "Modul Referensi", "No Referensi",
-                 "Keterangan", "Status", "Total Debit", "Total Kredit"],
+        headers=["Posting", "Tanggal Transaksi", "No. Voucher", "Modul Referensi",
+                 "No. Referensi", "Jurnal", "D/C", "Debet", "Credit", "Keterangan", "Status"],
         rows=data, sheet="Jurnal Umum",
         company=get_company_name(db),
-        title="Daftar Jurnal Umum",
+        title="Jurnal Umum",
         period=period,
-        decimal_columns={7, 8}, date_columns={1}, wide_columns={5},
+        decimal_columns={7, 8}, date_columns={1}, wide_columns={5, 9},
     )
     now = datetime.now()
     return _xlsx_response(wb, f"jurnal-umum_{now:%Y%m%d}_{now:%H%M}.xlsx")

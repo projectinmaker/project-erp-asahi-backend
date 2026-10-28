@@ -130,6 +130,40 @@ def _sides_db_kr(value, saldo_normal: str):
     return (-v if v < 0 else 0.0), (v if v > 0 else 0.0)
 
 
+# ===== Update #025 — helper blok bulanan kas/bank (gaya PU/HU Master MAS) =====
+
+def _month_key_label(mkey: str) -> str:
+    """Kunci bulan 'YYYY-MM' → label panjang Indonesia ('Januari 2026')."""
+    try:
+        y, m = mkey.split("-")[:2]
+        return f"{_BULAN_PANJANG[int(m) - 1]} {int(y)}"
+    except (ValueError, IndexError):
+        return mkey or "-"
+
+
+def _kas_bank_monthly(db, months, jenis: str | None = None):
+    """Rekap kas & bank per blok bulan kalender — pola sheet PU/HU Master MAS.
+
+    Memanggil get_rekap_kas_bank per bulan (blok kalender penuh, saldo awal
+    bulan = saldo akhir bulan sebelumnya secara alami dari GL). Return
+    (accounts: dict[kode → {'nama','jenis'}], monthly: list[dict[kode → row]]
+    dengan row = row 'akun' service asli: saldo_awal/total_masuk/total_keluar/
+    saldo_akhir, nilai Decimal).
+    """
+    accounts: dict[str, dict] = {}
+    monthly: list[dict] = []
+    for m_start, m_end in months:
+        data = laporan_service.get_rekap_kas_bank(db, *_month_bounds(m_start, m_end))
+        rows_m: dict[str, dict] = {}
+        for a in data["akun"]:
+            if jenis is not None and (a["jenis"] or "").upper() != jenis:
+                continue
+            rows_m[a["kode"]] = a
+            accounts.setdefault(a["kode"], {"nama": a["nama"], "jenis": a["jenis"]})
+        monthly.append(rows_m)
+    return accounts, monthly
+
+
 # ==========================================
 # LAPORAN KEUANGAN
 # ==========================================
@@ -244,7 +278,7 @@ def get_perubahan_modal(
     return laporan_service.get_perubahan_modal(db, date_from, date_to)
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #025 — gaya workbook ASAHI/Master MAS) =====
 @router.get("/perubahan-modal/export")
 def export_perubahan_modal(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -252,27 +286,71 @@ def export_perubahan_modal(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Laporan Perubahan Modal ke file .xlsx (kolom sama seperti web)."""
+    """Export Laporan Perubahan Modal ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #025 — layout meniru pola blok bulanan sheet PU Master MAS: kolom
+    Kode/Nama Akun + BLOK BULANAN (maks. 14) masing-masing 3 sub-kolom
+    (Saldo Awal / Perubahan / Saldo Akhir) + blok TOTAL (rentang penuh —
+    angka sama seperti web). Baris Laba/(Rugi) Berjalan menaruh nilai di
+    sub-kolom Perubahan; baris Total Modal Akhir memakai total_modal_*
+    service (termasuk laba belum ditutup akumulasi).
+    """
     date_from, date_to = _parse_range(dari, sampai)
-    data = laporan_service.get_perubahan_modal(db, date_from, date_to)
+    months = _month_ranges(date_from, date_to)
+    monthly = [laporan_service.get_perubahan_modal(db, *_month_bounds(m_start, m_end))
+               for m_start, m_end in months]
+    total_data = laporan_service.get_perubahan_modal(db, date_from, date_to)
+
+    # Universe akun modal (union semua bulan + total) — urut kode.
+    akun_modal: dict[str, str] = {}
+    for data in [*monthly, total_data]:
+        for a in data["akun_modal"]:
+            akun_modal.setdefault(a["kode_akun"], a["nama_akun"])
+
+    def _block_vals(data: dict, kode: str) -> list:
+        a = next((x for x in data["akun_modal"] if x["kode_akun"] == kode), None)
+        if a is None:
+            return [None] * 3
+        return [_num(a["saldo_awal"]), _num(a["perubahan"]), _num(a["saldo_akhir"])]
+
+    def _period_block(data: dict) -> list:
+        perubahan = sum((a["perubahan"] for a in data["akun_modal"]), Decimal(0)) \
+            + data["laba_rugi_berjalan"]
+        return [_num(data["total_modal_awal"]), _num(perubahan), _num(data["total_modal_akhir"])]
 
     rows: list[tuple[str, list]] = []
-    for idx, akun in enumerate(data["akun_modal"], start=1):
-        rows.append(("item", [idx, akun["kode_akun"], akun["nama_akun"], _num(akun["saldo_awal"]),
-                              _num(akun["mutasi_debit"]), _num(akun["mutasi_kredit"]),
-                              _num(akun["perubahan"]), _num(akun["saldo_akhir"])]))
-    # Baris laba/rugi berjalan: label di kolom Nama Akun, nilai di kolom Perubahan.
-    rows.append(("subtotal", ["", "", "Laba/(Rugi) Berjalan", None, None, None,
-                              _num(data["laba_rugi_berjalan"]), None]))
-    rows.append(("total", ["", "", "Total Modal Akhir", None, None, None, None,
-                           _num(data["total_modal_akhir"])]))
-    wb = excel_service.report_sheet(
-        headers=["No", "Kode Akun", "Nama Akun", "Saldo Awal", "Mutasi D", "Mutasi K", "Perubahan", "Saldo Akhir"],
-        rows=rows, sheet="Perubahan Modal",
+    for kode in sorted(akun_modal):
+        vals = [kode, akun_modal[kode]]
+        for data in monthly:
+            vals += _block_vals(data, kode)
+        vals += _block_vals(total_data, kode)
+        rows.append(("item", vals))
+
+    # Laba/(Rugi) Berjalan: nilai di sub-kolom Perubahan tiap blok.
+    vals = ["", "Laba/(Rugi) Berjalan"]
+    for data in monthly:
+        vals += [None, _num(data["laba_rugi_berjalan"]), None]
+    vals += [None, _num(total_data["laba_rugi_berjalan"]), None]
+    rows.append(("subtotal", vals))
+
+    vals = ["", "Total Modal Akhir"]
+    for data in monthly:
+        vals += _period_block(data)
+    vals += _period_block(total_data)
+    rows.append(("total", vals))
+
+    blocks = [(_month_label(m_end, short=False), ["Saldo Awal", "Perubahan", "Saldo Akhir"])
+              for _, m_end in months]
+    blocks.append(("TOTAL (Periode)", ["Saldo Awal", "Perubahan", "Saldo Akhir"]))
+    n_num = 3 * (len(months) + 1)
+    wb = excel_service.block_report_sheet(
+        left_headers=["Kode Akun", "Nama Akun"],
+        blocks=blocks, rows=rows, sheet="Perubahan Modal",
         company=laporan_service.get_company_name(db),
         title="Perubahan Modal",
         period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
-        decimal_columns={3, 4, 5, 6, 7}, wide_columns={2},
+        decimal_columns=set(range(2, 2 + n_num)),
+        wide_columns={1},
     )
     return _xlsx_response(wb, f"perubahan-modal_{dari}_sd_{sampai}.xlsx")
 
@@ -533,7 +611,7 @@ def get_arus_kas(
     return result
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #025 — gaya sheet "CP" Master MAS) =====
 @router.get("/arus-kas/export")
 def export_arus_kas(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -541,11 +619,20 @@ def export_arus_kas(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Laporan Arus Kas ke file .xlsx — seksi operasional/investasi/
-    pembiayaan (+belum terklasifikasi bila ada) + subtotal tiap seksi + saldo
-    awal/perubahan bersih/saldo akhir (view detail penuh)."""
+    """Export Laporan Arus Kas ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #025 — sheet "Arus Kas" meniru sheet "CP" Master MAS: kolom
+    BULANAN (blok kalender penuh, maks. 14) + kolom Total (rentang penuh):
+    Saldo Awal Kas → total tiap klasifikasi (Operasional / Investasi /
+    Pembiayaan / Belum Diklasifikasi) → Kenaikan (Penurunan) Kas → Saldo
+    Akhir Kas → Selisih Rekonsiliasi. Sheet "Rincian Transaksi" memuat
+    detail transaksi tiap klasifikasi (kolom sama seperti web).
+    """
     date_from, date_to = _parse_range(dari, sampai)
-    data = laporan_service.get_arus_kas(db, date_from, date_to)
+    months = _month_ranges(date_from, date_to)
+    monthly = [laporan_service.get_arus_kas(db, *_month_bounds(m_start, m_end))
+               for m_start, m_end in months]
+    total_data = laporan_service.get_arus_kas(db, date_from, date_to)
 
     sections = (
         ("Arus Kas dari Aktivitas Operasional", "operasional"),
@@ -553,19 +640,55 @@ def export_arus_kas(
         ("Arus Kas dari Aktivitas Pembiayaan", "pembiayaan"),
         ("Belum Diklasifikasi", "belum_diklasifikasikan"),
     )
-    rows: list[tuple[str, list]] = []
+
+    def _any_belum(mdata: dict) -> bool:
+        bag = mdata["belum_diklasifikasikan"]
+        return bool(bag["items"]) or bool(mdata.get("jumlah_jurnal_belum_diklasifikasi"))
+
+    company = laporan_service.get_company_name(db)
+    period = f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}"
+
+    # ── Sheet 1: ringkasan bulanan ala sheet CP ──
+    headers = ["Uraian"] + [_month_label(m_end, short=False) for _, m_end in months] + ["Total"]
+    rows: list[tuple[str, list]] = [
+        ("subtotal", ["Saldo Awal Kas"] + [_num(m["saldo_awal"]) for m in monthly]
+         + [_num(total_data["saldo_awal"])]),
+    ]
     for section_title, key in sections:
-        bagian = data[key]
-        if key == "belum_diklasifikasikan" and not bagian["items"] \
-                and not data["jumlah_jurnal_belum_diklasifikasi"]:
+        if key == "belum_diklasifikasikan" \
+                and not any(_any_belum(m) for m in [*monthly, total_data]):
             continue
-        rows.append(("section", [section_title]))
+        rows.append(("item", [section_title]
+                     + [_num(m[key]["total"]) for m in monthly]
+                     + [_num(total_data[key]["total"])]))
+    rows.append(("subtotal", ["Kenaikan (Penurunan) Kas"]
+                 + [_num(m["net_change"]) for m in monthly]
+                 + [_num(total_data["net_change"])]))
+    rows.append(("total", ["Saldo Akhir Kas"] + [_num(m["saldo_akhir"]) for m in monthly]
+                 + [_num(total_data["saldo_akhir"])]))
+    rows.append(("item", ["Selisih Rekonsiliasi"]
+                 + [_num(m["selisih_rekonsiliasi"]) for m in monthly]
+                 + [_num(total_data["selisih_rekonsiliasi"])]))
+    wb = excel_service.report_sheet(
+        headers=headers, rows=rows, sheet="Arus Kas",
+        company=company, title="Laporan Arus Kas", period=period,
+        decimal_columns=set(range(1, 2 + len(months))), wide_columns={0},
+    )
+
+    # ── Sheet 2: rincian transaksi per klasifikasi (kolom seperti web) ──
+    detail_rows: list[tuple[str, list]] = []
+    for section_title, key in sections:
+        bagian = total_data[key]
+        if key == "belum_diklasifikasikan" and not bagian["items"] \
+                and not total_data["jumlah_jurnal_belum_diklasifikasi"]:
+            continue
+        detail_rows.append(("section", [section_title]))
         for item in bagian["items"]:
             kode, nama = item.get("account_code"), item.get("account_name") or item.get("nama")
             lawan = f"{kode} — {nama}" if kode else (nama or "Multi-akun")
             keterangan = item.get("line_description") or item.get("transaction_description") \
                 or item.get("nama") or ""
-            rows.append(("item", [
+            detail_rows.append(("item", [
                 _as_date(item["tanggal"]) if item.get("tanggal") else None,
                 item.get("no_jurnal") or "",
                 lawan,
@@ -573,17 +696,12 @@ def export_arus_kas(
                 item.get("source_no") or "",
                 _num(item["jumlah"]),
             ]))
-        rows.append(("subtotal", [f"Total {section_title}", "", "", "", "", _num(bagian["total"])]))
-    rows.append(("total", ["Saldo Awal", "", "", "", "", _num(data["saldo_awal"])]))
-    rows.append(("total", ["Perubahan Bersih", "", "", "", "", _num(data["net_change"])]))
-    rows.append(("total", ["Saldo Akhir", "", "", "", "", _num(data["saldo_akhir"])]))
-    rows.append(("subtotal", ["Selisih Rekonsiliasi", "", "", "", "", _num(data["selisih_rekonsiliasi"])]))
-    wb = excel_service.report_sheet(
+        detail_rows.append(("subtotal", [f"Total {section_title}", "", "", "", "",
+                                         _num(bagian["total"])]))
+    excel_service.report_sheet(
         headers=["Tanggal", "No. Jurnal", "Akun Lawan", "Keterangan", "No. Referensi", "Jumlah"],
-        rows=rows, sheet="Arus Kas",
-        company=laporan_service.get_company_name(db),
-        title="Laporan Arus Kas",
-        period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
+        rows=detail_rows, sheet="Rincian Transaksi", wb=wb,
+        company=company, title="Laporan Arus Kas — Rincian Transaksi", period=period,
         decimal_columns={5}, date_columns={0}, wide_columns={2, 3},
     )
     return _xlsx_response(wb, f"arus-kas_{dari}_sd_{sampai}.xlsx")
@@ -716,7 +834,7 @@ def get_buku_besar(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #023; sheet Rekap Bulanan — Update #025) =====
 @router.get("/buku-besar/export")
 def export_buku_besar(
     akun_id: UUID = Query(..., description="ID Akun Perkiraan"),
@@ -726,13 +844,20 @@ def export_buku_besar(
     current_user: Pengguna = Depends(get_current_user),
 ):
     """Export Rincian Buku Besar per akun ke file .xlsx (saldo awal +
-    transaksi berikut running balance + total debit/kredit + saldo akhir)."""
+    transaksi berikut running balance + total debit/kredit + saldo akhir).
+
+    Update #025 — sheet kedua "Rekap Bulanan": mutasi akun per bulan
+    (Saldo Awal / Debet / Credit / Saldo Akhir — pola PU Master MAS),
+    saldo berjalan konsisten dengan kolom Saldo sheet detail.
+    """
     date_from, date_to = _parse_range(dari, sampai)
     try:
         data = laporan_service.get_buku_besar(db, akun_id, date_from, date_to)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     akun = data["akun"]
+    company = laporan_service.get_company_name(db)
+    period = f"Akun: {akun['kode']} — {akun['nama']} · Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}"
 
     rows: list[tuple[str, list]] = [
         ("subtotal", ["Saldo Awal", "", "", None, None, _num(data["saldo_awal"])]),
@@ -746,10 +871,41 @@ def export_buku_besar(
     wb = excel_service.report_sheet(
         headers=["Tanggal", "No. Jurnal", "Deskripsi", "Debit", "Kredit", "Saldo"],
         rows=rows, sheet="Buku Besar",
-        company=laporan_service.get_company_name(db),
-        title="Rincian Buku Besar",
-        period=f"Akun: {akun['kode']} — {akun['nama']} · Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
+        company=company, title="Rincian Buku Besar", period=period,
         decimal_columns={3, 4, 5}, date_columns={0}, wide_columns={2},
+    )
+
+    # ── Sheet 2: rekap bulanan akun (gaya PU Master MAS — Update #025) ──
+    # Agregasi per bulan dari daftar transaksi (urut tanggal ASC dari service);
+    # saldo akhir bulan = saldo running transaksi TERAKHIR bulan itu.
+    month_agg: dict[str, dict] = {}
+    order: list[str] = []
+    for t in data["transaksi"]:
+        mkey = (t["tanggal"] or "")[:7]
+        if not mkey:
+            continue
+        if mkey not in month_agg:
+            month_agg[mkey] = {"debit": Decimal(0), "kredit": Decimal(0), "akhir": None}
+            order.append(mkey)
+        agg = month_agg[mkey]
+        agg["debit"] += t["debit"] or Decimal(0)
+        agg["kredit"] += t["kredit"] or Decimal(0)
+        agg["akhir"] = t["saldo"]
+
+    rec_rows: list[tuple[str, list]] = []
+    saldo_jalan = data["saldo_awal"]
+    for mkey in order:
+        agg = month_agg[mkey]
+        rec_rows.append(("item", [_month_key_label(mkey), _num(saldo_jalan),
+                                   _num(agg["debit"]), _num(agg["kredit"]), _num(agg["akhir"])]))
+        saldo_jalan = agg["akhir"]
+    rec_rows.append(("total", ["TOTAL", _num(data["saldo_awal"]), _num(data["total_debit"]),
+                               _num(data["total_kredit"]), _num(data["saldo_akhir"])]))
+    excel_service.report_sheet(
+        headers=["Bulan", "Saldo Awal", "Debet", "Credit", "Saldo Akhir"],
+        rows=rec_rows, sheet="Rekap Bulanan", wb=wb,
+        company=company, title="Rincian Buku Besar — Rekap Bulanan", period=period,
+        decimal_columns={1, 2, 3, 4},
     )
     return _xlsx_response(wb, f"buku-besar_{_slug(akun['kode'])}_{dari}_sd_{sampai}.xlsx")
 
@@ -777,7 +933,7 @@ def get_mutasi_kas(
     return laporan_service.get_mutasi_kas_bank(db, date_from, date_to, jenis="KAS")
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #025 — gaya PU/HU Master MAS) =====
 def _mutasi_rows(data: dict) -> list[tuple[str, list]]:
     """Baris export mutasi kas/bank: seksi per akun kas + baris transaksi
     + subtotal saldo akhir tiap akun (saldo running per akun dari service)."""
@@ -794,6 +950,47 @@ def _mutasi_rows(data: dict) -> list[tuple[str, list]]:
     return rows
 
 
+def _mutasi_monthly_sheet(wb, db, months, jenis: str, title: str, period: str, company: str):
+    """Sheet "Rekap Bulanan" mutasi kas/bank — blok bulanan per akun
+    (Saldo Awal / Debet / Credit / Saldo Akhir), pola sheet PU/HU Master MAS
+    (Update #025). Baris TOTAL menjumlahkan semua akun per bulan."""
+    accounts, monthly = _kas_bank_monthly(db, months, jenis=jenis)
+
+    rows: list[tuple[str, list]] = []
+    for kode in sorted(accounts):
+        info = accounts[kode]
+        vals = [kode, info["nama"]]
+        for rows_m in monthly:
+            a = rows_m.get(kode)
+            if a is None:
+                vals += [None] * 4
+                continue
+            vals += [_num(a["saldo_awal"]), _num(a["total_masuk"]),
+                     _num(a["total_keluar"]), _num(a["saldo_akhir"])]
+        rows.append(("item", vals))
+
+    vals = ["", "TOTAL"]
+    for rows_m in monthly:
+        vals += [
+            _num(sum((a["saldo_awal"] for a in rows_m.values()), Decimal(0))),
+            _num(sum((a["total_masuk"] for a in rows_m.values()), Decimal(0))),
+            _num(sum((a["total_keluar"] for a in rows_m.values()), Decimal(0))),
+            _num(sum((a["saldo_akhir"] for a in rows_m.values()), Decimal(0))),
+        ]
+    rows.append(("total", vals))
+
+    blocks = [(_month_label(m_end, short=False),
+               ["Saldo Awal", "Debet", "Credit", "Saldo Akhir"])
+              for _, m_end in months]
+    excel_service.block_report_sheet(
+        left_headers=["Kode Akun", "Nama Akun"],
+        blocks=blocks, rows=rows, sheet="Rekap Bulanan", wb=wb,
+        company=company, title=title, period=period,
+        decimal_columns=set(range(2, 2 + 4 * len(months))),
+        wide_columns={1},
+    )
+
+
 @router.get("/mutasi-kas/export")
 def export_mutasi_kas(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -801,19 +998,26 @@ def export_mutasi_kas(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Mutasi Kas ke file .xlsx — seksi per akun kas, kolom transaksi
-    (tanggal/no jurnal/akun/deskripsi/debit/kredit) + saldo akhir tiap akun."""
+    """Export Mutasi Kas ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #025 — 2 sheet: "Mutasi Kas" (detail transaksi per akun, kolom
+    seperti web) + "Rekap Bulanan" (blok bulanan per akun: Saldo Awal /
+    Debet / Credit / Saldo Akhir — pola sheet PU/HU Master MAS, maks. 14
+    bulan per export).
+    """
     date_from, date_to = _parse_range(dari, sampai)
+    months = _month_ranges(date_from, date_to)
     data = laporan_service.get_mutasi_kas_bank(db, date_from, date_to, jenis="KAS")
 
+    company = laporan_service.get_company_name(db)
+    period = f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}"
     wb = excel_service.report_sheet(
         headers=["Tanggal", "No. Jurnal", "Akun", "Deskripsi", "Debit", "Kredit", "Saldo"],
         rows=_mutasi_rows(data), sheet="Mutasi Kas",
-        company=laporan_service.get_company_name(db),
-        title="Mutasi Kas",
-        period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
+        company=company, title="Mutasi Kas", period=period,
         decimal_columns={4, 5, 6}, date_columns={0}, wide_columns={3},
     )
+    _mutasi_monthly_sheet(wb, db, months, "KAS", "Mutasi Kas — Rekap Bulanan", period, company)
     return _xlsx_response(wb, f"mutasi-kas_{dari}_sd_{sampai}.xlsx")
 
 
@@ -836,7 +1040,7 @@ def get_mutasi_bank(
     return laporan_service.get_mutasi_kas_bank(db, date_from, date_to, jenis="BANK")
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #025 — gaya PU/HU Master MAS) =====
 @router.get("/mutasi-bank/export")
 def export_mutasi_bank(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -844,19 +1048,26 @@ def export_mutasi_bank(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Mutasi Bank ke file .xlsx — seksi per akun bank, kolom transaksi
-    (tanggal/no jurnal/akun/deskripsi/debit/kredit) + saldo akhir tiap akun."""
+    """Export Mutasi Bank ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #025 — 2 sheet: "Mutasi Bank" (detail transaksi per akun, kolom
+    seperti web) + "Rekap Bulanan" (blok bulanan per akun: Saldo Awal /
+    Debet / Credit / Saldo Akhir — pola sheet PU/HU Master MAS, maks. 14
+    bulan per export).
+    """
     date_from, date_to = _parse_range(dari, sampai)
+    months = _month_ranges(date_from, date_to)
     data = laporan_service.get_mutasi_kas_bank(db, date_from, date_to, jenis="BANK")
 
+    company = laporan_service.get_company_name(db)
+    period = f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}"
     wb = excel_service.report_sheet(
         headers=["Tanggal", "No. Jurnal", "Akun", "Deskripsi", "Debit", "Kredit", "Saldo"],
         rows=_mutasi_rows(data), sheet="Mutasi Bank",
-        company=laporan_service.get_company_name(db),
-        title="Mutasi Bank",
-        period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
+        company=company, title="Mutasi Bank", period=period,
         decimal_columns={4, 5, 6}, date_columns={0}, wide_columns={3},
     )
+    _mutasi_monthly_sheet(wb, db, months, "BANK", "Mutasi Bank — Rekap Bulanan", period, company)
     return _xlsx_response(wb, f"mutasi-bank_{dari}_sd_{sampai}.xlsx")
 
 
@@ -879,7 +1090,7 @@ def get_rekap_kas_bank(
     return laporan_service.get_rekap_kas_bank(db, date_from, date_to)
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #025 — gaya PU/HU Master MAS) =====
 @router.get("/rekap-kas-bank/export")
 def export_rekap_kas_bank(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -887,30 +1098,65 @@ def export_rekap_kas_bank(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Rekap Kas & Bank (per akun: saldo awal, masuk, keluar, akhir)
-    ke file .xlsx + baris total."""
+    """Export Rekap Kas & Bank ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #025 — layout blok bulanan pola PU/HU Master MAS: kolom
+    Kode/Nama/Jenis + BLOK BULANAN (maks. 14) masing-masing 4 sub-kolom
+    (Saldo Awal / Masuk / Keluar / Saldo Akhir) + blok TOTAL (Periode) —
+    angka rentang penuh sama seperti web — + baris TOTAL per bulan.
+    """
     date_from, date_to = _parse_range(dari, sampai)
-    data = laporan_service.get_rekap_kas_bank(db, date_from, date_to)
+    months = _month_ranges(date_from, date_to)
+    accounts, monthly = _kas_bank_monthly(db, months, jenis=None)
+    total_data = laporan_service.get_rekap_kas_bank(db, date_from, date_to)
+    total_by_kode = {a["kode"]: a for a in total_data["akun"]}
 
     rows: list[tuple[str, list]] = []
-    for idx, akun in enumerate(data["akun"], start=1):
-        rows.append(("item", [idx, akun["kode"], akun["nama"], akun["jenis"],
-                              _num(akun["saldo_awal"]), _num(akun["total_masuk"]),
-                              _num(akun["total_keluar"]), _num(akun["saldo_akhir"])]))
-    akun_list = data["akun"]
-    total_awal = sum((a["saldo_awal"] for a in akun_list), Decimal(0))
-    total_masuk = sum((a["total_masuk"] for a in akun_list), Decimal(0))
-    total_keluar = sum((a["total_keluar"] for a in akun_list), Decimal(0))
-    total_akhir = sum((a["saldo_akhir"] for a in akun_list), Decimal(0))
-    rows.append(("total", ["Total", "", "", None, _num(total_awal), _num(total_masuk),
-                           _num(total_keluar), _num(total_akhir)]))
-    wb = excel_service.report_sheet(
-        headers=["No", "Kode", "Nama Akun", "Jenis", "Saldo Awal", "Total Masuk", "Total Keluar", "Saldo Akhir"],
-        rows=rows, sheet="Rekap Kas & Bank",
+    for kode in sorted(accounts):
+        info = accounts[kode]
+        vals = [kode, info["nama"], info["jenis"]]
+        for rows_m in monthly:
+            a = rows_m.get(kode)
+            if a is None:
+                vals += [None] * 4
+                continue
+            vals += [_num(a["saldo_awal"]), _num(a["total_masuk"]),
+                     _num(a["total_keluar"]), _num(a["saldo_akhir"])]
+        t = total_by_kode.get(kode)
+        vals += ([_num(t["saldo_awal"]), _num(t["total_masuk"]),
+                  _num(t["total_keluar"]), _num(t["saldo_akhir"])] if t else [None] * 4)
+        rows.append(("item", vals))
+
+    # Baris TOTAL: jumlah semua akun per bulan + blok TOTAL (rentang penuh).
+    vals = ["", "TOTAL", ""]
+    for rows_m in monthly:
+        vals += [
+            _num(sum((a["saldo_awal"] for a in rows_m.values()), Decimal(0))),
+            _num(sum((a["total_masuk"] for a in rows_m.values()), Decimal(0))),
+            _num(sum((a["total_keluar"] for a in rows_m.values()), Decimal(0))),
+            _num(sum((a["saldo_akhir"] for a in rows_m.values()), Decimal(0))),
+        ]
+    akun_list = total_data["akun"]
+    vals += [
+        _num(sum((a["saldo_awal"] for a in akun_list), Decimal(0))),
+        _num(sum((a["total_masuk"] for a in akun_list), Decimal(0))),
+        _num(sum((a["total_keluar"] for a in akun_list), Decimal(0))),
+        _num(sum((a["saldo_akhir"] for a in akun_list), Decimal(0))),
+    ]
+    rows.append(("total", vals))
+
+    sub = ["Saldo Awal", "Masuk", "Keluar", "Saldo Akhir"]
+    blocks = [(_month_label(m_end, short=False), sub) for _, m_end in months]
+    blocks.append(("TOTAL (Periode)", sub))
+    n_num = 4 * (len(months) + 1)
+    wb = excel_service.block_report_sheet(
+        left_headers=["Kode Akun", "Nama Akun", "Jenis"],
+        blocks=blocks, rows=rows, sheet="Rekap Kas & Bank",
         company=laporan_service.get_company_name(db),
         title="Rekap Kas & Bank",
         period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
-        decimal_columns={4, 5, 6, 7}, wide_columns={2},
+        decimal_columns=set(range(3, 3 + n_num)),
+        wide_columns={1},
     )
     return _xlsx_response(wb, f"rekap-kas-bank_{dari}_sd_{sampai}.xlsx")
 
@@ -1163,7 +1409,7 @@ def get_rekap_ppn(
     return laporan_service.get_rekap_ppn(db, date_from, date_to)
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #025 — gaya pivot TrxPPN Master MAS) =====
 @router.get("/rekap-ppn/export")
 def export_rekap_ppn(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -1171,27 +1417,73 @@ def export_rekap_ppn(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Rekap PPN ke file .xlsx — 2 sheet: ringkasan per masa pajak
-    (+ baris TOTAL) dan rincian dokumen (kolom sama seperti tampilan web)."""
+    """Export Rekap PPN ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #025 — sheet "Rekap PPN" meniru pivot TrxPPN Master MAS: baris
+    uraian (Faktur Keluaran / Retur Keluaran / Faktur Masukan / Retur
+    Masukan + jumlah neto per sisi + PPN Neto) × BLOK MASA PAJAK sub-kolom
+    [DPP, PPN] + blok TOTAL. Baris PPN Neto melipat koreksi retur
+    (Keluaran Neto - Masukan Neto). Sheet "Rincian" tetap per dokumen
+    (kolom sama seperti web).
+    """
     date_from, date_to = _parse_range(dari, sampai)
     data = laporan_service.get_rekap_ppn(db, date_from, date_to)
 
     company = laporan_service.get_company_name(db)
     period = f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}"
 
-    masa_rows: list[tuple[str, list]] = []
-    for m in data["ringkasan_masa"]:
-        masa_rows.append(("item", [m["masa"], _num(m["dpp_keluaran"]), _num(m["ppn_keluaran"]),
-                                    _num(m["dpp_masukan"]), _num(m["ppn_masukan"]), _num(m["ppn_neto"])]))
-    if data["total"] is not None:
-        t = data["total"]
-        masa_rows.append(("total", ["Total", _num(t["dpp_keluaran"]), _num(t["ppn_keluaran"]),
-                                    _num(t["dpp_masukan"]), _num(t["ppn_masukan"]), _num(t["ppn_neto"])]))
-    wb = excel_service.report_sheet(
-        headers=["Masa", "DPP Keluaran", "PPN Keluaran", "DPP Masukan", "PPN Masukan", "PPN Neto"],
-        rows=masa_rows, sheet="Rekap PPN",
+    masa_list = [m["masa"] for m in data["ringkasan_masa"]]
+    lookups = {m["masa"]: m for m in data["ringkasan_masa"]}
+    t = data["total"]
+
+    def _row(label: str, dpp_key: str, ppn_key: str, kind: str = "item"):
+        vals = [label]
+        for masa in masa_list:
+            m = lookups[masa]
+            vals += [_num(m[dpp_key]), _num(m[ppn_key])]
+        vals += [_num(t[dpp_key]), _num(t[ppn_key])]
+        return (kind, vals)
+
+    def _neto_row(label: str, ppn_key: str, retur_key: str, kind: str = "subtotal"):
+        vals = [label]
+        for masa in masa_list:
+            m = lookups[masa]
+            vals += [None, _num(m[ppn_key] + m[retur_key])]
+        vals += [None, _num(t[ppn_key] + t[retur_key])]
+        return (kind, vals)
+
+    def _ppn_neto_row():
+        vals = ["PPN Neto (Kurang/(Lebih) Bayar)"]
+        for masa in masa_list:
+            m = lookups[masa]
+            neto = (m["ppn_keluaran"] + m["ppn_retur_keluaran"]) \
+                - (m["ppn_masukan"] + m["ppn_retur_masukan"])
+            vals += [None, _num(neto)]
+        neto = (t["ppn_keluaran"] + t["ppn_retur_keluaran"]) \
+            - (t["ppn_masukan"] + t["ppn_retur_masukan"])
+        vals += [None, _num(neto)]
+        return ("total", vals)
+
+    rows: list[tuple[str, list]] = [
+        ("section", ["Faktur Keluaran (Penjualan)"]),
+        _row("Faktur Keluaran", "dpp_keluaran", "ppn_keluaran"),
+        _row("Retur Keluaran", "dpp_retur_keluaran", "ppn_retur_keluaran"),
+        _neto_row("Jumlah PPN Keluaran (Neto)", "ppn_keluaran", "ppn_retur_keluaran"),
+        ("section", ["Faktur Masukan (Pembelian)"]),
+        _row("Faktur Masukan", "dpp_masukan", "ppn_masukan"),
+        _row("Retur Masukan", "dpp_retur_masukan", "ppn_retur_masukan"),
+        _neto_row("Jumlah PPN Masukan (Neto)", "ppn_masukan", "ppn_retur_masukan"),
+        _ppn_neto_row(),
+    ]
+    blocks = [(_month_key_label(masa), ["DPP", "PPN"]) for masa in masa_list]
+    blocks.append(("TOTAL", ["DPP", "PPN"]))
+    n_num = 2 * (len(masa_list) + 1)
+    wb = excel_service.block_report_sheet(
+        left_headers=["Uraian"],
+        blocks=blocks, rows=rows, sheet="Rekap PPN",
         company=company, title="Rekap PPN (Masa Pajak)", period=period,
-        decimal_columns={1, 2, 3, 4, 5},
+        decimal_columns=set(range(1, 1 + n_num)),
+        wide_columns={0},
     )
 
     jenis_label = {"KELUARAN": "Keluaran", "MASUKAN": "Masukan",
