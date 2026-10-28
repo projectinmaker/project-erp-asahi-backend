@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 from decimal import Decimal
 from typing import Optional, List
@@ -505,6 +505,43 @@ class AppSettingResponse(BaseSchema):
 
 
 # ==========================================
+# PREFERENSI (menu Preferensi) — Update ASAHI #019
+# Registry di app/services/preferensi_service.py; nilai disimpan di
+# tabel app_setting (lazy default — GET selalu punya jawaban).
+# (Anotasi blok ini memakai sintaks union py3.11 — bersih dari rule UP ruff.)
+# ==========================================
+class PreferensiOption(BaseSchema):
+    value: str
+    label: str
+
+class PreferensiItem(BaseSchema):
+    key: str
+    label: str
+    # Tipe item: 'boolean' | 'select' | 'number' | 'text' (menentukan
+    # rendering form di frontend: Checkbox / Select / Input number / Input text).
+    type: str
+    value: bool | int | str
+    default: bool | int | str
+    options: list[PreferensiOption] = []
+    min: int | None = None
+    max: int | None = None
+    help: str | None = None
+
+class PreferensiGroup(BaseSchema):
+    id: str
+    label: str
+    description: str | None = None
+    items: list[PreferensiItem] = []
+
+class PreferensiResponse(BaseSchema):
+    groups: list[PreferensiGroup] = []
+
+class PreferensiUpdate(BaseSchema):
+    """Payload PUT /master/preferensi — kumpulan perubahan key → nilai."""
+    updates: dict[str, bool | int | float | str] = {}
+
+
+# ==========================================
 # IMPORT EXCEL (Update #5) — hasil ringkasan import master
 # ==========================================
 class ImportRowError(BaseSchema):
@@ -569,17 +606,53 @@ class CompanyProfileResponse(BaseSchema):
     # Update ASAHI #6: rekening bank AKTIF — tampil di bawah Keterangan pada
     # cetak Invoice Penjualan (di-embed agar frontend cukup satu fetch).
     rekening_bank: List[RekeningBankResponse] = []
+    # === Update ASAHI #019 — kolom baru Pengaturan (Umum/Periode/Pajak) ===
+    # Identitas umum (halaman Umum — diperluas dari Profil Perusahaan).
+    fax: str | None = None
+    negara: str | None = None
+    # Mata uang default pembukuan (Preferensi → Akun Default).
+    mata_uang: str | None = None
+    # Periode akuntansi (halaman Periode Akuntansi).
+    tanggal_mulai: date | None = None
+    tahun_fiskal: str | None = None
+    periode_default: str | None = None
+    # Data pajak (halaman Pajak) — identitas faktur pajak / e-Faktur.
+    no_seri_faktur_pajak: str | None = None
+    npwp: str | None = None
+    no_pengukuhan_pkp: str | None = None
+    branch_code: str | None = None
+    jenis_usaha: str | None = None
+    klu_spt: str | None = None
     updated_at: Optional[datetime] = None
 
 
 class CompanyProfileUpdate(BaseSchema):
-    nama_perusahaan: str = Field(min_length=1, max_length=200)
-    alamat: str = Field(min_length=1)
+    """Payload PUT /master/company-profile — SEMUA field opsional (partial update).
+
+    === Update ASAHI #019 — partial update (model_dump(exclude_unset=True)) ===
+    Halaman Umum / Periode Akuntansi / Pajak masing-masing hanya mengirim
+    field miliknya; field yang tidak dikirim tidak menimpa nilai tersimpan.
+    """
+    nama_perusahaan: str | None = Field(default=None, min_length=1, max_length=200)
+    alamat: str | None = Field(default=None, min_length=1)
     telepon: Optional[str] = Field(default=None, max_length=50)
     email: Optional[str] = Field(default=None, max_length=100)
     logo: Optional[str] = None
     # Update ASAHI #6: slogan opsional (kosong/null = tidak tampil di invoice).
     slogan: Optional[str] = None
+    # === Update ASAHI #019 — kolom baru Pengaturan (Umum/Periode/Pajak) ===
+    fax: str | None = Field(default=None, max_length=50)
+    negara: str | None = Field(default=None, max_length=100)
+    mata_uang: str | None = Field(default=None, max_length=8)
+    tanggal_mulai: date | None = None
+    tahun_fiskal: str | None = Field(default=None, max_length=20)
+    periode_default: str | None = Field(default=None, max_length=30)
+    no_seri_faktur_pajak: str | None = Field(default=None, max_length=50)
+    npwp: str | None = Field(default=None, max_length=50)
+    no_pengukuhan_pkp: str | None = Field(default=None, max_length=50)
+    branch_code: str | None = Field(default=None, max_length=10)
+    jenis_usaha: str | None = Field(default=None, max_length=200)
+    klu_spt: str | None = Field(default=None, max_length=200)
 
 
 # ==========================================

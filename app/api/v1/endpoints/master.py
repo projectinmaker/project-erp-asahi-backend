@@ -46,6 +46,7 @@ from app.schemas.master import (
     KasBankAkunCreate, KasBankAkunUpdate, KasBankAkunResponse,
     SettingAkunUpdate, SettingAkunResponse,
     AppSettingUpdate, AppSettingResponse,
+    PreferensiResponse, PreferensiUpdate,
     CompanyProfileResponse, CompanyProfileUpdate,
     MataUangCreate, MataUangUpdate, MataUangResponse,
     AlamatPengirimanCreate, AlamatPengirimanUpdate, AlamatPengirimanResponse,
@@ -1792,6 +1793,44 @@ def update_app_setting(key: str, data_in: AppSettingUpdate, db: Session = Depend
 
 
 # ==========================================
+# PREFERENSI ENDPOINTS (menu Preferensi) — Update ASAHI #019
+# Registry + validasi di app/services/preferensi_service.py; nilai
+# tersimpan di tabel app_setting (lazy default — GET selalu menjawab).
+# ==========================================
+@router.get("/preferensi", response_model=PreferensiResponse)
+def get_preferensi(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Snapshot seluruh grup & item preferensi beserta nilai efektifnya."""
+    from app.services import preferensi_service
+
+    return PreferensiResponse(groups=preferensi_service.get_all(db))
+
+
+@router.put("/preferensi", response_model=PreferensiResponse)
+def update_preferensi(
+    data_in: PreferensiUpdate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Simpan sekumpulan preferensi sekaligus, lalu kembalikan snapshot penuh.
+
+    ValueError dari service (key tak dikenal / nilai tidak valid sesuai tipe,
+    opsi, atau batasan min-max) diterjemahkan ke HTTP 400 dengan pesan
+    Indonesia — frontend cukup menampilkan detail apa adanya.
+    """
+    from app.services import preferensi_service
+
+    try:
+        preferensi_service.update_bulk(db, data_in.updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PreferensiResponse(groups=preferensi_service.get_all(db))
+
+
+
+# ==========================================
 # KATEGORI BARANG ENDPOINTS
 # ==========================================
 @router.get("/kategori-barang", response_model=list[KategoriBarangResponse])
@@ -2154,6 +2193,8 @@ def get_company_profile(
         # Fallback defensif bila migrasi/seed belum jalan — kembalikan nilai
         # default lama (identik dengan COMPANY_INFO yang dulu hardcoded FE).
         # Update ASAHI #3: alamat dipecah 2 baris setelah "Jatireja" (kop cetak).
+        # Update ASAHI #019: kolom baru (Umum/Periode/Pajak) default None —
+        # belum ada datanya sampai user mengisi lewat halaman Pengaturan.
         from uuid import uuid4
         return CompanyProfileResponse(
             id=uuid4(),
@@ -2177,6 +2218,19 @@ def get_company_profile(
         # slogan (tidak dipaksa kembali ke default).
         slogan=row.slogan,
         rekening_bank=_active_rekening_bank(db),
+        # === Update ASAHI #019 — kolom baru Pengaturan (Umum/Periode/Pajak) ===
+        fax=row.fax,
+        negara=row.negara,
+        mata_uang=row.mata_uang,
+        tanggal_mulai=row.tanggal_mulai,
+        tahun_fiskal=row.tahun_fiskal,
+        periode_default=row.periode_default,
+        no_seri_faktur_pajak=row.no_seri_faktur_pajak,
+        npwp=row.npwp,
+        no_pengukuhan_pkp=row.no_pengukuhan_pkp,
+        branch_code=row.branch_code,
+        jenis_usaha=row.jenis_usaha,
+        klu_spt=row.klu_spt,
         updated_at=row.updated_at,
     )
 
@@ -2187,8 +2241,14 @@ def update_company_profile(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Simpan profil perusahaan (nama, alamat, kontak, logo, slogan) untuk cetak/PDF."""
-    payload = data_in.model_dump()
+    """Simpan profil perusahaan (identitas, periode, pajak) untuk cetak/PDF.
+
+    === Update ASAHI #019 — partial update ===
+    Semua field kini opsional; hanya field yang DIKIRIM yang menimpa nilai
+    tersimpan (model_dump(exclude_unset=True)) — halaman Umum / Periode
+    Akuntansi / Pajak cukup mengirim field miliknya tanpa memuat sisanya.
+    """
+    payload = data_in.model_dump(exclude_unset=True)
 
     logo = payload.get("logo")
     if logo is not None:
@@ -2202,8 +2262,29 @@ def update_company_profile(
     if "slogan" in payload and payload["slogan"] is not None and not payload["slogan"].strip():
         payload["slogan"] = None
 
+    # === Update ASAHI #019 — normalisasi field baru: trim, kosong → NULL ===
+    # (mata_uang sekalian UPPERCASE — kode ISO 4217 dari dropdown).
+    for key in ("fax", "negara", "mata_uang", "tahun_fiskal", "periode_default",
+                "no_seri_faktur_pajak", "npwp", "no_pengukuhan_pkp", "branch_code",
+                "jenis_usaha", "klu_spt"):
+        if key in payload and isinstance(payload[key], str):
+            nilai = payload[key].strip()
+            if key == "mata_uang":
+                nilai = nilai.upper()
+            payload[key] = nilai or None
+
+    # === Update ASAHI #019 — kolom NOT NULL tetap wajib bila dikirim ===
+    # (dulu dijamin required oleh schema; kini opsional demi partial update,
+    # jadi dicek manual — perilaku lama: menolak nilai kosong/null).
+    for key, nama in (("nama_perusahaan", "Nama perusahaan"), ("alamat", "Alamat")):
+        if key in payload and not (payload[key] or "").strip():
+            raise HTTPException(400, f"{nama} tidak boleh kosong")
+
     row = db.query(CompanyProfile).order_by(CompanyProfile.created_at, CompanyProfile.id).first()
     if row is None:
+        # Baris belum ada — identitas dasar wajib untuk membuat baris pertama.
+        if not (payload.get("nama_perusahaan") or "").strip() or not (payload.get("alamat") or "").strip():
+            raise HTTPException(400, "Profil perusahaan belum ada — sertakan namaPerusahaan dan alamat untuk membuatnya")
         row = CompanyProfile(**payload)
         db.add(row)
     else:
@@ -2223,6 +2304,19 @@ def update_company_profile(
         logo=row.logo,
         slogan=row.slogan,
         rekening_bank=_active_rekening_bank(db),
+        # === Update ASAHI #019 — kolom baru Pengaturan (Umum/Periode/Pajak) ===
+        fax=row.fax,
+        negara=row.negara,
+        mata_uang=row.mata_uang,
+        tanggal_mulai=row.tanggal_mulai,
+        tahun_fiskal=row.tahun_fiskal,
+        periode_default=row.periode_default,
+        no_seri_faktur_pajak=row.no_seri_faktur_pajak,
+        npwp=row.npwp,
+        no_pengukuhan_pkp=row.no_pengukuhan_pkp,
+        branch_code=row.branch_code,
+        jenis_usaha=row.jenis_usaha,
+        klu_spt=row.klu_spt,
         updated_at=row.updated_at,
     )
 

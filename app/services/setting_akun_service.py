@@ -85,6 +85,17 @@ KEY_POTONGAN_HUTANG = "POTONGAN_HUTANG"
 # (Sisi piutang memakai KEY_PPH23_DIBAYAR_DIMUKA yang sudah ada.)
 KEY_HUTANG_PPH23 = "HUTANG_PPH23"
 
+# === Update ASAHI #019 — Preferensi: Akun Default & Pembayaran Pesanan ===
+# Akun-akun tambahan yang dikelola lewat halaman Preferensi (halaman
+# "Akun Default" & picker "Biaya Pesanan"). Baris setting dibuat otomatis
+# saat pertama kali dikonfigurasi via PUT /master/setting-akun/{key}
+# (pola KNOWN_SETTING_LABELS — tidak ada seeder khusus).
+KEY_DISKON_PENJUALAN = "DISKON_PENJUALAN"
+KEY_DISKON_BARANG = "DISKON_BARANG"
+KEY_LABA_RUGI_TEREALISIR = "LABA_RUGI_TEREALISIR"
+KEY_LABA_RUGI_TAK_TEREALISIR = "LABA_RUGI_TAK_TEREALISIR"
+KEY_BIAYA_PESANAN = "BIAYA_PESANAN"
+
 # (Update #14 — key KAS_PENAMPUNG_BELUM_TERIDENTIFIKASI / KAS_PENAMPUNG_
 # PENERIMAAN / KAS_PENAMPUNG_PEMBAYARAN dihapus bersama fitur Belum
 # Teridentifikasi; baris setting lama dibersihkan migration cp0000000021.)
@@ -123,6 +134,12 @@ KNOWN_SETTING_LABELS = {
     KEY_PPH23_DIBAYAR_DIMUKA: "PPh 23 Dibayar Dimuka",
     KEY_POTONGAN_HUTANG: "Potongan Hutang (Pelunasan)",
     KEY_HUTANG_PPH23: "Hutang PPh 23 (Pelunasan)",
+    # === Update ASAHI #019 — Preferensi: Akun Default & Pembayaran Pesanan ===
+    KEY_DISKON_PENJUALAN: "Diskon Penjualan",
+    KEY_DISKON_BARANG: "Diskon Barang",
+    KEY_LABA_RUGI_TEREALISIR: "Laba/(Rugi) Terealisir",
+    KEY_LABA_RUGI_TAK_TEREALISIR: "Laba/(Rugi) Tak Terealisir",
+    KEY_BIAYA_PESANAN: "Biaya Pesanan",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)

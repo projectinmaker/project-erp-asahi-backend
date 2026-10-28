@@ -262,8 +262,11 @@ def create_request_order_part(
     if not items:
         raise ValueError("Minimal 1 baris part diperlukan")
 
+    # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+    # (doc_type REQUEST_ORDER_PART; fallback "ROP" — perilaku lama bila belum diubah).
     no_rop = get_nomor_dokumen_tahunan(
-        db, RequestOrderPart, prefix="ROP", no_column="no_rop", tanggal=tanggal
+        db, RequestOrderPart, prefix="ROP", no_column="no_rop", tanggal=tanggal,
+        doc_type="REQUEST_ORDER_PART",
     )
 
     rop = RequestOrderPart(

@@ -144,9 +144,12 @@ def create_penawaran(
 
         # Generate nomor penawaran
         # Update ASAHI: pola penomoran seragam "PEN ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type PENAWARAN; fallback "PEN" — perilaku lama bila belum diubah).
         no_penawaran = get_nomor_dokumen_tahunan(
             db, Penawaran, prefix="PEN",
             no_column="no_penawaran", tanggal=tanggal.date(),
+            doc_type="PENAWARAN",
         )
 
         # Buat header

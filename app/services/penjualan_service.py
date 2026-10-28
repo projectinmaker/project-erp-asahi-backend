@@ -235,10 +235,13 @@ def create_sales_order(
         # Update ASAHI (revisi SO): segmen singkatan customer ditambahkan —
         # "SO ASI/TBI/2026/001" (terisi) atau "SO ASI/-/2026/001" (kosong).
         # Selalu pass customer_code (string, bisa "") agar format baru aktif.
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type SALES_ORDER; fallback "SO" — perilaku lama bila belum diubah).
         no_pesanan = get_nomor_dokumen_tahunan(
             db, SalesOrder, prefix="SO",
             no_column="no_pesanan", tanggal=tanggal.date(),
             customer_code=customer_code or "",
+            doc_type="SALES_ORDER",
         )
 
         # Buat header
@@ -511,9 +514,12 @@ def create_sales_invoice(
 
         # Generate nomor invoice
         # Update ASAHI: pola penomoran seragam "INV ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type SALES_INVOICE; fallback "INV" — perilaku lama bila belum diubah).
         no_invoice = get_nomor_dokumen_tahunan(
             db, SalesInvoice, prefix="INV",
-            no_column="no_invoice", tanggal=tanggal.date()
+            no_column="no_invoice", tanggal=tanggal.date(),
+            doc_type="SALES_INVOICE",
         )
 
         # Buat header
@@ -795,9 +801,12 @@ def create_sales_retur(
 
         # Generate nomor retur
         # Update ASAHI: pola penomoran seragam "RET-J ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type RETUR_PENJUALAN; fallback "RET-J" — perilaku lama bila belum diubah).
         no_retur = get_nomor_dokumen_tahunan(
             db, SalesRetur, prefix="RET-J",
-            no_column="no_retur", tanggal=tanggal.date()
+            no_column="no_retur", tanggal=tanggal.date(),
+            doc_type="RETUR_PENJUALAN",
         )
 
         # Buat header
@@ -1016,9 +1025,12 @@ def create_pengiriman(
         # Generate nomor dokumen pengiriman (Delivery Order)
         # Update ASAHI #3: prefix nomor diganti "KB" → "DO" (pola "DO ASI/YYYY/NNN",
         # reset tahunan). Dokumen lama KB ASI/... tetap memakai nomor lamanya.
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type PENGIRIMAN_BARANG; fallback "DO" — perilaku lama bila belum diubah).
         no_surat_jalan = get_nomor_dokumen_tahunan(
             db, PengirimanBarang, prefix="DO",
-            no_column="no_surat_jalan", tanggal=tanggal.date()
+            no_column="no_surat_jalan", tanggal=tanggal.date(),
+            doc_type="PENGIRIMAN_BARANG",
         )
 
         # === Fix persist sales_order_detail_id: validasi referensi + over-delivery ===

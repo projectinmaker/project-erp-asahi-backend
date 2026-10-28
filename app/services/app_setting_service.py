@@ -31,7 +31,10 @@ DEFAULT_RATE_PPH23 = "2"
 VALID_METODE_VALUASI = ("AVERAGE", "FIFO", "FEFO")
 DEFAULT_METODE_VALUASI = "AVERAGE"
 
-# Label deskriptif per key — dipakai pesan error/endpoint
+# Label deskriptif per key — dipakai pesan error/endpoint.
+# Update ASAHI #019: label key-key preferensi (menu Preferensi) ditambahkan
+# otomatis oleh app/services/preferensi_service.py saat modul itu dimuat
+# (diperkaya di sana untuk menghindari circular import).
 KNOWN_APP_SETTING_LABELS = {
     KEY_METODE_VALUASI: "Metode Valuasi Persediaan",
     KEY_RATE_PPN: "Tarif PPN Default (%)",

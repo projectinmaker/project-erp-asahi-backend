@@ -47,6 +47,7 @@ RESOURCE_NAMES = {
     'company_profile': 'Profil Perusahaan',
     'mata_uang': 'Mata Uang', 'alamat_pengiriman': 'Alamat Pengiriman',
     'rekening_bank': 'Rekening Bank',
+    'preference': 'Preferensi',  # Update ASAHI #019 — menu Preferensi (app-wide)
     # sales
     'sales_order': 'Pesanan Penjualan', 'delivery': 'Pengiriman', 'sales_invoice': 'Invoice Penjualan',
     'sales_return': 'Retur Penjualan', 'ar_settlement': 'Pelunasan Piutang',
@@ -126,6 +127,9 @@ REGISTRY: list = (
     + _res('master', 'mata_uang', ['view', 'create', 'edit', 'delete'], sensitive_extra=('create', 'edit', 'delete'))  # update ASAHI #3: dropdown Currency SO/PO
     + _res('master', 'alamat_pengiriman', ['view', 'create', 'edit', 'delete'], sensitive_extra=('create', 'edit', 'delete'))  # update ASAHI #3: gudang tujuan PO
     + _res('master', 'rekening_bank', ['view', 'create', 'edit', 'delete'], sensitive_extra=('create', 'edit', 'delete'))  # update ASAHI #6: rekening bank cetak Invoice Penjualan
+    # === Update ASAHI #019 — menu Preferensi: font/format tanggal/prefix nomor ===
+    # dokumen dibaca app-wide (view ke semua role); edit sensitif (system-wide).
+    + _res('master', 'preference', ['view', 'edit'], sensitive_extra=('edit',))
     # ── Sales ─────────────────────────────────────────────────────────────
     + _res('sales', 'sales_order', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'print', 'export'])
     + _res('sales', 'penawaran', ['view', 'create', 'edit', 'cancel', 'print'])
@@ -237,6 +241,8 @@ ROLE_TEMPLATES = {
             'master.alamat_pengiriman.create', 'master.alamat_pengiriman.edit', 'master.alamat_pengiriman.delete',
             'master.rekening_bank.create', 'master.rekening_bank.edit', 'master.rekening_bank.delete',
             'master.company_profile.edit',
+            # === Update ASAHI #019 — menu Preferensi: kelola konfigurasi app-wide ===
+            'master.preference.view', 'master.preference.edit',
         ]),
     },
     'HR_ADMIN': {
@@ -247,6 +253,8 @@ ROLE_TEMPLATES = {
         'permissions': _expand([
             'master.karyawan.*', 'system.users.view', 'system.users.create', 'system.users.edit',
             'dashboard.operational.view', 'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view',
+            # === Update ASAHI #019 — menu Preferensi: kelola konfigurasi app-wide ===
+            'master.preference.view', 'master.preference.edit',
         ]),
     },
     'FINANCE_MANAGER': {
@@ -259,6 +267,9 @@ ROLE_TEMPLATES = {
             'finance.*', 'accounting.*', 'sales.*', 'purchase.*', 'inventory.*', 'asset.*',
             'production.request_order_part.*',
             'reports.*', 'master.*', 'dashboard.operational.view', 'workflow.queue.view',
+            # Update ASAHI #019 — menu Preferensi: wildcard 'master.*' di atas sudah
+            # mencakup master.preference.view + master.preference.edit (tidak perlu
+            # entri eksplisit — _expand membaca REGISTRY_CODES saat import).
             'system.audit.view', 'system.organisation.view', 'system.organisation.edit',
         ]),
     },
@@ -297,6 +308,8 @@ ROLE_TEMPLATES = {
             'inventory.adjustment.view', 'inventory.stock_request.view',
             'asset.category.view', 'asset.register.view', 'asset.transaction.view', 'asset.reconciliation.view',
             'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view',
+            # === Update ASAHI #019 — menu Preferensi (font/format tanggal app-wide) ===
+            'master.preference.view',
             'reports.*.view',
             'dashboard.operational.view',
         ]),
@@ -335,6 +348,8 @@ ROLE_TEMPLATES = {
             # Sama seperti ENGINEERING_STAFF (update #001, form ROP).
             'sales.sales_order.view',
             'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view',
+            # === Update ASAHI #019 — menu Preferensi (font/format tanggal app-wide) ===
+            'master.preference.view',
             'inventory.stock.view',
             'dashboard.operational.view',
         ]),
@@ -363,6 +378,8 @@ ROLE_TEMPLATES = {
             'master.barang.view', 'master.gudang.view', 'master.satuan.view',
             'master.kategori_barang.view', 'master.syarat_bayar.view',
             'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view',
+            # === Update ASAHI #019 — menu Preferensi (font/format tanggal app-wide) ===
+            'master.preference.view',
             'inventory.stock.view',
             'dashboard.operational.view',
         ]),
@@ -394,6 +411,8 @@ ROLE_TEMPLATES = {
             'master.satuan.view', 'master.satuan.create', 'master.satuan.edit',
             'master.kategori_barang.view',
             'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view',
+            # === Update ASAHI #019 — menu Preferensi (font/format tanggal app-wide) ===
+            'master.preference.view',
             'dashboard.operational.view',
         ]),
     },
@@ -414,6 +433,9 @@ ROLE_TEMPLATES = {
             'production.request_order_part.approve',
             'production.request_order_part.print',
             'dashboard.operational.view',
+            # === Update ASAHI #019 — menu Preferensi: font/format tanggal dibaca ===
+            # app-wide oleh seluruh role (GET /master/preferensi).
+            'master.preference.view',
         ]),
     },
     'MANAGEMENT_VIEWER': {
@@ -421,7 +443,9 @@ ROLE_TEMPLATES = {
         'description': 'Hanya melihat dashboard/laporan (view only) sesuai scope.',
         'is_system': True,
         'super': False,
-        'permissions': _expand(['dashboard.operational.view', 'reports.*.view', 'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view', 'production.request_order_part.view']),
+        'permissions': _expand(['dashboard.operational.view', 'reports.*.view', 'master.company_profile.view', 'master.mata_uang.view', 'master.alamat_pengiriman.view', 'master.rekening_bank.view', 'production.request_order_part.view',
+                               # Update ASAHI #019 — menu Preferensi (app-wide)
+                               'master.preference.view']),
     },
 }
 
@@ -516,6 +540,7 @@ _ROUTER_PREFIXES = {
         ('kas_bank_akun', 'master.kasbank_akun'),
         ('setting_akun', 'master.setting_akun'),
         ('company_profile', 'master.company_profile'),
+        ('preferensi', 'master.preference'),  # Update ASAHI #019 — menu Preferensi
         ('mata_uang', 'master.mata_uang'),
         ('alamat_pengiriman', 'master.alamat_pengiriman'),
         ('rekening_bank', 'master.rekening_bank'),

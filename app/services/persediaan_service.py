@@ -317,9 +317,12 @@ def create_penyesuaian(
         total = Decimal(str(qty)) * biaya_satuan
 
         # Generate nomor adjustment
+        # === Update ASAHI #019 — prefix via Preferensi (doc_type PENYESUAIAN_STOK; ===
+        # fallback "ADJ" — perilaku lama bila belum diubah).
         no_adj = get_nomor_dokumen(
             db, PenyesuaianStok, prefix="ADJ",
-            no_column="no_adj", tanggal=tanggal.date()
+            no_column="no_adj", tanggal=tanggal.date(),
+            doc_type="PENYESUAIAN_STOK",
         )
 
         adj = PenyesuaianStok(
@@ -651,9 +654,12 @@ def create_pemindahan(
         proses_enum = ProsesPemindahan(proses)
 
         # Generate nomor pemindahan
+        # === Update ASAHI #019 — prefix via Preferensi (doc_type PEMINDAHAN_BARANG; ===
+        # fallback "TRF-STK" — perilaku lama bila belum diubah).
         no_pemindahan = get_nomor_dokumen(
             db, PemindahanBarang, prefix="TRF-STK",
-            no_column="no_pemindahan", tanggal=tanggal.date()
+            no_column="no_pemindahan", tanggal=tanggal.date(),
+            doc_type="PEMINDAHAN_BARANG",
         )
 
         pb = PemindahanBarang(
@@ -941,9 +947,12 @@ def create_permintaan(
         _validate_sales_order(db, sales_order_id)
 
         # Generate nomor permintaan
+        # === Update ASAHI #019 — prefix via Preferensi (doc_type PERMINTAAN_BARANG; ===
+        # fallback "REQ" — perilaku lama bila belum diubah).
         no_permintaan = get_nomor_dokumen(
             db, PermintaanBarang, prefix="REQ",
-            no_column="no_permintaan", tanggal=tanggal.date()
+            no_column="no_permintaan", tanggal=tanggal.date(),
+            doc_type="PERMINTAAN_BARANG",
         )
 
         req = PermintaanBarang(

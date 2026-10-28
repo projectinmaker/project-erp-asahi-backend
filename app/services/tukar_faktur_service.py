@@ -158,9 +158,12 @@ def create_tukar_faktur(
 
         # Generate nomor tukar faktur
         # Update ASAHI: pola penomoran seragam "TF ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type TUKAR_FAKTUR; fallback "TF" — perilaku lama bila belum diubah).
         no_tukar_faktur = get_nomor_dokumen_tahunan(
             db, TukarFaktur, prefix="TF",
             no_column="no_tukar_faktur", tanggal=tanggal.date(),
+            doc_type="TUKAR_FAKTUR",
         )
 
         tf = TukarFaktur(

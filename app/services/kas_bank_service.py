@@ -39,7 +39,7 @@ from app.services.setting_akun_service import (
     KEY_BEBAN_TRANSFER_BANK, KEY_POTONGAN_HUTANG,
     KEY_HUTANG_PPH23, KEY_PPH23_DIBAYAR_DIMUKA,
 )
-from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
+from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan, resolve_prefix
 
 
 # ==========================================
@@ -226,16 +226,28 @@ def get_pembayaran_by_id(db: Session, pembayaran_id: UUID) -> Optional[Pembayara
 # ═══════════════════════════════════════════════════════════════════════════
 # Update #16 — Preview nomor dokumen berikutnya (form ala Accurate Desktop)
 # ═══════════════════════════════════════════════════════════════════════════
-def _prefix_nomor_pembayaran(jenis: Optional[str]) -> str:
+def _prefix_nomor_pembayaran(db: Session, jenis: Optional[str]) -> str:
     """Prefix nomor dokumen pembayaran per jenis (kaidah Update #16):
-    PELUNASAN_INVOICE → "PAY" (bayar invoice); lainnya → "VC" (Pembayaran Lain)."""
-    return "PAY" if (jenis or "").strip().upper() == "PELUNASAN_INVOICE" else "VC"
+    PELUNASAN_INVOICE → "PAY" (bayar invoice); lainnya → "VC" (Pembayaran Lain).
+
+    === Update ASAHI #019 — prefix kini dibaca dari Preferensi → Penomoran ===
+    (key PREFIX_PEMBAYARAN / PREFIX_PEMBAYARAN_LAIN; fallback nilai lama).
+    """
+    if (jenis or "").strip().upper() == "PELUNASAN_INVOICE":
+        return resolve_prefix(db, "PEMBAYARAN", "PAY")
+    return resolve_prefix(db, "PEMBAYARAN_LAIN", "VC")
 
 
-def _prefix_nomor_penerimaan(jenis: Optional[str]) -> str:
+def _prefix_nomor_penerimaan(db: Session, jenis: Optional[str]) -> str:
     """Prefix nomor dokumen penerimaan per jenis (kaidah Update #16):
-    PELUNASAN_INVOICE → "REC" (terima pelunasan); lainnya → "PB" (Penerimaan Lain)."""
-    return "REC" if (jenis or "").strip().upper() == "PELUNASAN_INVOICE" else "PB"
+    PELUNASAN_INVOICE → "REC" (terima pelunasan); lainnya → "PB" (Penerimaan Lain).
+
+    === Update ASAHI #019 — prefix kini dibaca dari Preferensi → Penomoran ===
+    (key PREFIX_PENERIMAAN / PREFIX_PENERIMAAN_LAIN; fallback nilai lama).
+    """
+    if (jenis or "").strip().upper() == "PELUNASAN_INVOICE":
+        return resolve_prefix(db, "PENERIMAAN", "REC")
+    return resolve_prefix(db, "PENERIMAAN_LAIN", "PB")
 
 
 def peek_nomor_pembayaran(db: Session, jenis: Optional[str] = None, tanggal: Optional[date] = None) -> str:
@@ -246,7 +258,7 @@ def peek_nomor_pembayaran(db: Session, jenis: Optional[str] = None, tanggal: Opt
     """
     tgl = tanggal or date.today()
     return get_nomor_dokumen_tahunan(
-        db, PembayaranKas, prefix=_prefix_nomor_pembayaran(jenis),
+        db, PembayaranKas, prefix=_prefix_nomor_pembayaran(db, jenis),
         no_column="no_bukti", tanggal=tgl,
     )
 
@@ -255,7 +267,7 @@ def peek_nomor_penerimaan(db: Session, jenis: Optional[str] = None, tanggal: Opt
     """Hitung nomor dokumen penerimaan BERIKUTNYA tanpa membuat dokumen."""
     tgl = tanggal or date.today()
     return get_nomor_dokumen_tahunan(
-        db, PenerimaanKas, prefix=_prefix_nomor_penerimaan(jenis),
+        db, PenerimaanKas, prefix=_prefix_nomor_penerimaan(db, jenis),
         no_column="no_bukti", tanggal=tgl,
     )
 
@@ -319,7 +331,7 @@ def create_pembayaran(
         #       → "VC" (voucher pengeluaran, ala Accurate).
         # Sequence terpisah per prefix + reset tahunan (lihat
         # get_nomor_dokumen_tahunan) — dokumen lama "PAY ASI/..." tetap aman.
-        _prefix_byr = _prefix_nomor_pembayaran(jenis)
+        _prefix_byr = _prefix_nomor_pembayaran(db, jenis)
         no_bukti = get_nomor_dokumen_tahunan(
             db, PembayaranKas, prefix=_prefix_byr,
             no_column="no_bukti", tanggal=tanggal.date()
@@ -598,7 +610,7 @@ def create_penerimaan(
         #       (voucher penerimaan, ala Accurate "Penerimaan lain").
         # Sequence terpisah per prefix + reset tahunan — dokumen lama
         # "REC ASI/..." tetap aman.
-        _prefix_trm = _prefix_nomor_penerimaan(jenis)
+        _prefix_trm = _prefix_nomor_penerimaan(db, jenis)
         no_bukti = get_nomor_dokumen_tahunan(
             db, PenerimaanKas, prefix=_prefix_trm,
             no_column="no_bukti", tanggal=tanggal.date()
@@ -806,9 +818,12 @@ def create_transfer(
         validate_transfer_amount(nilai_transfer, biaya_transfer, "Transfer Bank")
 
         # Update ASAHI: pola penomoran seragam "TRF ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type TRANSFER_BANK; fallback "TRF" — perilaku lama bila belum diubah).
         no_transfer = get_nomor_dokumen_tahunan(
             db, TransferBank, prefix="TRF",
-            no_column="no_transfer", tanggal=tanggal.date()
+            no_column="no_transfer", tanggal=tanggal.date(),
+            doc_type="TRANSFER_BANK",
         )
 
         transfer = TransferBank(

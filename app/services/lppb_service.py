@@ -265,8 +265,11 @@ def create_lppb(
     _validate_details(details)
     po = _resolve_po(db, purchase_order_id)
 
+    # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+    # (doc_type LPPB; fallback "LPPB" — perilaku lama bila belum diubah).
     no_form = get_nomor_dokumen_tahunan(
-        db, Lppb, prefix="LPPB", no_column="no_form", tanggal=tanggal
+        db, Lppb, prefix="LPPB", no_column="no_form", tanggal=tanggal,
+        doc_type="LPPB",
     )
 
     lppb = Lppb(

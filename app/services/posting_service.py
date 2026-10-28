@@ -19,6 +19,9 @@ from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
 from app.models.detail.jurnal_detail import JurnalDetail
 from app.models.transaksi.penutupan_periode import PenutupanPeriode, StatusPeriode
 
+# === Update ASAHI #019 — prefix nomor jurnal via Preferensi → Penomoran ===
+from app.utils.nomor_dokumen import resolve_prefix
+
 
 class JurnalEntryItem:
     """Data class untuk satu baris jurnal (debit atau kredit)."""
@@ -168,7 +171,12 @@ def auto_posting_jurnal(
 
         # Generate nomor jurnal jika tidak diberikan
         if no_jurnal is None:
-            no_jurnal = _generate_no_jurnal(db, "JV", tanggal)
+            # === Update ASAHI #019 — prefix jurnal manual via Preferensi ===
+            # (doc_type JURNAL_MANUAL, key PREFIX_JURNAL_MANUAL; fallback "JV"
+            # = nilai lama — perilaku identik selama setting belum diubah).
+            no_jurnal = _generate_no_jurnal(
+                db, resolve_prefix(db, "JURNAL_MANUAL", "JV"), tanggal
+            )
 
         # Buat header Jurnal Umum
         from app.services.organization_service import for_source, validate

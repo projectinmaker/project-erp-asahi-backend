@@ -328,9 +328,12 @@ def create_purchase_order(
         # Generate nomor pesanan
         # Update ASAHI: format baru "PO ASI/YYYY/NNN" — reset tahunan,
         # sequence terpisah dari SO (jawaban user, catatan update cetak SO/PO).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type PURCHASE_ORDER; fallback "PO" — perilaku lama bila belum diubah).
         no_pesanan = get_nomor_dokumen_tahunan(
             db, PurchaseOrder, prefix="PO",
-            no_column="no_pesanan", tanggal=tanggal.date()
+            no_column="no_pesanan", tanggal=tanggal.date(),
+            doc_type="PURCHASE_ORDER",
         )
 
         # Buat header
@@ -664,9 +667,12 @@ def create_purchase_invoice(
 
         # Generate nomor form (invoice pembelian)
         # Update ASAHI: pola penomoran seragam "PINV ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type PURCHASE_INVOICE; fallback "PINV" — perilaku lama bila belum diubah).
         no_form = get_nomor_dokumen_tahunan(
             db, PurchaseInvoice, prefix="PINV",
-            no_column="no_form", tanggal=tanggal.date()
+            no_column="no_form", tanggal=tanggal.date(),
+            doc_type="PURCHASE_INVOICE",
         )
 
         # Buat header
@@ -924,9 +930,12 @@ def create_purchase_retur(
 
         # Generate nomor retur
         # Update ASAHI: pola penomoran seragam "RET-B ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type RETUR_PEMBELIAN; fallback "RET-B" — perilaku lama bila belum diubah).
         no_retur = get_nomor_dokumen_tahunan(
             db, PurchaseRetur, prefix="RET-B",
-            no_column="no_retur", tanggal=tanggal.date()
+            no_column="no_retur", tanggal=tanggal.date(),
+            doc_type="RETUR_PEMBELIAN",
         )
 
         # Buat header
@@ -1142,9 +1151,12 @@ def create_penerimaan(
 
         # Generate nomor form penerimaan
         # Update ASAHI: pola penomoran seragam "PB ASI/YYYY/NNN" (reset tahunan).
+        # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
+        # (doc_type PENERIMAAN_BARANG; fallback "PB" — perilaku lama bila belum diubah).
         no_form = get_nomor_dokumen_tahunan(
             db, PenerimaanBarang, prefix="PB",
-            no_column="no_form", tanggal=tanggal.date()
+            no_column="no_form", tanggal=tanggal.date(),
+            doc_type="PENERIMAAN_BARANG",
         )
 
         # Buat header
