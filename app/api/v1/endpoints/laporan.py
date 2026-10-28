@@ -1,6 +1,7 @@
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional
+import calendar
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
@@ -77,6 +78,58 @@ def _parse_range(dari: str, sampai: str):
     return date_from, date_to
 
 
+# ===== Update #024 — helper bulanan (gaya workbook pembukuan ASAHI/Master MAS) =====
+
+_BULAN_PANJANG = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
+                  "Agustus", "September", "Oktober", "November", "Desember"]
+_BULAN_PENDEK = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul",
+                  "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+def _month_ranges(date_from: date, date_to: date, max_months: int = 14):
+    """Bulan kalender dari bulan(date_from) s.d. bulan(date_to).
+
+    Return list (awal_bulan: date, akhir_bulan: date). Blok mengikuti bulan
+    KALENDER (bukan hari persis dari/sampai) — sama seperti sheet NS/LR
+    workbook ASAHI yang memakai EOMONTH per bulan.
+    """
+    months = []
+    cur_y, cur_m = date_from.year, date_from.month
+    while (cur_y, cur_m) <= (date_to.year, date_to.month):
+        last = calendar.monthrange(cur_y, cur_m)[1]
+        months.append((date(cur_y, cur_m, 1), date(cur_y, cur_m, last)))
+        cur_y, cur_m = (cur_y + 1, 1) if cur_m == 12 else (cur_y, cur_m + 1)
+    if len(months) > max_months:
+        raise HTTPException(400, f"Rentang terlalu panjang (maks. {max_months} bulan per export) "
+                                 "— persempit dari/sampai atau pecah per tahun.")
+    return months
+
+
+def _month_bounds(m_start: date, m_end: date):
+    """(awal, akhir) bulan → pasangan datetime day_start/day_end untuk service."""
+    return (day_start(datetime.combine(m_start, datetime.min.time())),
+            day_end(datetime.combine(m_end, datetime.min.time())))
+
+
+def _month_label(m_end: date, short: bool = True) -> str:
+    """Label bulan Indonesia: 'Okt 2026' (pendek) / 'Oktober 2026' (panjang)."""
+    names = _BULAN_PENDEK if short else _BULAN_PANJANG
+    return f"{names[m_end.month - 1]} {m_end.year}"
+
+
+def _sides_db_kr(value, saldo_normal: str):
+    """Saldo ternormalisasi service → (Db, Kr) positif keduanya.
+
+    Konvensi get_neraca_saldo: nilai positif = saldo di SISI NORMAL akun.
+    Maka sisi normal memegang nilai positif, sisi lawan menampung saldo
+    abnormal (nilai negatif dibalik tanda).
+    """
+    v = float(value or 0)
+    if saldo_normal == "DEBIT":
+        return (v if v > 0 else 0.0), (-v if v < 0 else 0.0)
+    return (-v if v < 0 else 0.0), (v if v > 0 else 0.0)
+
+
 # ==========================================
 # LAPORAN KEUANGAN
 # ==========================================
@@ -100,7 +153,7 @@ def get_neraca_saldo(
     return laporan_service.get_neraca_saldo(db, date_from, date_to)
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #024 — gaya workbook ASAHI/Master MAS) =====
 @router.get("/neraca-saldo/export")
 def export_neraca_saldo(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -108,24 +161,66 @@ def export_neraca_saldo(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Neraca Saldo ke file .xlsx (kolom sama seperti tampilan web)."""
+    """Export Neraca Saldo ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #024 — layout meniru sheet "NS" Master MAS: kolom Kode/Nama/Normal
+    + BLOK BULANAN (maks. 14) masing-masing 6 sub-kolom: Saldo Awal Db/Kr,
+    Mutasi Db/Kr, Saldo Akhir Db/Kr. Nilai per bulan = komposisi
+    get_neraca_saldo bulan kalender penuh (blok = EOMONTH, bukan hari persis).
+    Angka memakai format akuntansi (nol tampil "-") + baris TOTAL per bulan.
+    """
     date_from, date_to = _parse_range(dari, sampai)
-    data = laporan_service.get_neraca_saldo(db, date_from, date_to)
+    months = _month_ranges(date_from, date_to)
+
+    # Data per bulan (blok kalender penuh) + universe akun union.
+    monthly = []
+    accounts: dict[str, dict] = {}
+    for m_start, m_end in months:
+        data = laporan_service.get_neraca_saldo(db, *_month_bounds(m_start, m_end))
+        monthly.append(data)
+        for akun in data["akun"]:
+            accounts.setdefault(akun["kode_akun"], {
+                "kode": akun["kode_akun"], "nama": akun["nama_akun"],
+                "normal": akun["saldo_normal"]})
+    lookups = [{a["kode_akun"]: a for a in data["akun"]} for data in monthly]
 
     rows: list[tuple[str, list]] = []
-    for idx, akun in enumerate(data["akun"], start=1):
-        rows.append(("item", [idx, akun["kode_akun"], akun["nama_akun"], akun["saldo_normal"],
-                              _num(akun["total_debit"]), _num(akun["total_kredit"]), _num(akun["saldo"])]))
-    rows.append(("total", ["Grand Total", "", "", None,
-                           _num(data["total_debit"]), _num(data["total_kredit"]),
-                           _num(data["total_debit"] - data["total_kredit"])]))
-    wb = excel_service.report_sheet(
-        headers=["No", "Kode Akun", "Nama Akun", "Normal", "Debit", "Kredit", "Saldo"],
-        rows=rows, sheet="Neraca Saldo",
+    for kode in sorted(accounts):
+        info = accounts[kode]
+        vals = [info["kode"], info["nama"], "D" if info["normal"] == "DEBIT" else "K"]
+        for lookup in lookups:
+            item = lookup.get(kode)
+            if item is None:
+                vals += [None] * 6
+                continue
+            sa_db, sa_kr = _sides_db_kr(item["saldo_awal"], item["saldo_normal"])
+            sak_db, sak_kr = _sides_db_kr(item["saldo_akhir"], item["saldo_normal"])
+            vals += [sa_db, sa_kr,
+                     _num(item["total_debit"]), _num(item["total_kredit"]),
+                     sak_db, sak_kr]
+        rows.append(("item", vals))
+
+    # Baris TOTAL per bulan: mutasi Db/Kr (uji seimbang D=K) + saldo akhir Db/Kr.
+    vals = ["", "TOTAL", ""]
+    for data in monthly:
+        vals += [None, None,
+                 _num(data["total_debit"]), _num(data["total_kredit"]),
+                 _num(data["total_saldo_debit"]), _num(data["total_saldo_kredit"])]
+    rows.append(("total", vals))
+
+    blocks = [(_month_label(m_end, short=False),
+               ["Saldo Awal Db.", "Saldo Awal Kr.", "Mutasi Db.", "Mutasi Kr.",
+                "Saldo Akhir Db.", "Saldo Akhir Kr."])
+              for _, m_end in months]
+    n_month_cols = 6 * len(months)
+    wb = excel_service.block_report_sheet(
+        left_headers=["Kode Akun", "Nama Akun", "Normal"],
+        blocks=blocks, rows=rows, sheet="Neraca Saldo",
         company=laporan_service.get_company_name(db),
         title="Neraca Saldo",
         period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
-        decimal_columns={4, 5, 6}, wide_columns={2},
+        decimal_columns=set(range(3, 3 + n_month_cols)),
+        wide_columns={1},
     )
     return _xlsx_response(wb, f"neraca-saldo_{dari}_sd_{sampai}.xlsx")
 
@@ -201,7 +296,7 @@ def get_laba_rugi(
     return laporan_service.get_laba_rugi(db, date_from, date_to)
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #024 — gaya workbook ASAHI/Master MAS) =====
 @router.get("/laba-rugi/export")
 def export_laba_rugi(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -209,37 +304,98 @@ def export_laba_rugi(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Laporan Laba Rugi ke file .xlsx (seksi + total sama seperti web)."""
+    """Export Laporan Laba Rugi ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #024 — layout meniru sheet "LR" Master MAS: seksi berjenjang
+    (Pendapatan Usaha → HPP → Laba Kotor → Biaya Operasional → Laba Usaha →
+    Pendapatan/Biaya Lain-lain → Laba Bersih) × KOLOM BULANAN (maks. 14,
+    masing-masing diikuti kolom "%" terhadap pendapatan usaha bulan itu) +
+    kolom TOTAL (rentang penuh dari-sampai). Angka format akuntansi (nol
+    tampil "-"). Kolom KOREKSI FISKAL/FISKAL template tidak direplikasi
+    (ASAHI Books belum menyimpan data koreksi fiskal).
+    """
     date_from, date_to = _parse_range(dari, sampai)
-    data = laporan_service.get_laba_rugi(db, date_from, date_to)
+    months = _month_ranges(date_from, date_to)
 
-    def _items(items):
-        return [("item", [idx, it["kode_akun"], it["nama_akun"], _num(it["total"])])
-                for idx, it in enumerate(items, start=1)]
+    monthly = [laporan_service.get_laba_rugi(db, *_month_bounds(m_start, m_end))
+               for m_start, m_end in months]
+    total_data = laporan_service.get_laba_rugi(db, date_from, date_to)
 
-    rows: list[tuple[str, list]] = [("section", ["Pendapatan"])]
-    rows += _items(data["pendapatan"])
-    rows.append(("total", ["", "", "Total Pendapatan", _num(data["total_pendapatan"])]))
+    # Universe akun per grup (union semua bulan + total) — urut kode.
+    def _union(group):
+        acc: dict[str, str] = {}
+        for data in [*monthly, total_data]:
+            for it in data[group]:
+                acc.setdefault(it["kode_akun"], it["nama_akun"])
+        return acc
+
+    pendapatan, hpp = _union("pendapatan"), _union("hpp")
+    beban, lain = _union("beban"), _union("pendapatan_lain")
+
+    # Nilai per bulan (0 bila akun tak muncul di bulan itu) + persentase
+    # terhadap pendapatan usaha bulan tsb (None bila pendapatan 0 — template
+    # menampilkan #DIV/0!, di sini dibiarkan kosong).
+    def _item_row(kode: str, nama: str, group: str):
+        vals = [kode, nama]
+        for data in monthly:
+            item = next((it for it in data[group] if it["kode_akun"] == kode), None)
+            value = _num(item["total"]) if item else 0.0
+            if value is None:
+                value = 0.0
+            base = float(data["total_pendapatan"] or 0)
+            vals += [value, (value / base) if base else None]
+        tval = _num(next((it["total"] for it in total_data[group] if it["kode_akun"] == kode), 0) or 0)
+        vals.append(tval)
+        return vals
+
+    def _summary_row(label: str, month_key: str, total_key: str):
+        vals = ["", label]
+        for data in monthly:
+            value = _num(data[month_key])
+            base = float(data["total_pendapatan"] or 0)
+            vals += [value, (value / base) if base else None]
+        vals.append(_num(total_data[total_key]))
+        return vals
+
+    rows: list[tuple[str, list]] = [("section", ["Pendapatan Usaha"])]
+    for kode in sorted(pendapatan):
+        rows.append(("item", _item_row(kode, pendapatan[kode], "pendapatan")))
+    rows.append(("subtotal", _summary_row("Jumlah Pendapatan Usaha :", "total_pendapatan", "total_pendapatan")))
+
     rows.append(("section", ["Harga Pokok Penjualan"]))
-    rows += _items(data["hpp"])
-    rows.append(("total", ["", "", "Total HPP", _num(data["total_hpp"])]))
-    rows.append(("total", ["", "", "Laba Kotor", _num(data["laba_kotor"])]))
-    rows.append(("section", ["Beban Operasional"]))
-    rows += _items(data["beban"])
-    rows.append(("total", ["", "", "Total Beban", _num(data["total_beban"])]))
-    rows.append(("total", ["", "", "Laba Usaha", _num(data["laba_usaha"])]))
-    if data["pendapatan_lain"]:
-        rows.append(("section", ["Pendapatan Lain-lain"]))
-        rows += _items(data["pendapatan_lain"])
-        rows.append(("total", ["", "", "Total Pendapatan Lain-lain", _num(data["total_pendapatan_lain"])]))
-    rows.append(("total", ["", "", "Laba (Rugi) Bersih", _num(data["laba_bersih"])]))
+    for kode in sorted(hpp):
+        rows.append(("item", _item_row(kode, hpp[kode], "hpp")))
+    rows.append(("subtotal", _summary_row("Jumlah Harga Pokok Penjualan :", "total_hpp", "total_hpp")))
+    rows.append(("total", _summary_row("Laba (Rugi) Kotor", "laba_kotor", "laba_kotor")))
+
+    rows.append(("section", ["Biaya Operasional"]))
+    for kode in sorted(beban):
+        rows.append(("item", _item_row(kode, beban[kode], "beban")))
+    rows.append(("subtotal", _summary_row("Jumlah Biaya Operasional :", "total_beban", "total_beban")))
+    rows.append(("total", _summary_row("Laba (Rugi) Usaha", "laba_usaha", "laba_usaha")))
+
+    if lain:
+        rows.append(("section", ["Pendapatan (Biaya) Lain-lain"]))
+        for kode in sorted(lain):
+            rows.append(("item", _item_row(kode, lain[kode], "pendapatan_lain")))
+        rows.append(("subtotal", _summary_row("Jumlah Pendapatan (Biaya) Lain-lain :",
+                                              "total_pendapatan_lain", "total_pendapatan_lain")))
+    rows.append(("total", _summary_row("Laba (Rugi) Bersih", "laba_bersih", "laba_bersih")))
+
+    headers = ["Kode Akun", "Nama Akun"]
+    for _, m_end in months:
+        headers += [_month_label(m_end), "%"]
+    headers.append("TOTAL")
+    n = len(months)
+    decimal_cols = {2 + 2 * i for i in range(n)} | {2 + 2 * n}
+    percent_cols = {3 + 2 * i for i in range(n)}
     wb = excel_service.report_sheet(
-        headers=["No", "Kode Akun", "Nama Akun", "Jumlah"],
-        rows=rows, sheet="Laba Rugi",
+        headers=headers, rows=rows, sheet="Laba Rugi",
         company=laporan_service.get_company_name(db),
         title="Laporan Laba / Rugi (Rupiah)",
         period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
-        decimal_columns={3}, wide_columns={2},
+        decimal_columns=decimal_cols, percent_columns=percent_cols,
+        wide_columns={1},
     )
     return _xlsx_response(wb, f"laba-rugi_{dari}_sd_{sampai}.xlsx")
 
@@ -259,42 +415,83 @@ def get_neraca(
     return laporan_service.get_neraca(db, dt)
 
 
-# ===== EXPORT EXCEL (Update #023) =====
+# ===== EXPORT EXCEL (Update #024 — gaya workbook ASAHI/Master MAS) =====
 @router.get("/neraca/export")
 def export_neraca(
     tanggal: str = Query(..., description="Tanggal posisi neraca (YYYY-MM-DD)"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Export Neraca (posisi keuangan) ke file .xlsx (kolom sama seperti web)."""
+    """Export Neraca ke .xlsx bergaya workbook pembukuan ASAHI.
+
+    Update #024 — layout meniru sheet "NRC" Master MAS: seksi Aset /
+    Kewajiban / Ekuitas + kolom posisi per akhir bulan Januari s.d. bulan
+    tanggal (evolusi bulanan sepanjang tahun berjalan; template aslinya 13
+    blok berdampingan). Angka format akuntansi (nol tampil "-"). Baris
+    "Laba/rugi belum ditutup" (jurnal penutup belum diproses) tetap
+    ditampilkan sebagai bagian ekuitas.
+    """
     try:
         dt = day_end(datetime.strptime(tanggal, "%Y-%m-%d"))
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD") from None
-    data = laporan_service.get_neraca(db, dt)
 
-    def _items(items):
-        return [("item", [idx, it["kode_akun"], it["nama_akun"], _num(it["total"])])
-                for idx, it in enumerate(items, start=1)]
+    target = dt.date()
+    months = []
+    for m in range(1, target.month + 1):
+        last = calendar.monthrange(target.year, m)[1]
+        months.append((date(target.year, m, 1), date(target.year, m, last)))
+
+    monthly = [laporan_service.get_neraca(db, day_end(datetime.combine(m_end, datetime.min.time())))
+               for _, m_end in months]
+
+    # Universe akun per grup (union semua bulan) — urut kode.
+    def _union(group):
+        acc: dict[str, str] = {}
+        for data in monthly:
+            for it in data[group]:
+                acc.setdefault(it["kode_akun"], it["nama_akun"])
+        return acc
+
+    aset, kewajiban, ekuitas = _union("aset"), _union("kewajiban"), _union("ekuitas")
+
+    def _item_row(kode: str, nama: str, group: str):
+        vals = ["" if kode.startswith("LABA_BELUM") else kode, nama]
+        for data in monthly:
+            item = next((it for it in data[group] if it["kode_akun"] == kode), None)
+            vals.append(_num(item["total"]) if item else 0.0)
+        return vals
+
+    def _summary_row(label: str, key: str):
+        return ["", label] + [_num(data[key]) for data in monthly]
 
     rows: list[tuple[str, list]] = [("section", ["Aset"])]
-    rows += _items(data["aset"])
-    rows.append(("total", ["", "", "Total Aset", _num(data["total_aset"])]))
+    for kode in sorted(aset):
+        rows.append(("item", _item_row(kode, aset[kode], "aset")))
+    rows.append(("total", _summary_row("Total Aset :", "total_aset")))
+
     rows.append(("section", ["Kewajiban"]))
-    rows += _items(data["kewajiban"])
-    rows.append(("total", ["", "", "Total Kewajiban", _num(data["total_kewajiban"])]))
+    for kode in sorted(kewajiban):
+        rows.append(("item", _item_row(kode, kewajiban[kode], "kewajiban")))
+    rows.append(("subtotal", _summary_row("Jumlah Kewajiban :", "total_kewajiban")))
+
     rows.append(("section", ["Ekuitas"]))
-    rows += _items(data["ekuitas"])
-    rows.append(("total", ["", "", "Total Ekuitas", _num(data["total_ekuitas"])]))
-    rows.append(("total", ["", "", "Total Kewajiban + Ekuitas",
-                           _num(data["total_kewajiban"] + data["total_ekuitas"])]))
+    for kode in sorted(ekuitas):
+        rows.append(("item", _item_row(kode, ekuitas[kode], "ekuitas")))
+    rows.append(("subtotal", _summary_row("Jumlah Ekuitas :", "total_ekuitas")))
+    # Total K+G dihitung langsung (tidak tersedia sebagai satu key di service).
+    rows.append(("total", ["", "Total Kewajiban dan Ekuitas :"]
+                + [_num(data["total_kewajiban"] + data["total_ekuitas"]) for data in monthly]))
+
+    headers = ["Kode Akun", "Nama Akun"] + [_month_label(m_end) for _, m_end in months]
+    n = len(months)
     wb = excel_service.report_sheet(
-        headers=["No", "Kode Akun", "Nama Akun", "Jumlah"],
-        rows=rows, sheet="Neraca",
+        headers=headers, rows=rows, sheet="Neraca",
         company=laporan_service.get_company_name(db),
         title="Neraca",
-        period=f"Per Tanggal: {_fmt_date(tanggal)}",
-        decimal_columns={3}, wide_columns={2},
+        period=f"Posisi per {_fmt_date(tanggal)} (kolom bulanan Januari - {_month_label(months[-1][1], short=False)})",
+        decimal_columns=set(range(2, 2 + n)),
+        wide_columns={1},
     )
     return _xlsx_response(wb, f"neraca_{tanggal}.xlsx")
 

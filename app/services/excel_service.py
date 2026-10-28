@@ -7,6 +7,14 @@ piutang/hutang, export stok, dan template import master.
 Update #023 — export laporan keuangan: report_sheet() + append_report_title()
 (builder sheet laporan bergaya korporat — kop perusahaan, seksi, baris total).
 
+Update #024 — gaya mengikuti workbook pembukuan ASAHI (Master MAS):
+- ACCOUNTING_FORMAT: angka tampil "-" untuk nol (format akuntansi ala
+  template mereka '_(* #,##0.00_);...') — dipakai seluruh kolom desimal
+  report_sheet.
+- percent_columns pada report_sheet (kolom "%" ala sheet LR).
+- block_report_sheet(): header DUA TINGKAT untuk laporan blok-bulanan ala
+  sheet NS (kolom info + blok bulanan × sub-kolom, judul blok merge).
+
 Style minimal-profesional:
 - Header: bold + fill abu terang + border tipis, freeze panes A2.
 - Auto column width (perkiraan panjang isi, min 10 max 45).
@@ -28,6 +36,11 @@ THIN_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 INTEGER_FORMAT = "#,##0"
 DECIMAL_FORMAT = "#,##0.00"
 DATE_FORMAT = "DD/MM/YYYY"
+
+# Update #024 — format akuntansi ala workbook pembukuan ASAHI (Master MAS):
+# nol tampil "-", negatif dalam kurung, rata dengan spasi pengaman._(_).
+ACCOUNTING_FORMAT = '_(* #,##0.00_);_(* \\(#,##0.00\\);_(* "-"??_);_(@_)'
+PERCENT_FORMAT = "0.0%"
 
 MIN_WIDTH = 10
 MAX_WIDTH = 45
@@ -180,6 +193,7 @@ def report_sheet(
     number_columns: set[int] | None = None,
     decimal_columns: set[int] | None = None,
     date_columns: set[int] | None = None,
+    percent_columns: set[int] | None = None,
     wide_columns: set[int] | None = None,
     printed_at: datetime | None = None,
 ) -> Workbook:
@@ -200,8 +214,10 @@ def report_sheet(
         "total"    : bold + border ATAS double (nilai tetap di kolom angka).
       values sepanjang headers (0-based, selisih panjang dianggap kosong).
 
-    Kolom (indeks 0-based): decimal_columns → '#,##0.00', number_columns →
-    '#,##0', date_columns → 'DD/MM/YYYY' (nilai berisi date/datetime).
+    Kolom (indeks 0-based): decimal_columns → ACCOUNTING_FORMAT (Update #024,
+    nol tampil "-"), number_columns → '#,##0', date_columns → 'DD/MM/YYYY'
+    (nilai berisi date/datetime), percent_columns → '0.0%' (nilai = rasio
+    0..1, ala kolom "%" sheet LR Master MAS).
     wide_columns: kolom nama yang boleh lebar sampai 50 (lainnya max 45, min 10).
 
     wb None → Workbook baru (sheet aktif dipakai); wb diberikan → sheet baru
@@ -210,6 +226,7 @@ def report_sheet(
     number_columns = number_columns or set()
     decimal_columns = decimal_columns or set()
     date_columns = date_columns or set()
+    percent_columns = percent_columns or set()
     wide_columns = wide_columns or set()
     n_cols = len(headers)
 
@@ -237,9 +254,10 @@ def report_sheet(
 
     widths = [len(_cell_text(h)) for h in headers]
     fmt_by_col = {}
-    for idx in sorted(number_columns | decimal_columns | date_columns):
+    for idx in sorted(number_columns | decimal_columns | date_columns | percent_columns):
         fmt_by_col[idx] = (
-            DECIMAL_FORMAT if idx in decimal_columns
+            ACCOUNTING_FORMAT if idx in decimal_columns
+            else PERCENT_FORMAT if idx in percent_columns
             else INTEGER_FORMAT if idx in number_columns
             else DATE_FORMAT
         )
@@ -284,6 +302,131 @@ def report_sheet(
 
     # Freeze tepat di bawah baris header (kop + header tetap terlihat saat scroll).
     ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+    return wb
+
+
+def block_report_sheet(
+    left_headers: list[str],
+    blocks: list[tuple[str, list[str]]],
+    rows: list[tuple[str, list]],
+    sheet: str = "Laporan",
+    wb: Workbook | None = None,
+    company: str = "",
+    title: str = "",
+    period: str = "",
+    decimal_columns: set[int] | None = None,
+    wide_columns: set[int] | None = None,
+    printed_at: datetime | None = None,
+) -> Workbook:
+    """Bangun sheet laporan BLOK BULANAN ala sheet NS Master MAS (Update #024).
+
+    Layout header DUA TINGKAT (pola "Neraca Saldo" workbook ASAHI):
+    - Kolom info kiri (mis. Kode/Nama/Normal): label merge vertikal 2 baris.
+    - Setiap blok (mis. satu bulan): judul blok merge horizontal di baris-1
+      selebar sub-kolomnya, sub-label di baris-2 (mis. "Saldo Awal Db." dst).
+    - Kop 4 baris + freeze tepat di bawah baris-2 header.
+
+    left_headers   : label kolom info (kiri).
+    blocks         : list (judul_blok, [sub_label, ...]).
+    rows           : list (kind, values) — values FLAT sepanjang SEMUA kolom
+                     (kolom info + semua sub-kolom tiap blok, 0-based global).
+    decimal_columns: indeks global kolom angka → ACCOUNTING_FORMAT.
+    wide_columns   : kolom nama yang boleh lebar sampai 50.
+    """
+    decimal_columns = decimal_columns or set()
+    wide_columns = wide_columns or set()
+    n_left = len(left_headers)
+    sub_widths = [len(sub) for _, sub in blocks]
+    n_cols = n_left + sum(sub_widths)
+
+    if wb is None:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = sheet
+    else:
+        ws = wb.create_sheet(title=sheet)
+
+    printed = (printed_at or datetime.now()).strftime("%d/%m/%Y %H:%M")
+    title_lines: list[tuple[str, int | None]] = [(company or "-", 14), (title, 12)]
+    if period:
+        title_lines.append((period, 10))
+    title_lines.append((f"Dicetak: {printed}", 9))
+    header_row = append_report_title(ws, title_lines, n_columns=n_cols)
+
+    h1, h2 = header_row, header_row + 1
+
+    def _style_header(cell):
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.border = THIN_BORDER
+        cell.alignment = Alignment(vertical="center", horizontal="center", wrap_text=True)
+
+    # Baris-1: kolom info (merge vertikal H1:H2) + judul blok (merge horizontal).
+    for idx, label in enumerate(left_headers, start=1):
+        cell = ws.cell(row=h1, column=idx, value=label)
+        _style_header(cell)
+        if n_left > 0:
+            ws.merge_cells(start_row=h1, start_column=idx, end_row=h2, end_column=idx)
+    col = n_left + 1
+    for (label, sub) in blocks:
+        cell = ws.cell(row=h1, column=col, value=label)
+        _style_header(cell)
+        if len(sub) > 1:
+            ws.merge_cells(start_row=h1, start_column=col, end_row=h1, end_column=col + len(sub) - 1)
+        for sub_label in sub:
+            c2 = ws.cell(row=h2, column=col, value=sub_label)
+            _style_header(c2)
+            col += 1
+
+    # Baris data — kind sama seperti report_sheet.
+    widths = [0] * n_cols
+    for idx, label in enumerate(left_headers):
+        widths[idx] = len(_cell_text(label))
+    col = n_left
+    for (_, sub) in blocks:
+        for sub_label in sub:
+            widths[col] = len(_cell_text(sub_label))
+            col += 1
+
+    r = h2 + 1
+    for kind, values in rows:
+        cells = []
+        for idx in range(n_cols):
+            value = values[idx] if idx < len(values) else None
+            if kind == "section" and idx > 0:
+                value = None
+            if kind == "section" and idx == 0 and value is not None:
+                value = str(value).upper()
+            cell = ws.cell(row=r, column=idx + 1, value=value)
+            cells.append(cell)
+            if value is not None:
+                widths[idx] = max(widths[idx], len(_cell_text(value)))
+        if kind == "section":
+            for cell in cells:
+                cell.font = REPORT_BOLD_FONT
+                cell.fill = SECTION_FILL
+                cell.border = THIN_BORDER
+        elif kind == "subtotal":
+            for cell in cells:
+                cell.font = REPORT_BOLD_FONT
+                cell.border = SUBTOTAL_BORDER
+        elif kind == "total":
+            for cell in cells:
+                cell.font = REPORT_BOLD_FONT
+                cell.border = TOTAL_BORDER
+        else:  # "item"
+            for cell in cells:
+                cell.border = THIN_BORDER
+        for idx in decimal_columns:
+            if idx < n_cols:
+                cells[idx].number_format = ACCOUNTING_FORMAT
+        r += 1
+
+    for idx in range(n_cols):
+        cap = NAME_MAX_WIDTH if idx in wide_columns else MAX_WIDTH
+        ws.column_dimensions[get_column_letter(idx + 1)].width = max(MIN_WIDTH, min(cap, widths[idx] + 2))
+
+    ws.freeze_panes = ws.cell(row=h2 + 1, column=1)
     return wb
 
 
