@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
-from app.models.akun_perkiraan import HeaderCOA, TingkatAkun, HEADER_TO_ACCOUNT_CLASS
+from app.models.akun_perkiraan import HeaderCOA, TingkatAkun, HEADER_TO_ACCOUNT_CLASS, AkunPerkiraan, SaldoNormal
 from app.models.master.pengguna import Pengguna
 from app.schemas.coa import (
     COACreate, COAUpdate, COAResponse,
@@ -21,12 +21,17 @@ from app.schemas.base import PaginatedResponse
 router = APIRouter()
 
 
-def _coa_to_dict(coa, jenis_kas_bank=None) -> dict:
+def _coa_to_dict(coa, jenis_kas_bank=None, saldo_override=None) -> dict:
     """Convert AkunPerkiraan ORM object to dict for COAResponse.
 
     Includes derived helper flags (is_postable_for_manual, is_legacy_locked,
     is_system_account) supaya frontend bisa langsung tampilkan status tanpa
     perlu re-derive.
+
+    === Update #028b ===
+    ``saldo_override``: bila diisi, dipakai sebagai nilai ``saldo`` respons
+    (saldo LIVE dari general ledger — lihat ``_gl_saldo_rolled``). Bila None,
+    dipakai kolom statis ``coa.saldo`` seperti semula.
     """
     return {
         "id": coa.id,
@@ -38,7 +43,7 @@ def _coa_to_dict(coa, jenis_kas_bank=None) -> dict:
         "induk_kode": coa.induk_kode,
         "saldo_normal": coa.saldo_normal,
         "status": coa.status,
-        "saldo": coa.saldo,
+        "saldo": coa.saldo if saldo_override is None else saldo_override,
         "tanggal": coa.tanggal,
         "created_at": coa.created_at,
         "updated_at": coa.updated_at,
@@ -62,6 +67,71 @@ def _coa_to_dict(coa, jenis_kas_bank=None) -> dict:
         "is_legacy_locked": coa.is_legacy_locked,
         "is_system_account": coa.is_system_account,
     }
+
+
+def _gl_saldo_rolled(db: Session) -> dict:
+    """=== Update #028b — saldo LIVE dari general ledger, digulung ke induk ===
+
+    Kolom ``akun_perkiraan.saldo`` hanyalah snapshot statis yang ditulis
+    fitur "Set Saldo Awal" di halaman Akun Perkiraan itu sendiri. Transaksi
+    jurnal APA PUN (faktur penjualan/pembelian, pelunasan, retur, jurnal
+    manual, dan saldo awal piutang/hutang per mitra #028) tidak pernah
+    mengubah kolom itu — hanya menulis ke general ledger. Akibatnya saldo di
+    halaman Akun Perkiraan selalu tertinggal dari Neraca Saldo / Buku Besar
+    (yang membaca GL).
+
+    Helper ini menghitung saldo live langsung dari seluruh jurnal POSTED
+    (debit - kredit; jurnal saldo awal lama SA-INIT, saldo awal #028, dan
+    jurnal pembaliknya sama-sama masuk dan otomatis saling meniadakan), lalu
+    MENGGULUNG nilai setiap akun ke semua induknya — sehingga akun induk
+    "Piutang Usaha" / "Hutang Usaha" menampilkan total seluruh sub-akun
+    mitra, persis konsep baris NS = PU!K53 / HU!K405 template Master MAS.
+
+    Return: {akun_id: raw_rolled} — nilai RAW (debit - kredit, belum
+    ditandai saldo_normal). Pemanggil menyesuaikan tanda:
+    display = raw * (+1 bila saldo_normal DEBIT, -1 bila KREDIT).
+    """
+    from decimal import Decimal
+    from sqlalchemy import func
+    from app.models.detail.jurnal_detail import JurnalDetail
+    from app.models.transaksi.jurnal import JurnalUmum, StatusJurnal
+
+    rows = (
+        db.query(
+            JurnalDetail.akun_perkiraan_id,
+            func.sum(JurnalDetail.debit),
+            func.sum(JurnalDetail.kredit),
+        )
+        .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+        .filter(JurnalUmum.status == StatusJurnal.POSTED)
+        .group_by(JurnalDetail.akun_perkiraan_id)
+        .all()
+    )
+    own = {}
+    for r in rows:
+        own[r[0]] = Decimal(str(r[1] or 0)) - Decimal(str(r[2] or 0))
+
+    # Gulung ke atas: setiap akun ber-jurnal menambah nilai semua induknya.
+    all_accounts = db.query(AkunPerkiraan.id, AkunPerkiraan.induk_id).all()
+    parent_of = {a.id: a.induk_id for a in all_accounts}
+    rolled = dict(own)
+    for akun_id, nilai in own.items():
+        pid = parent_of.get(akun_id)
+        seen = {akun_id}  # guard siklus — data induk korup tidak boleh loop
+        while pid is not None and pid not in seen:
+            rolled[pid] = rolled.get(pid, Decimal("0")) + nilai
+            seen.add(pid)
+            pid = parent_of.get(pid)
+    return rolled
+
+
+def _saldo_live(coa, gl_rolled: dict):
+    """Update #028b — saldo display bertanda saldo_normal (positif = sisi normal)."""
+    from decimal import Decimal
+    raw = gl_rolled.get(coa.id)
+    if raw is None:
+        return Decimal("0")
+    return raw if coa.saldo_normal == SaldoNormal.DEBIT else -raw
 
 
 @router.get("/", response_model=PaginatedResponse[COAResponse])
@@ -107,8 +177,18 @@ def read_coa_list(
         allow_manual_posting=allow_manual_posting,
     )
 
+    # === Update #028b — kolom "Saldo" kini saldo LIVE dari general ledger
+    # (POSTED, digulung ke induk) supaya konsisten dengan Neraca Saldo /
+    # Buku Besar. Kolom statis lama tidak diubah di database (tetap dipakai
+    # internal fitur "Set Saldo Awal" halaman ini). ===
+    gl_rolled = _gl_saldo_rolled(db)
+
     result_data = [
-        _coa_to_dict(coa, coa_service._get_jenis_kas_bank_for_coa(db, coa.id))
+        _coa_to_dict(
+            coa,
+            coa_service._get_jenis_kas_bank_for_coa(db, coa.id),
+            saldo_override=_saldo_live(coa, gl_rolled),
+        )
         for coa in data
     ]
 
@@ -416,7 +496,14 @@ def read_coa_detail(
     if not coa:
         raise HTTPException(status_code=404, detail="Akun Perkiraan tidak ditemukan")
 
-    return _coa_to_dict(coa, coa_service._get_jenis_kas_bank_for_coa(db, coa.id))
+    # === Update #028b — saldo LIVE dari GL (digulung ke induk), konsisten
+    # dengan endpoint list & Neraca Saldo / Buku Besar. ===
+    gl_rolled = _gl_saldo_rolled(db)
+    return _coa_to_dict(
+        coa,
+        coa_service._get_jenis_kas_bank_for_coa(db, coa.id),
+        saldo_override=_saldo_live(coa, gl_rolled),
+    )
 
 
 @router.put("/{coa_id}", response_model=COAResponse)
