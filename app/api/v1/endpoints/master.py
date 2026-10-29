@@ -30,6 +30,9 @@ from app.models.detail.barang_satuan import BarangSatuan
 from app.models.transaksi.stock_balance import StockBalance
 from app.models.transaksi.stok_mutasi import StokMutasi
 from app.models.transaksi.persediaan.penyesuaian_stok import StatusPersediaan
+# === Update #028 — Saldo Awal Piutang/Hutang per mitra ===
+from app.models.transaksi.jurnal import JurnalUmum, RefModule, StatusJurnal
+from app.models.detail.jurnal_detail import JurnalDetail
 from app.schemas.base import PaginatedResponse
 from app.schemas.master import (
     PelangganCreate, PelangganUpdate, PelangganResponse,
@@ -52,6 +55,7 @@ from app.schemas.master import (
     AlamatPengirimanCreate, AlamatPengirimanUpdate, AlamatPengirimanResponse,
     RekeningBankCreate, RekeningBankUpdate, RekeningBankResponse,
     COASimpleResponse,
+    SaldoAwalSetRequest, SaldoAwalAkunSimple, SaldoAwalSetResponse, SaldoAwalInfoResponse,
     ImportResult, ImportRowError,
 )
 
@@ -111,6 +115,8 @@ from app.services import master_service
 from app.services import persediaan_service
 from app.services import setting_akun_service
 from app.services import workflow_service
+# === Update #028 — auto_posting_jurnal + reverse_journal (pembatalan) ===
+from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem, reverse_journal
 from app.services.coa_linkage_service import (
     auto_create_piutang_coa, auto_create_hutang_coa,
     find_piutang_root_coa, find_hutang_root_coa, get_coa_detail_ids_under,
@@ -463,6 +469,404 @@ def delete_pelanggan(
     master_service.soft_delete_master(db, item)
     return {"message": "Pelanggan berhasil dinonaktifkan"}
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Update #028 — SALDO AWAL PIUTANG/HUTANG PER MITRA
+# ═══════════════════════════════════════════════════════════════════════════
+# Input saldo awal piutang (pelanggan) / hutang (supplier) SEKALI per mitra.
+# Sistem membuat JURNAL ber-status POSTED (RefModule.SALDO_AWAL):
+#   Piutang : D [Piutang - {Nama}]      / K [akun penyeimbang ekuitas]
+#   Hutang  : D [akun penyeimbang]      / K [Hutang - {Nama}]
+# Penyeimbang = akun ekuitas pilihan user (disarankan "Laba (Rugi) Ditahan")
+# — sama seperti sheet SaldoAwal template Master MAS yang menyeimbang total
+# Db = Cr lewat Modal Saham / Saldo Laba.
+#
+# Pembatalan = jurnal pembalik (posting_service.reverse_journal) pada TANGGAL
+# JURNAL ASLI — jurnal tidak pernah dihapus supaya jejak audit utuh; set
+# ulang diperbolehkan setelah pembatalan.
+#
+# Catatan desain:
+# - ref_id sengaja None: unique index (ref_module, ref_id, tipe_transaksi)
+#   akan menolak set-ulang setelah pembatalan (baris jurnal asli tetap ada),
+#   sehingga guard "sudah ada saldo awal aktif" ditegakkan di level aplikasi
+#   lewat join JurnalDetail pada sub-akun mitra + cek reversal.
+# - Jurnal memakai RefModule.SALDO_AWAL (bukan MANUAL) → tidak lewat
+#   persetujuan workflow (langsung POSTED) dan tidak di-poll hook workflow
+#   halaman Jurnal Umum (fix #026).
+# - Saldo "berjalan" mitra = saldo GL sub-akun (saldo awal + semua mutasi
+#   faktur/pelunasan/retur) — pembacaan laporan tetap dari GL yang sama.
+_TIPE_SALDO_AWAL_AR = "SALDO_AWAL_AR"
+_TIPE_SALDO_AWAL_AP = "SALDO_AWAL_AP"
+
+
+def _find_active_saldo_awal_jurnal(db: Session, sub_akun_id: UUID, tipe_transaksi: str):
+    """Jurnal saldo awal AKTIF (belum dibalik) untuk sub-akun mitra.
+
+    Kandidat = jurnal ber-tipe saldo awal yang punya baris di sub-akun mitra,
+    diurut terbaru dulu; jurnal yang sudah punya pembalik (ada JurnalUmum
+    dengan reversal_of_id menunjuk dia) dianggap tidak aktif — mitra boleh
+    set ulang setelah pembatalan.
+    """
+    kandidat = (
+        db.query(JurnalUmum)
+        .join(JurnalDetail, JurnalDetail.jurnal_umum_id == JurnalUmum.id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id == sub_akun_id,
+            JurnalUmum.tipe_transaksi == tipe_transaksi,
+        )
+        .order_by(
+            JurnalUmum.tanggal.desc(), JurnalUmum.created_at.desc(), JurnalUmum.id.desc()
+        )
+        .all()
+    )
+    for jurnal in kandidat:
+        sudah_dibalik = (
+            db.query(JurnalUmum.id).filter(JurnalUmum.reversal_of_id == jurnal.id).first()
+        )
+        if not sudah_dibalik:
+            return jurnal
+    return None
+
+
+def _saldo_awal_gl(db: Session, sub_akun_id: UUID):
+    """(saldo_berjalan, akun) — saldo GL sub-akun mitra sekarang.
+
+    Saldo = Σ(debit - kredit) jurnal POSTED, bertanda sesuai saldo_normal
+    akun (piutang D → positif berarti masih ditagih; hutang K → positif
+    berarti masih harus dibayar).
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    akun = db.get(AkunPerkiraan, sub_akun_id)
+    net = (
+        db.query(func.coalesce(func.sum(JurnalDetail.debit - JurnalDetail.kredit), 0))
+        .join(JurnalUmum, JurnalUmum.id == JurnalDetail.jurnal_umum_id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id == sub_akun_id,
+            JurnalUmum.status == StatusJurnal.POSTED,
+        )
+        .scalar()
+    ) or Decimal("0")
+    tanda = 1 if (akun is not None and akun.saldo_normal == "DEBIT") else -1
+    return tanda * net, akun
+
+
+def _saldo_awal_akun_simple(db: Session, akun_id) -> SaldoAwalAkunSimple | None:
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    if akun_id is None:
+        return None
+    akun = db.get(AkunPerkiraan, akun_id)
+    if akun is None:
+        return None
+    return SaldoAwalAkunSimple(id=akun.id, kode=akun.kode, nama=akun.nama)
+
+
+def _build_saldo_awal_info(db: Session, sub_akun_id: UUID, tipe_transaksi: str) -> SaldoAwalInfoResponse:
+    """Susun SaldoAwalInfoResponse satu mitra (exists + nominal + saldo berjalan)."""
+    from app.services.reporting_ledger import local_datetime
+
+    saldo_berjalan, _ = _saldo_awal_gl(db, sub_akun_id)
+    info = SaldoAwalInfoResponse(
+        exists=False,
+        sub_akun=_saldo_awal_akun_simple(db, sub_akun_id),
+        saldo_berjalan=saldo_berjalan,
+    )
+    jurnal = _find_active_saldo_awal_jurnal(db, sub_akun_id, tipe_transaksi)
+    if jurnal is None:
+        return info
+
+    baris_mitra = (
+        db.query(JurnalDetail)
+        .filter(
+            JurnalDetail.jurnal_umum_id == jurnal.id,
+            JurnalDetail.akun_perkiraan_id == sub_akun_id,
+        )
+        .first()
+    )
+    baris_penyeimbang = (
+        db.query(JurnalDetail)
+        .filter(
+            JurnalDetail.jurnal_umum_id == jurnal.id,
+            JurnalDetail.akun_perkiraan_id != sub_akun_id,
+        )
+        .first()
+    )
+    info.exists = True
+    info.jurnal_id = jurnal.id
+    info.no_jurnal = jurnal.no_jurnal
+    info.tanggal = local_datetime(jurnal.tanggal).date()
+    info.nominal = (
+        (baris_mitra.debit or Decimal("0")) + (baris_mitra.kredit or Decimal("0"))
+        if baris_mitra is not None
+        else None
+    )
+    info.akun_penyeimbang = _saldo_awal_akun_simple(
+        db, baris_penyeimbang.akun_perkiraan_id if baris_penyeimbang else None
+    )
+    return info
+
+
+def _core_set_saldo_awal(
+    db: Session,
+    *,
+    sub_akun_id: UUID,
+    mitra_kode: str,
+    mitra_nama: str,
+    data_in: SaldoAwalSetRequest,
+    user_id: UUID,
+    tipe_transaksi: str,
+    label_jenis: str,
+) -> SaldoAwalSetResponse:
+    """Logika bersama set saldo awal pelanggan (AR) & supplier (AP)."""
+    from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA
+
+    if data_in.nominal is None or data_in.nominal <= 0:
+        raise HTTPException(status_code=400, detail="Nominal saldo awal harus lebih besar dari nol")
+    if data_in.tanggal is None:
+        raise HTTPException(status_code=400, detail="Tanggal saldo awal wajib diisi")
+
+    # Validasi akun penyeimbang: harus kelompok EKUITAS (MODAL) & aktif.
+    # (dicek SEBELUM guard duplikat supaya input invalid selalu 400, bukan 409)
+    penyeimbang = db.get(AkunPerkiraan, data_in.akun_penyeimbang_id)
+    if penyeimbang is None or penyeimbang.status not in (None, "AKTIF"):
+        raise HTTPException(status_code=400, detail="Akun penyeimbang tidak ditemukan atau tidak aktif")
+    if penyeimbang.header != HeaderCOA.MODAL:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Akun penyeimbang harus kelompok EKUITAS/MODAL "
+                f"(akun {penyeimbang.kode} '{penyeimbang.nama}' kelompok {penyeimbang.header.value})"
+            ),
+        )
+
+    # Guard: saldo awal aktif sudah ada → tolak (batalkan dulu untuk set ulang).
+    existing = _find_active_saldo_awal_jurnal(db, sub_akun_id, tipe_transaksi)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Saldo awal {label_jenis.lower()} untuk {mitra_nama} sudah pernah di-set "
+                f"(jurnal {existing.no_jurnal}). Batalkan dulu bila ingin mengganti nilai."
+            ),
+        )
+
+    if tipe_transaksi == _TIPE_SALDO_AWAL_AR:
+        entries = [
+            JurnalEntryItem(
+                akun_perkiraan_id=sub_akun_id,
+                debit=data_in.nominal,
+                keterangan=f"Saldo awal piutang - {mitra_nama}",
+            ),
+            JurnalEntryItem(
+                akun_perkiraan_id=penyeimbang.id,
+                kredit=data_in.nominal,
+                keterangan=f"Penyeimbang saldo awal piutang {mitra_nama}",
+            ),
+        ]
+    else:
+        entries = [
+            JurnalEntryItem(
+                akun_perkiraan_id=penyeimbang.id,
+                debit=data_in.nominal,
+                keterangan=f"Penyeimbang saldo awal hutang {mitra_nama}",
+            ),
+            JurnalEntryItem(
+                akun_perkiraan_id=sub_akun_id,
+                kredit=data_in.nominal,
+                keterangan=f"Saldo awal hutang - {mitra_nama}",
+            ),
+        ]
+
+    try:
+        jurnal = auto_posting_jurnal(
+            db=db,
+            ref_module=RefModule.SALDO_AWAL,
+            ref_no=f"SA-{mitra_kode}"[:30],
+            entries=entries,
+            keterangan=f"Saldo Awal {label_jenis} - {mitra_nama} ({mitra_kode})",
+            ref_id=None,
+            tanggal=data_in.tanggal,
+            created_by=user_id,
+            tipe_transaksi=tipe_transaksi,
+        )
+        db.commit()
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        db.rollback()
+        raise
+
+    return SaldoAwalSetResponse(
+        jurnal_id=jurnal.id,
+        no_jurnal=jurnal.no_jurnal,
+        tanggal=data_in.tanggal,
+        nominal=jurnal.total_debit,
+        sub_akun=SaldoAwalAkunSimple(
+            id=sub_akun_id, kode=_akun_kode(db, sub_akun_id), nama=_akun_nama(db, sub_akun_id)
+        ),
+        akun_penyeimbang=SaldoAwalAkunSimple(
+            id=penyeimbang.id, kode=penyeimbang.kode, nama=penyeimbang.nama
+        ),
+    )
+
+
+def _akun_kode(db: Session, akun_id: UUID) -> str:
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    akun = db.get(AkunPerkiraan, akun_id)
+    return akun.kode if akun else ""
+
+
+def _akun_nama(db: Session, akun_id: UUID) -> str:
+    from app.models.akun_perkiraan import AkunPerkiraan
+
+    akun = db.get(AkunPerkiraan, akun_id)
+    return akun.nama if akun else ""
+
+
+def _core_cancel_saldo_awal(
+    db: Session,
+    *,
+    sub_akun_id: UUID,
+    tipe_transaksi: str,
+    mitra_nama: str,
+    label_jenis: str,
+    user_id: UUID,
+) -> dict:
+    """Pembatalan saldo awal = jurnal pembalik (reverse_journal).
+
+    Jurnal asli tetap POSTED untuk audit; saldo GL kembali ke sebelum set.
+    """
+    jurnal = _find_active_saldo_awal_jurnal(db, sub_akun_id, tipe_transaksi)
+    if jurnal is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Saldo awal {label_jenis.lower()} untuk {mitra_nama} belum di-set "
+                "atau sudah dibatalkan"
+            ),
+        )
+    try:
+        pembalik = reverse_journal(
+            db,
+            jurnal.id,
+            user_id,
+            reason=f"Pembatalan Saldo Awal {label_jenis} - {mitra_nama}",
+        )
+        db.commit()
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        db.rollback()
+        raise
+    return {
+        "message": f"Saldo awal {label_jenis.lower()} {mitra_nama} dibatalkan",
+        "jurnal_asli": jurnal.no_jurnal,
+        "jurnal_pembalik": pembalik.no_jurnal,
+    }
+
+
+def _pastikan_sub_akun_piutang(db: Session, pelanggan) -> UUID:
+    """Pastikan pelanggan punya sub-akun piutang; auto-create bila belum.
+
+    Jalur sama dengan POST /pelanggan (auto_create_piutang_coa di bawah akar
+    'Piutang Usaha' dari Setting Akun). Commit terpisah (mirror pola create)
+    sebelum pembuatan jurnal.
+    """
+    if pelanggan.akun_piutang_id:
+        return pelanggan.akun_piutang_id
+    coa_id = auto_create_piutang_coa(db, pelanggan)
+    if not coa_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Sub-akun piutang pelanggan belum ada dan gagal dibuat otomatis — "
+                "pastikan Setting Akun PIUTANG_USAHA (akar 'Piutang Usaha') sudah dikonfigurasi"
+            ),
+        )
+    pelanggan.akun_piutang_id = coa_id
+    db.add(pelanggan)
+    db.commit()
+    db.refresh(pelanggan)
+    return coa_id
+
+
+@router.post(
+    "/pelanggan/{pelanggan_id}/saldo-awal",
+    response_model=SaldoAwalSetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def set_saldo_awal_pelanggan(
+    pelanggan_id: UUID,
+    data_in: SaldoAwalSetRequest,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Set saldo awal piutang pelanggan (jurnal D Piutang-{Nama} / K penyeimbang).
+
+    Update #028 — dipakai untuk membawa piutang sisa sebelum sistem dipakai.
+    Satu saldo awal aktif per pelanggan; batalkan dulu untuk mengganti.
+    """
+    pelanggan = db.get(Pelanggan, pelanggan_id)
+    if not pelanggan:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+    sub_akun_id = _pastikan_sub_akun_piutang(db, pelanggan)
+    return _core_set_saldo_awal(
+        db,
+        sub_akun_id=sub_akun_id,
+        mitra_kode=pelanggan.kode,
+        mitra_nama=pelanggan.nama,
+        data_in=data_in,
+        user_id=current_user.id,
+        tipe_transaksi=_TIPE_SALDO_AWAL_AR,
+        label_jenis="Piutang",
+    )
+
+
+@router.get("/pelanggan/{pelanggan_id}/saldo-awal", response_model=SaldoAwalInfoResponse)
+def get_saldo_awal_pelanggan(
+    pelanggan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Info saldo awal piutang pelanggan + saldo piutang berjalan (GL sub-akun)."""
+    pelanggan = db.get(Pelanggan, pelanggan_id)
+    if not pelanggan:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+    if not pelanggan.akun_piutang_id:
+        # Belum punya sub-akun piutang → pasti belum ada saldo awal.
+        return SaldoAwalInfoResponse(exists=False, sub_akun=None, saldo_berjalan=Decimal("0"))
+    return _build_saldo_awal_info(db, pelanggan.akun_piutang_id, _TIPE_SALDO_AWAL_AR)
+
+
+@router.post("/pelanggan/{pelanggan_id}/saldo-awal/batal")
+def cancel_saldo_awal_pelanggan(
+    pelanggan_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Batalkan saldo awal piutang pelanggan (jurnal pembalik; audit tetap utuh)."""
+    pelanggan = db.get(Pelanggan, pelanggan_id)
+    if not pelanggan:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+    if not pelanggan.akun_piutang_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Saldo awal piutang belum di-set atau sudah dibatalkan",
+        )
+    return _core_cancel_saldo_awal(
+        db,
+        sub_akun_id=pelanggan.akun_piutang_id,
+        tipe_transaksi=_TIPE_SALDO_AWAL_AR,
+        mitra_nama=pelanggan.nama,
+        label_jenis="Piutang",
+        user_id=current_user.id,
+    )
+
+
 @router.get("/pelanggan-coa", response_model=list[PelangganCoaResponse])
 def get_pelanggan_coa(
     db: Session = Depends(get_current_db),
@@ -787,6 +1191,104 @@ def delete_supplier(supplier_id: UUID, db: Session = Depends(get_current_db), cu
     if item.status == "NONAKTIF": raise HTTPException(status_code=400, detail="Supplier sudah tidak aktif")
     master_service.soft_delete_master(db, item)
     return {"message": "Supplier berhasil dinonaktifkan"}
+
+
+# ── Update #028 — Saldo Awal HUTANG (Supplier) ────────────────────────────
+def _pastikan_sub_akun_hutang(db: Session, supplier) -> UUID:
+    """Pastikan supplier punya sub-akun hutang; auto-create bila belum.
+
+    Jalur sama dengan POST /supplier (auto_create_hutang_coa di bawah akar
+    'Hutang Usaha' dari Setting Akun).
+    """
+    if supplier.akun_hutang_id:
+        return supplier.akun_hutang_id
+    coa_id = auto_create_hutang_coa(db, supplier)
+    if not coa_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Sub-akun hutang supplier belum ada dan gagal dibuat otomatis — "
+                "pastikan Setting Akun HUTANG_USAHA (akar 'Hutang Usaha') sudah dikonfigurasi"
+            ),
+        )
+    supplier.akun_hutang_id = coa_id
+    db.add(supplier)
+    db.commit()
+    db.refresh(supplier)
+    return coa_id
+
+
+@router.post(
+    "/supplier/{supplier_id}/saldo-awal",
+    response_model=SaldoAwalSetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def set_saldo_awal_supplier(
+    supplier_id: UUID,
+    data_in: SaldoAwalSetRequest,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Set saldo awal hutang supplier (jurnal D penyeimbang / K Hutang-{Nama}).
+
+    Update #028 — dipakai untuk membawa hutang sisa sebelum sistem dipakai.
+    Satu saldo awal aktif per supplier; batalkan dulu untuk mengganti.
+    """
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
+    sub_akun_id = _pastikan_sub_akun_hutang(db, supplier)
+    return _core_set_saldo_awal(
+        db,
+        sub_akun_id=sub_akun_id,
+        mitra_kode=supplier.kode,
+        mitra_nama=supplier.nama,
+        data_in=data_in,
+        user_id=current_user.id,
+        tipe_transaksi=_TIPE_SALDO_AWAL_AP,
+        label_jenis="Hutang",
+    )
+
+
+@router.get("/supplier/{supplier_id}/saldo-awal", response_model=SaldoAwalInfoResponse)
+def get_saldo_awal_supplier(
+    supplier_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Info saldo awal hutang supplier + saldo hutang berjalan (GL sub-akun)."""
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
+    if not supplier.akun_hutang_id:
+        return SaldoAwalInfoResponse(exists=False, sub_akun=None, saldo_berjalan=Decimal("0"))
+    return _build_saldo_awal_info(db, supplier.akun_hutang_id, _TIPE_SALDO_AWAL_AP)
+
+
+@router.post("/supplier/{supplier_id}/saldo-awal/batal")
+def cancel_saldo_awal_supplier(
+    supplier_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Batalkan saldo awal hutang supplier (jurnal pembalik; audit tetap utuh)."""
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier tidak ditemukan")
+    if not supplier.akun_hutang_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Saldo awal hutang belum di-set atau sudah dibatalkan",
+        )
+    return _core_cancel_saldo_awal(
+        db,
+        sub_akun_id=supplier.akun_hutang_id,
+        tipe_transaksi=_TIPE_SALDO_AWAL_AP,
+        mitra_nama=supplier.nama,
+        label_jenis="Hutang",
+        user_id=current_user.id,
+    )
+
 
 @router.get("/supplier-coa", response_model=list[SupplierCoaResponse])
 def get_supplier_coa(

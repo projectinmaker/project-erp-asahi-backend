@@ -564,6 +564,15 @@ _EXPLICIT = {
     'sync_kas_bank_akun': 'master.kasbank_akun.edit',
     'get_pelanggan_coa': 'master.pelanggan.view',
     'create_pelanggan_from_coa': 'master.pelanggan.create',
+    # === Update #028 — Saldo Awal Piutang/Hutang per mitra ===
+    # Set/batal = edit master (aksi menyunting data pembukuan mitra);
+    # info = view master. Tanpa entri ini endpoint default-deny utk non-super-admin.
+    'set_saldo_awal_pelanggan': 'master.pelanggan.edit',
+    'get_saldo_awal_pelanggan': 'master.pelanggan.view',
+    'cancel_saldo_awal_pelanggan': 'master.pelanggan.edit',
+    'set_saldo_awal_supplier': 'master.supplier.edit',
+    'get_saldo_awal_supplier': 'master.supplier.view',
+    'cancel_saldo_awal_supplier': 'master.supplier.edit',
     # master — export & import Excel (Update #5)
     'export_barang': 'master.barang.export',
     'barang_import_template': 'master.barang.view',

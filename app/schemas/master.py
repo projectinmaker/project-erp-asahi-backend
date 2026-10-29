@@ -34,6 +34,12 @@ class SyaratBayarSimpleResponse(BaseSchema):
     nama: str
     hari: Optional[int] = None
 
+class OrganizationSimpleResponse(BaseSchema):
+    id: UUID
+    code: str
+    name: str
+    kind: str
+
 # ==========================================
 # 1. PELANGGAN
 # ==========================================
@@ -236,6 +242,46 @@ class SupplierCoaResponse(BaseSchema):
     is_linked: bool
 
 # ==========================================
+# 2B. SALDO AWAL PIUTANG/HUTANG — Update #028
+# ==========================================
+# Input saldo awal piutang (pelanggan) / hutang (supplier) per mitra.
+# Sistem membuat jurnal POSTED (RefModule.SALDO_AWAL):
+#   Piutang : D [Piutang - {Nama}]   / K [akun penyeimbang ekuitas]
+#   Hutang  : D [akun penyeimbang]   / K [Hutang - {Nama}]
+# Penyeimbang disarankan Laba (Rugi) Ditahan — sama seperti sheet
+# SaldoAwal template Master MAS (penyeimbang = Modal Saham / Saldo Laba).
+class SaldoAwalSetRequest(BaseSchema):
+    nominal: Decimal  # > 0 — arah debit/kredit mengikuti jenis (piutang/hutang)
+    tanggal: date
+    akun_penyeimbang_id: UUID  # wajib; harus header MODAL (ekuitas) & aktif
+
+class SaldoAwalAkunSimple(BaseSchema):
+    id: UUID
+    kode: str
+    nama: str
+
+class SaldoAwalSetResponse(BaseSchema):
+    jurnal_id: UUID
+    no_jurnal: str
+    tanggal: date
+    nominal: Decimal  # nilai setelah pembulatan 2 desimal (total debit jurnal)
+    sub_akun: SaldoAwalAkunSimple
+    akun_penyeimbang: SaldoAwalAkunSimple
+
+class SaldoAwalInfoResponse(BaseSchema):
+    exists: bool
+    nominal: Optional[Decimal] = None
+    tanggal: Optional[date] = None
+    no_jurnal: Optional[str] = None
+    jurnal_id: Optional[UUID] = None
+    akun_penyeimbang: Optional[SaldoAwalAkunSimple] = None
+    sub_akun: Optional[SaldoAwalAkunSimple] = None
+    # Saldo sub-akun mitra SEKARANG di general ledger (bertanda sesuai
+    # saldo_normal akun): piutang positif = masih ditagih, hutang positif =
+    # masih harus dibayar. Termasuk saldo awal + seluruh mutasi transaksi.
+    saldo_berjalan: Optional[Decimal] = None
+
+# ==========================================
 # 3. BARANG
 # ==========================================
 class BarangBase(BaseSchema):
@@ -359,18 +405,26 @@ class GudangBase(BaseSchema):
     kode: str
     nama: str
     alamat: Optional[str] = None
+    # NEW Phase 2 — organization scope
+    company_id: Optional[UUID] = None
+    branch_id: Optional[UUID] = None
 
 class GudangCreate(GudangBase): pass
 
 class GudangUpdate(BaseSchema):
     nama: Optional[str] = None
     alamat: Optional[str] = None
+    # NEW Phase 2
+    company_id: Optional[UUID] = None
+    branch_id: Optional[UUID] = None
     status: Optional[str] = None
 
 class GudangResponse(GudangBase):
     id: UUID
     total_barang: int
     status: str
+    company: Optional[OrganizationSimpleResponse] = None  # NEW Phase 2
+    branch: Optional[OrganizationSimpleResponse] = None  # NEW Phase 2
     created_at: datetime
     updated_at: datetime
 
@@ -437,6 +491,8 @@ class KasBankAkunBase(BaseSchema):
     akun_perkiraan_id: UUID
     # NEW Phase 2 — currency (P0)
     currency: str = "IDR"  # ISO 4217, default IDR (Phase-1 IDR-only per Roadmap §7)
+    # AUD-17 (update #05): akun milik satu perusahaan (None = GLOBAL)
+    company_id: Optional[UUID] = None
 
 class KasBankAkunCreate(KasBankAkunBase): pass
 
@@ -446,6 +502,8 @@ class KasBankAkunUpdate(BaseSchema):
     akun_perkiraan_id: Optional[UUID] = None
     currency: Optional[str] = None  # NEW Phase 2
     status: Optional[str] = None
+    # AUD-17: pindahkan kepemilikan akun ke perusahaan lain / global
+    company_id: Optional[UUID] = None
 
 class KasBankAkunResponse(KasBankAkunBase):
     id: UUID
@@ -460,12 +518,15 @@ class KasBankAkunResponse(KasBankAkunBase):
 # ==========================================
 class SettingAkunUpdate(BaseSchema):
     akun_perkiraan_id: UUID
+    # AUD-17 (update #05): override per perusahaan (bila kosong = baris GLOBAL)
+    company_id: Optional[UUID] = None
 
 class SettingAkunResponse(BaseSchema):
     id: UUID
     key: str
     label: str
     akun_perkiraan_id: UUID
+    company_id: Optional[UUID] = None  # AUD-17: None = global
     akun_perkiraan: Optional[COASimpleResponse] = None
     created_at: datetime
     updated_at: datetime
