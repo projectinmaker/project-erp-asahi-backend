@@ -1214,6 +1214,41 @@ def get_ringkasan_rekonsiliasi_persediaan(
     return rekonsiliasi_persediaan_service.get_ringkasan_rekonsiliasi(db, as_of=as_of_dt)
 
 
+# ===== Update #027 — export Excel Laporan Lainnya (rekonsiliasi & health) =====
+@router.get("/rekonsiliasi-persediaan/export")
+def export_rekonsiliasi_persediaan(
+    as_of: Optional[str] = Query(None, description="Tanggal posisi (YYYY-MM-DD); default: hari ini. Saldo terkini mencakup semua jurnal POSTED."),
+    only_mismatch: bool = Query(False, description="Hanya baris yang selisihnya != 0."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export Rekonsiliasi Persediaan (stok vs buku besar) ke .xlsx — Update #027.
+
+    Parameter IDENTIK dengan GET /laporan/rekonsiliasi-persediaan. Payload
+    service (dict sembarang) dirender generic_report_sheet: seksi RINGKASAN
+    (skalar + subtotal) + satu tabel per list (akun/barang persediaan).
+    """
+    as_of_dt = None
+    if as_of:
+        try:
+            as_of_dt = day_end(datetime.strptime(as_of, "%Y-%m-%d"))
+        except ValueError:
+            raise HTTPException(400, "Format as_of harus YYYY-MM-DD")
+    payload = rekonsiliasi_persediaan_service.get_rekonsiliasi_persediaan(
+        db, as_of=as_of_dt, only_mismatch=only_mismatch
+    )
+    period = f"Posisi: {_fmt_date(as_of)}" if as_of else "Posisi: hari ini (saldo terkini)"
+    if only_mismatch:
+        period += " · hanya selisih ≠ 0"
+    wb = excel_service.generic_report_sheet(
+        payload, sheet="Rekonsiliasi Persediaan",
+        company=laporan_service.get_company_name(db),
+        title="Rekonsiliasi Persediaan (Stok vs Buku Besar)", period=period,
+    )
+    now = datetime.now()
+    return _xlsx_response(wb, f"rekonsiliasi-persediaan_{now:%Y%m%d}_{now:%H%M}.xlsx")
+
+
 @router.get("/audit-persediaan", response_model=AuditTransaksiPersediaanResponse)
 def get_audit_persediaan(
     dari: Optional[str] = Query(None, description="Tanggal awal (YYYY-MM-DD). Default: 2000-01-01."),
@@ -1247,6 +1282,52 @@ def get_audit_persediaan(
     )
 
 
+@router.get("/audit-persediaan/export")
+def export_audit_persediaan(
+    dari: Optional[str] = Query(None, description="Tanggal awal (YYYY-MM-DD). Default: 2000-01-01."),
+    sampai: Optional[str] = Query(None, description="Tanggal akhir (YYYY-MM-DD). Default: hari ini."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export Audit Transaksi Persediaan ke .xlsx — Update #027.
+
+    Parameter IDENTIK dengan GET /laporan/audit-persediaan (rentang bebas,
+    boleh beberapa bulan/tahun — TANPA cap bulanan karena bukan blok bulanan).
+    """
+    date_from = None
+    date_to = None
+    if dari:
+        try:
+            date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        except ValueError:
+            raise HTTPException(400, "Format dari harus YYYY-MM-DD")
+    if sampai:
+        try:
+            date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+        except ValueError:
+            raise HTTPException(400, "Format sampai harus YYYY-MM-DD")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(400, "Tanggal dari tidak boleh setelah sampai")
+    payload = rekonsiliasi_persediaan_service.audit_transaksi_persediaan(
+        db, date_from=date_from, date_to=date_to
+    )
+    if dari and sampai:
+        period = f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}"
+    elif dari:
+        period = f"Periode: mulai {_fmt_date(dari)}"
+    elif sampai:
+        period = f"Periode: s.d. {_fmt_date(sampai)}"
+    else:
+        period = "Semua Periode"
+    wb = excel_service.generic_report_sheet(
+        payload, sheet="Audit Persediaan",
+        company=laporan_service.get_company_name(db),
+        title="Audit Transaksi Persediaan", period=period,
+    )
+    now = datetime.now()
+    return _xlsx_response(wb, f"audit-persediaan_{now:%Y%m%d}_{now:%H%M}.xlsx")
+
+
 # ==========================================
 # PHASE 9 — FINANCIAL RECONCILIATION & ACCOUNTING HEALTH
 # ==========================================
@@ -1278,6 +1359,34 @@ def get_grni_reconciliation_endpoint(
     return get_grni_reconciliation(db, as_of_dt)
 
 
+@router.get("/rekonsiliasi/grni/export")
+def export_grni_reconciliation(
+    as_of: Optional[str] = Query(None, description="Tanggal as-of (YYYY-MM-DD). Default: hari ini."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export Rekonsiliasi Open GRNI vs GRNI GL ke .xlsx — Update #027."""
+    from app.services.financial_reconciliation_service import get_grni_reconciliation
+    from datetime import datetime as _dt
+
+    as_of_dt = None
+    if as_of:
+        try:
+            as_of_dt = _dt.strptime(as_of, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "Format as_of harus YYYY-MM-DD")
+
+    payload = get_grni_reconciliation(db, as_of_dt)
+    period = f"Posisi: {_fmt_date(as_of)}" if as_of else "Posisi: hari ini"
+    wb = excel_service.generic_report_sheet(
+        payload, sheet="GRNI vs GL",
+        company=laporan_service.get_company_name(db),
+        title="Rekonsiliasi Open GRNI vs GRNI GL", period=period,
+    )
+    now = datetime.now()
+    return _xlsx_response(wb, f"rekonsiliasi-grni_{now:%Y%m%d}_{now:%H%M}.xlsx")
+
+
 @router.get("/rekonsiliasi/cashflow-vs-bs")
 def get_cashflow_vs_bs_reconciliation_endpoint(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -1307,6 +1416,35 @@ def get_cashflow_vs_bs_reconciliation_endpoint(
     return get_cash_flow_vs_balance_sheet_reconciliation(db, date_from, date_to)
 
 
+@router.get("/rekonsiliasi/cashflow-vs-bs/export")
+def export_cashflow_vs_bs_reconciliation(
+    dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
+    sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export Rekonsiliasi Cash Flow vs Neraca ke .xlsx — Update #027."""
+    from app.services.financial_reconciliation_service import (
+        get_cash_flow_vs_balance_sheet_reconciliation,
+    )
+
+    try:
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+    except ValueError:
+        raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
+
+    payload = get_cash_flow_vs_balance_sheet_reconciliation(db, date_from, date_to)
+    wb = excel_service.generic_report_sheet(
+        payload, sheet="Cash Flow vs Neraca",
+        company=laporan_service.get_company_name(db),
+        title="Rekonsiliasi Cash Flow vs Neraca (Kas)",
+        period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
+    )
+    now = datetime.now()
+    return _xlsx_response(wb, f"rekonsiliasi-cashflow-vs-bs_{now:%Y%m%d}_{now:%H%M}.xlsx")
+
+
 @router.get("/rekonsiliasi/equity-vs-bs")
 def get_equity_vs_bs_reconciliation_endpoint(
     dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
@@ -1334,6 +1472,35 @@ def get_equity_vs_bs_reconciliation_endpoint(
         raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
 
     return get_equity_vs_balance_sheet_reconciliation(db, date_from, date_to)
+
+
+@router.get("/rekonsiliasi/equity-vs-bs/export")
+def export_equity_vs_bs_reconciliation(
+    dari: str = Query(..., description="Tanggal awal (YYYY-MM-DD)"),
+    sampai: str = Query(..., description="Tanggal akhir (YYYY-MM-DD)"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export Rekonsiliasi Ekuitas vs Neraca ke .xlsx — Update #027."""
+    from app.services.financial_reconciliation_service import (
+        get_equity_vs_balance_sheet_reconciliation,
+    )
+
+    try:
+        date_from = day_start(datetime.strptime(dari, "%Y-%m-%d"))
+        date_to = day_end(datetime.strptime(sampai, "%Y-%m-%d"))
+    except ValueError:
+        raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
+
+    payload = get_equity_vs_balance_sheet_reconciliation(db, date_from, date_to)
+    wb = excel_service.generic_report_sheet(
+        payload, sheet="Ekuitas vs Neraca",
+        company=laporan_service.get_company_name(db),
+        title="Rekonsiliasi Ekuitas vs Neraca",
+        period=f"Periode: {_fmt_date(dari)} - {_fmt_date(sampai)}",
+    )
+    now = datetime.now()
+    return _xlsx_response(wb, f"rekonsiliasi-equity-vs-bs_{now:%Y%m%d}_{now:%H%M}.xlsx")
 
 
 @router.get("/accounting-health")
@@ -1384,6 +1551,39 @@ def get_accounting_health_endpoint(
             raise HTTPException(400, "Format as_of harus YYYY-MM-DD")
 
     return get_accounting_health(db, as_of_dt)
+
+
+@router.get("/accounting-health/export")
+def export_accounting_health(
+    as_of: Optional[str] = Query(None, description="Tanggal as-of (YYYY-MM-DD). Default: hari ini."),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Export Accounting Health Dashboard (11 reconciliation checks) ke .xlsx — Update #027.
+
+    Payload camelCase (kontrak frontend) dirender generik: RINGKASAN
+    (asOf/overallStatus/summary.*) + tabel per pemeriksaan (name/status/
+    selisih/detail).
+    """
+    from app.services.accounting_health_service import get_accounting_health
+    from datetime import datetime as _dt
+
+    as_of_dt = None
+    if as_of:
+        try:
+            as_of_dt = _dt.strptime(as_of, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "Format as_of harus YYYY-MM-DD")
+
+    payload = get_accounting_health(db, as_of_dt)
+    period = f"Posisi: {_fmt_date(as_of)}" if as_of else "Posisi: hari ini"
+    wb = excel_service.generic_report_sheet(
+        payload, sheet="Accounting Health",
+        company=laporan_service.get_company_name(db),
+        title="Accounting Health — Status Rekonsiliasi", period=period,
+    )
+    now = datetime.now()
+    return _xlsx_response(wb, f"accounting-health_{now:%Y%m%d}_{now:%H%M}.xlsx")
 
 
 # ==========================================

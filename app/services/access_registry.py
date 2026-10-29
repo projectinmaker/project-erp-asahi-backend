@@ -667,6 +667,15 @@ _EXPLICIT = {
     'get_cashflow_vs_bs_reconciliation_endpoint': 'reports.reconciliation_report.view',
     'get_equity_vs_bs_reconciliation_endpoint': 'reports.reconciliation_report.view',
     'get_accounting_health_endpoint': 'reports.reconciliation_report.view',
+    # laporan lainnya — export Excel (Update #027); permission sama dengan
+    # endpoint view terkait (export = bentuk lain dari melihat laporan yang
+    # sama — konvensi Update #023).
+    'export_rekonsiliasi_persediaan': 'reports.inventory_report.view',
+    'export_audit_persediaan': 'reports.inventory_report.view',
+    'export_grni_reconciliation': 'reports.reconciliation_report.view',
+    'export_cashflow_vs_bs_reconciliation': 'reports.reconciliation_report.view',
+    'export_equity_vs_bs_reconciliation': 'reports.reconciliation_report.view',
+    'export_accounting_health': 'reports.reconciliation_report.view',
     # dashboard
     'get_dashboard_summary': 'dashboard.operational.view',
     # workflow

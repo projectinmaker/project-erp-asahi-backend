@@ -445,3 +445,258 @@ def xlsx_response(wb: Workbook, filename: str) -> dict:
         "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "headers": {"Content-Disposition": f'attachment; filename="{filename}"'},
     }
+
+
+# ==========================================
+# Update #027 — Sheet generik Laporan Lainnya
+# ==========================================
+# Rekonsiliasi persediaan/GRNI/CF-vs-BS/Ekuitas-vs-BS, audit persediaan, dan
+# accounting health punya bentuk respons yang bervariasi antar laporan
+# (campuran skalar + tabel). generic_report_sheet() merender payload dict
+# SEMBARANG menjadi satu sheet bergaya korporat yang sama dengan laporan
+# inti (#023-#025): kop perusahaan, seksi, header kolom, format akuntansi.
+
+import json as _json
+import re as _re
+from datetime import date as _date_cls
+from decimal import Decimal as _Decimal_cls
+from enum import Enum as _Enum_cls
+from uuid import UUID as _UUID_cls
+
+# Kunci kolom → akronim/istilah yang harus tetap tampil utuh (bukan "Ppn").
+_ACRONYMS = {
+    "ppn": "PPN", "pph": "PPh", "dpp": "DPP", "grni": "GRNI", "gl": "GL",
+    "bs": "BS", "cf": "CF", "ar": "AR", "ap": "AP", "sa": "SA", "sak": "SAK",
+    "qty": "Qty", "npwp": "NPWP", "no": "No.", "id": "ID", "vs": "vs",
+    "coa": "COA", "wip": "WIP", "lppb": "LPPB", "lpb": "LPB", "rop": "ROP", "sku": "SKU",
+    "hpp": "HPP", "pph23": "PPh 23",
+}
+
+DATETIME_FORMAT = "DD/MM/YYYY HH:MM"
+
+
+def pretty_header(key) -> str:
+    """Kunci payload → judul kolom ramah dibaca.
+
+    'total_selisih' → 'Total Selisih'; 'asOf' → 'As Of'; 'ppnKeluaran' →
+    'PPN Keluaran'; 'pph23' → 'PPh 23'. Dipakai generic_report_sheet untuk
+    header tabel & label ringkasan.
+    """
+    s = _re.sub(r"[_\s]+", " ", str(key)).strip()
+    s = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", s)     # camelCase → "camel Case"
+    s = _re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", s)   # "PPNKeluaran" → "PPN Keluaran"
+    words = []
+    for w in s.split():
+        lw = w.lower()
+        if lw in _ACRONYMS:
+            words.append(_ACRONYMS[lw])
+            continue
+        m = _re.fullmatch(r"([a-z]+)(\d+)", lw)
+        if m:  # "pph23" → "PPh 23"
+            words.append(f"{m.group(1).capitalize()} {m.group(2)}")
+        else:
+            words.append(w if w.isupper() else w.capitalize())
+    return " ".join(words) or str(key)
+
+
+def cell_value(v):
+    """Nilai payload apa pun → nilai sel Excel yang aman.
+
+    Decimal → float; bool → 'Ya'/'Tidak'; UUID/Enum → str; dict/list → JSON
+    ringkas; date/datetime tetap objek (diformat per kolom sel).
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "Ya" if v else "Tidak"
+    if isinstance(v, int):          # bool sudah dicek lebih dulu
+        return v
+    if isinstance(v, float):
+        return v
+    if isinstance(v, _Decimal_cls):
+        return float(v)
+    if isinstance(v, (datetime, _date_cls)):
+        return v
+    if isinstance(v, str):
+        return v
+    if isinstance(v, _UUID_cls):
+        return str(v)
+    if isinstance(v, _Enum_cls):
+        return v.value
+    if isinstance(v, (dict, list, tuple)):
+        return _json.dumps(v, default=str, ensure_ascii=False)
+    return str(v)
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float, _Decimal_cls)) and not isinstance(v, bool)
+
+
+def generic_report_sheet(
+    payload,
+    sheet: str = "Laporan",
+    wb: Workbook | None = None,
+    company: str = "",
+    title: str = "",
+    period: str = "",
+    printed_at: datetime | None = None,
+    max_rows: int = 20000,
+) -> Workbook:
+    """Sheet laporan SERBA-GENERIK dari payload dict sembarang (Update #027).
+
+    Payload dibedah menjadi seksi (urutan kunci dipertahankan):
+    - RINGKASAN: pasangan Uraian/Nilai dari nilai skalar; dict bersarang
+      diratakan satu tingkat dengan kunci bertitik ('summary.matchCount').
+    - Satu TABEL per nilai list-of-dicts — header = union kunci baris
+      (urut kemunculan pertama), judul seksi = pretty_header(kunci payload).
+    - List skalar → tabel satu kolom; list kosong → dilewati.
+
+    Gaya konsisten report_sheet(): kop korporat (merge selebar kolom),
+    baris seksi bold + fill, header kolom bold + fill + border, format
+    akuntansi (nol '-') untuk kolom angka, 'DD/MM/YYYY' tanggal, freeze
+    tepat di bawah kop. Baris tabel dipotong aman di max_rows dengan baris
+    catatan.
+    """
+    if not isinstance(payload, dict):
+        payload = {"Data": payload if isinstance(payload, list) else [payload]}
+
+    # ── Bedah payload: skalar (diratakan) + tabel ─────────────────────────
+    scalars: list[tuple[str, object]] = []
+    tables: list[tuple[str, list, list]] = []   # (judul_seksi, kunci_kolom, baris_raw)
+
+    for key, val in payload.items():
+        if isinstance(val, dict):
+            for k2, v2 in val.items():
+                if isinstance(v2, dict):
+                    for k3, v3 in v2.items():
+                        scalars.append((f"{pretty_header(k2)}.{pretty_header(k3)}", v3))
+                else:
+                    scalars.append((pretty_header(k2), v2))
+        elif isinstance(val, list):
+            dicts = [x for x in val if isinstance(x, dict)]
+            if val and len(dicts) == len(val):
+                headers: list = []
+                for row in dicts:
+                    for k in row:
+                        if k not in headers:
+                            headers.append(k)
+                tables.append((pretty_header(key), headers, dicts))
+            elif val:
+                tables.append((pretty_header(key), ["Nilai"], [[x] for x in val]))
+            # list kosong → dilewati
+        else:
+            scalars.append((pretty_header(key), val))
+
+    n_cols = max([2] + [len(h) for _, h, _ in tables])
+
+    # ── Bangun sheet ──────────────────────────────────────────────────────
+    if wb is None:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = sheet
+    else:
+        ws = wb.create_sheet(title=sheet)
+
+    printed = (printed_at or datetime.now()).strftime("%d/%m/%Y %H:%M")
+    title_lines: list[tuple[str, int | None]] = [(company or "-", 14), (title, 12)]
+    if period:
+        title_lines.append((period, 10))
+    title_lines.append((f"Dicetak: {printed}", 9))
+    r = append_report_title(ws, title_lines, n_columns=n_cols)
+    header_row = r
+
+    widths = [0] * n_cols
+
+    def _section_row(label: str):
+        nonlocal r
+        ws.cell(row=r, column=1, value=str(label).upper())
+        for idx in range(n_cols):
+            c = ws.cell(row=r, column=idx + 1)
+            c.font = REPORT_BOLD_FONT
+            c.fill = SECTION_FILL
+            c.border = THIN_BORDER
+        widths[0] = max(widths[0], len(str(label)))
+        r += 1
+
+    def _write_cell(row: int, col: int, raw):
+        v = cell_value(raw)
+        cell = ws.cell(row=row, column=col + 1, value=v)
+        cell.border = THIN_BORDER
+        if isinstance(v, int):
+            cell.number_format = INTEGER_FORMAT
+        elif isinstance(v, float):
+            cell.number_format = ACCOUNTING_FORMAT
+        elif isinstance(v, datetime):
+            cell.number_format = DATETIME_FORMAT
+        elif isinstance(v, _date_cls):
+            cell.number_format = DATE_FORMAT
+        elif v is not None:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        widths[col] = max(widths[col], len(_cell_text(v)))
+        return cell
+
+    # ── Seksi RINGKASAN (bila ada skalar) ────────────────────────────────
+    if scalars:
+        _section_row("Ringkasan")
+        for label, raw in scalars:
+            c1 = ws.cell(row=r, column=1, value=label)
+            c1.border = THIN_BORDER
+            widths[0] = max(widths[0], len(label))
+            _write_cell(r, 1, raw)
+            r += 1
+        r += 1  # baris kosong antar seksi
+
+    # ── Tabel per seksi ──────────────────────────────────────────────────
+    for judul, headers, rows in tables:
+        _section_row(judul)
+        for idx, k in enumerate(headers):
+            cell = ws.cell(row=r, column=idx + 1, value=pretty_header(k))
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(vertical="center")
+            widths[idx] = max(widths[idx], len(pretty_header(k)))
+        r += 1
+        truncated = len(rows) > max_rows
+        rows = rows[:max_rows]
+        # Deteksi kolom angka/tanggal seluruhnya → format kolom konsisten.
+        col_kind: dict[int, str] = {}
+        for idx in range(len(headers)):
+            kinds = set()
+            for row in rows:
+                v = row.get(headers[idx]) if isinstance(row, dict) else row[idx]
+                if v is None:
+                    continue
+                if isinstance(v, bool):
+                    kinds.add("text")
+                elif _is_number(v):
+                    kinds.add("number")
+                elif isinstance(v, (datetime, _date_cls)):
+                    kinds.add("date")
+                else:
+                    kinds.add("text")
+            if kinds == {"number"}:
+                col_kind[idx] = "number"
+            elif kinds == {"date"}:
+                col_kind[idx] = "date"
+        for row in rows:
+            for idx in range(len(headers)):
+                raw = row.get(headers[idx]) if isinstance(row, dict) else row[idx]
+                cell = _write_cell(r, idx, raw)
+                if col_kind.get(idx) == "number" and isinstance(cell.value, (int, float)):
+                    cell.number_format = INTEGER_FORMAT if isinstance(cell.value, int) else ACCOUNTING_FORMAT
+                elif col_kind.get(idx) == "date" and isinstance(cell.value, (datetime, _date_cls)):
+                    cell.number_format = DATETIME_FORMAT if isinstance(cell.value, datetime) else DATE_FORMAT
+            r += 1
+        if truncated:
+            note = ws.cell(row=r, column=1, value=f"… (dipotong: baris melebihi {max_rows} tidak diekspor)")
+            note.font = REPORT_PRINTED_FONT
+            r += 1
+        r += 1  # baris kosong antar seksi
+
+    for idx in range(n_cols):
+        ws.column_dimensions[get_column_letter(idx + 1)].width = max(MIN_WIDTH, min(NAME_MAX_WIDTH, widths[idx] + 2))
+
+    # Freeze tepat di bawah kop — kop tetap terlihat saat scroll tabel panjang.
+    ws.freeze_panes = ws.cell(row=header_row, column=1)
+    return wb
