@@ -26,6 +26,12 @@ class CashflowWidget(BaseSchema):
     saldo_awal: Decimal = Decimal("0")
     penerimaan: Decimal = Decimal("0")
     pengeluaran: Decimal = Decimal("0")
+    # Update #030 — net jurnal saldo awal kas/bank pada bulan berjalan (set
+    # global SA-INIT/SA-{tahun} + per-akun, dikurangi pembaliknya). Terpisah
+    # dari penerimaan/pengeluaran karena BUKAN transaksi operasional; baris
+    # tampil di widget hanya bila nilainya ≠ 0. Identitas tetap terjaga:
+    # saldo_akhir = saldo_awal + penerimaan - pengeluaran + input_saldo_awal.
+    input_saldo_awal: Decimal = Decimal("0")
     saldo_akhir: Decimal = Decimal("0")
 
 

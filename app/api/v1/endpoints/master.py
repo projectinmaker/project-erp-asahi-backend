@@ -497,6 +497,13 @@ def delete_pelanggan(
 #   faktur/pelunasan/retur) — pembacaan laporan tetap dari GL yang sama.
 _TIPE_SALDO_AWAL_AR = "SALDO_AWAL_AR"
 _TIPE_SALDO_AWAL_AP = "SALDO_AWAL_AP"
+# === Update #030 — tipe jurnal saldo awal PER AKUN (pintu daftar Akun
+# Perkiraan). Tipe khusus supaya jurnal per-akun TIDAK tertukar dengan
+# jurnal set global SA-INIT/SA-{tahun} milik flow /coa/saldo-awal (form
+# Tambah/Edit Akun Perkiraan): _active_opening_journals() di coa_service
+# hanya mengelola jurnal ber-tipe "SALDO_AWAL"/NULL — jurnal per-entitas
+# ini aman dari pembalikan massal saat user mengganti saldo awal global. ===
+_TIPE_SALDO_AWAL_AKUN = "SALDO_AWAL_AKUN"
 
 
 def _find_active_saldo_awal_jurnal(db: Session, sub_akun_id: UUID, tipe_transaksi: str):
@@ -617,8 +624,16 @@ def _core_set_saldo_awal(
     user_id: UUID,
     tipe_transaksi: str,
     label_jenis: str,
+    arah: Optional[str] = None,
 ) -> SaldoAwalSetResponse:
-    """Logika bersama set saldo awal pelanggan (AR) & supplier (AP)."""
+    """Logika bersama set saldo awal pelanggan (AR), supplier (AP), & akun.
+
+    Update #030 — parameter ``arah`` ('debit'/'kredit') menentukan sisi akun
+    utama: piutang & akun debit-normal = DEBIT (D sub-akun / K penyeimbang),
+    hutang & akun kredit-normal = KREDIT (D penyeimbang / K sub-akun).
+    None = turunkan dari tipe AR/AP (perilaku #028 yang lama, backward
+    compatible untuk pintu pelanggan/supplier).
+    """
     from app.models.akun_perkiraan import AkunPerkiraan, HeaderCOA
 
     if data_in.nominal is None or data_in.nominal <= 0:
@@ -651,17 +666,21 @@ def _core_set_saldo_awal(
             ),
         )
 
-    if tipe_transaksi == _TIPE_SALDO_AWAL_AR:
+    # Arah jurnal: piutang = akun utama DI DEBIT; hutang = KREDIT.
+    # Update #030 — ``arah`` eksplisit (pintu per-akun) mengikuti saldo
+    # normal akun; None = perilaku #028 lama (AR debit / AP kredit).
+    arah_debit = (arah == "debit") if arah is not None else (tipe_transaksi == _TIPE_SALDO_AWAL_AR)
+    if arah_debit:
         entries = [
             JurnalEntryItem(
                 akun_perkiraan_id=sub_akun_id,
                 debit=data_in.nominal,
-                keterangan=f"Saldo awal piutang - {mitra_nama}",
+                keterangan=f"Saldo awal {label_jenis.lower()} - {mitra_nama}",
             ),
             JurnalEntryItem(
                 akun_perkiraan_id=penyeimbang.id,
                 kredit=data_in.nominal,
-                keterangan=f"Penyeimbang saldo awal piutang {mitra_nama}",
+                keterangan=f"Penyeimbang saldo awal {label_jenis.lower()} {mitra_nama}",
             ),
         ]
     else:
@@ -669,12 +688,12 @@ def _core_set_saldo_awal(
             JurnalEntryItem(
                 akun_perkiraan_id=penyeimbang.id,
                 debit=data_in.nominal,
-                keterangan=f"Penyeimbang saldo awal hutang {mitra_nama}",
+                keterangan=f"Penyeimbang saldo awal {label_jenis.lower()} {mitra_nama}",
             ),
             JurnalEntryItem(
                 akun_perkiraan_id=sub_akun_id,
                 kredit=data_in.nominal,
-                keterangan=f"Saldo awal hutang - {mitra_nama}",
+                keterangan=f"Saldo awal {label_jenis.lower()} - {mitra_nama}",
             ),
         ]
 
@@ -1286,6 +1305,203 @@ def cancel_saldo_awal_supplier(
         tipe_transaksi=_TIPE_SALDO_AWAL_AP,
         mitra_nama=supplier.nama,
         label_jenis="Hutang",
+        user_id=current_user.id,
+    )
+
+
+# ==========================================
+# SALDO AWAL PER AKUN — PINTU DAFTAR AKUN PERKIRAAN (Update #030)
+# ==========================================
+# Keputusan user (menggantikan #029/#029b yang dibatalkan): ikon "Set Saldo
+# Awal" dipasang LANGSUNG di daftar Akun Perkiraan untuk SEMUA akun tingkat
+# DETAIL yang kategorinya didukung saldo awal (9 kategori — lihat
+# coa_category.py: Kas dan Bank, Aset Lancar Lainnya, Kewajiban Lainnya,
+# Modal, Pendapatan, Pendapatan Lainnya, HPP, Beban, Beban Lainnya).
+#
+# Piutang & hutang TIDAK termasuk: saldo awalnya diinput per mitra di
+# halaman Pelanggan / Supplier (#028) supaya daftar Akun Perkiraan tetap
+# rapih — sub-akun per pelanggan/supplier tidak perlu menyimpan saldo awal
+# satu-per-satu dari daftar COA. Persediaan / Aset Tetap / Hutang Jangka
+# Panjang / Modal Saldo Laba juga dialihkan ke modul terkait (hint per
+# kategori otomatis dari coa_category.CATEGORY_INFO).
+#
+# Jurnal yang dibuat (RefModule.SALDO_AWAL, langsung POSTED, tipe
+# SALDO_AWAL_AKUN): satu nilai + tanggal → sisi mengikuti saldo_normal AKUN
+# (bukan kategori — akun kontra tetap diposting ke sisi yang benar):
+#   saldo_normal DEBIT  : D [akun]             / K [akun penyeimbang ekuitas]
+#   saldo_normal KREDIT : D [akun penyeimbang] / K [akun]
+# Penyeimbang disarankan "Laba (Rugi) Ditahan" (mirror sheet SaldoAwal
+# template Master MAS). ref_no = SA-{kode akun}; sekali per akun;
+# pembatalan = jurnal pembalik pada tanggal jurnal asli (audit utuh).
+#
+# Guard anti-dobel dua arah dengan set global form Tambah/Edit Akun
+# Perkiraan (SA-INIT/SA-{tahun}, tipe SALDO_AWAL/NULL):
+# - set per-akun ditolak 409 bila akun sudah masuk set global aktif;
+# - sebaliknya save_saldo_awal (coa_service) menolak akun yang sudah punya
+#   jurnal per-akun aktif → saldonya tidak pernah tercatat dua kali.
+
+def _akun_sudah_di_saldo_awal_global(db: Session, coa_id: UUID):
+    """Update #030 — cek apakah akun sudah masuk set saldo awal GLOBAL.
+
+    Return no_jurnal set global aktif (SA-INIT/SA-{tahun}, tipe
+    SALDO_AWAL/NULL) yang memuat baris untuk akun ini, None bila bebas.
+    Mencegah dobel saldo: akun yang saldo awalnya dikelola form
+    Tambah/Edit Akun Perkiraan tidak boleh di-set lagi lewat dialog per
+    akun di daftar Akun Perkiraan.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import aliased
+
+    reversal = aliased(JurnalUmum)
+    reversed_ids = select(reversal.reversal_of_id).where(
+        reversal.reversal_of_id.is_not(None), reversal.status == StatusJurnal.POSTED
+    )
+    row = (
+        db.query(JurnalUmum.no_jurnal)
+        .join(JurnalDetail, JurnalDetail.jurnal_umum_id == JurnalUmum.id)
+        .filter(
+            JurnalDetail.akun_perkiraan_id == coa_id,
+            JurnalUmum.ref_module == RefModule.SALDO_AWAL,
+            JurnalUmum.status == StatusJurnal.POSTED,
+            ~JurnalUmum.id.in_(reversed_ids),
+            or_(
+                JurnalUmum.tipe_transaksi.is_(None),
+                JurnalUmum.tipe_transaksi == RefModule.SALDO_AWAL.value,
+            ),
+        )
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _resolve_akun_saldo_awal(db: Session, coa_id: UUID):
+    """Validasi akun perkiraan untuk saldo awal per-akun → (akun, kategori).
+
+    Syarat: akun ada, AKTIF, tingkat DETAIL, dan kategorinya termasuk 9
+    kategori yang didukung saldo awal. Piutang/hutang ditolak dengan
+    arahan ke modul mitra; persediaan/aset tetap ditolak dengan hint
+    modul terkait (teks hint dari coa_category.CATEGORY_INFO).
+    """
+    from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+    from app.services.coa_category import classify_account, get_category_info, is_saldo_awal_eligible
+
+    akun = db.get(AkunPerkiraan, coa_id)
+    if akun is None:
+        raise HTTPException(status_code=404, detail="Akun perkiraan tidak ditemukan")
+    if akun.status is not None and akun.status != "AKTIF":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Akun {akun.kode} '{akun.nama}' tidak aktif — aktifkan dulu untuk mengatur saldo awal",
+        )
+    if akun.tingkat != TingkatAkun.DETAIL:
+        raise HTTPException(
+            status_code=400,
+            detail="Saldo awal hanya bisa di-set untuk akun tingkat DETAIL",
+        )
+    kategori = classify_account(akun)
+    if not is_saldo_awal_eligible(kategori):
+        info = get_category_info(kategori)
+        hint = (info or {}).get("hint") or f"kategori {kategori} tidak didukung"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Akun {akun.kode} '{akun.nama}' tidak didukung saldo awal per akun: {hint}",
+        )
+    return akun, kategori
+
+
+@router.post(
+    "/coa/{coa_id}/saldo-awal",
+    response_model=SaldoAwalSetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def set_saldo_awal_coa(
+    coa_id: UUID,
+    data_in: SaldoAwalSetRequest,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Set saldo awal akun perkiraan langsung dari daftar Akun Perkiraan.
+
+    Update #030 — untuk akun tingkat DETAIL pada 9 kategori yang didukung
+    (piutang/hutang tetap lewat Pelanggan/Supplier). Sisi jurnal mengikuti
+    saldo normal akun; kategori jurnal = Saldo Awal (bukan transaksi).
+    Satu saldo awal aktif per akun; batalkan dulu untuk mengganti nilai.
+    """
+    from app.models.akun_perkiraan import SaldoNormal
+
+    akun, _ = _resolve_akun_saldo_awal(db, coa_id)
+    if data_in.akun_penyeimbang_id == coa_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Akun penyeimbang tidak boleh sama dengan akun yang di-set saldo awalnya",
+        )
+    # Guard anti-dobel: akun yang sudah masuk set saldo awal global (form
+    # Tambah/Edit Akun Perkiraan) ditolak supaya saldonya tidak tercatat dua kali.
+    no_global = _akun_sudah_di_saldo_awal_global(db, coa_id)
+    if no_global:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Akun {akun.nama} sudah masuk set Saldo Awal global (jurnal {no_global}, "
+                "dari form Tambah/Edit Akun Perkiraan). Hapus nilai saldo awalnya dari "
+                "set global itu dulu agar tidak tercatat dobel."
+            ),
+        )
+    return _core_set_saldo_awal(
+        db,
+        sub_akun_id=coa_id,
+        mitra_kode=akun.kode,
+        mitra_nama=akun.nama,
+        data_in=data_in,
+        user_id=current_user.id,
+        tipe_transaksi=_TIPE_SALDO_AWAL_AKUN,
+        label_jenis="Akun",
+        # Sisi jurnal mengikuti saldo normal AKUN (akun kontra tetap benar)
+        arah="debit" if akun.saldo_normal == SaldoNormal.DEBIT else "kredit",
+    )
+
+
+@router.get("/coa/{coa_id}/saldo-awal", response_model=SaldoAwalInfoResponse)
+def get_saldo_awal_coa(
+    coa_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Info saldo awal akun perkiraan + saldo berjalan (GL akun).
+
+    Bila akun belum punya saldo awal per-akun TAPI sudah masuk set saldo
+    awal global (SA-INIT/SA-{tahun} dari form Tambah/Edit Akun Perkiraan),
+    ``catatan_global`` diisi supaya dialog menampilkan penjelasan alih-alih
+    form set yang bakal ditolak 409.
+    """
+    _resolve_akun_saldo_awal(db, coa_id)
+    info = _build_saldo_awal_info(db, coa_id, _TIPE_SALDO_AWAL_AKUN)
+    if not info.exists:
+        no_global = _akun_sudah_di_saldo_awal_global(db, coa_id)
+        if no_global:
+            info.catatan_global = (
+                f"Saldo awal akun ini dikelola set global (jurnal {no_global}, dari form "
+                "Tambah/Edit Akun Perkiraan). Untuk memindahkannya ke saldo awal per akun: "
+                "buka form Tambah/Edit Akun Perkiraan, kosongkan nilai Saldo Awal akun ini, "
+                "simpan (jurnal lama otomatis dibalik), lalu set ulang lewat ikon ini."
+            )
+    return info
+
+
+@router.post("/coa/{coa_id}/saldo-awal/batal")
+def cancel_saldo_awal_coa(
+    coa_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Batalkan saldo awal akun perkiraan (jurnal pembalik; audit tetap utuh)."""
+    akun, _ = _resolve_akun_saldo_awal(db, coa_id)
+    return _core_cancel_saldo_awal(
+        db,
+        sub_akun_id=coa_id,
+        tipe_transaksi=_TIPE_SALDO_AWAL_AKUN,
+        mitra_nama=akun.nama,
+        label_jenis="Akun",
         user_id=current_user.id,
     )
 

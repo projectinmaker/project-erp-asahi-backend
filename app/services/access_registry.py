@@ -573,6 +573,16 @@ _EXPLICIT = {
     'set_saldo_awal_supplier': 'master.supplier.edit',
     'get_saldo_awal_supplier': 'master.supplier.view',
     'cancel_saldo_awal_supplier': 'master.supplier.edit',
+    # === Update #030 — Saldo Awal per akun (pintu daftar Akun Perkiraan) ===
+    # Nama fungsi "set/get/cancel_saldo_awal_coa" tidak cocok pola prefix
+    # ("set_saldo_awal_" tidak memuat prefix modul yang dikenali infer_permission)
+    # → tanpa entri eksplisit infer_permission → None → default-deny 403 untuk
+    # non-super-admin. Endpoint keyed by id AKUN PERKIRAAN dan dipakai dari
+    # halaman Akun Perkiraan → izin mengikuti modul COA: set/batal = edit COA,
+    # info = view COA.
+    'set_saldo_awal_coa': 'accounting.coa.edit',
+    'get_saldo_awal_coa': 'accounting.coa.view',
+    'cancel_saldo_awal_coa': 'accounting.coa.edit',
     # master — export & import Excel (Update #5)
     'export_barang': 'master.barang.export',
     'barang_import_template': 'master.barang.view',

@@ -102,7 +102,15 @@ def fiscal_opening_totals(db, tahun):
 
 
 def available_fiscal_years(db):
-    """AUD-15 — daftar tahun yang punya set saldo awal (SA-{tahun} aktif)."""
+    """AUD-15 — daftar tahun yang punya set saldo awal (SA-{tahun} aktif).
+
+    Update #030 — hanya jurnal set GLOBAL (tipe SALDO_AWAL/NULL) yang
+    dihitung; jurnal saldo awal per-entitas (#028 piutang/hutang per mitra,
+    #030 per akun dari daftar Akun Perkiraan) memakai ref_no SA-{kode
+    entitas/akun} yang bisa keliru terbaca sebagai tahun (mis. akun kas
+    berkode numerik 111001 → "SA-111001") — dikecualikan supaya daftar
+    tahun buku tetap bersih.
+    """
     reversal = aliased(Journal)
     reversed_ids = select(reversal.reversal_of_id).where(
         reversal.reversal_of_id.is_not(None), reversal.status == StatusJurnal.POSTED)
@@ -110,7 +118,9 @@ def available_fiscal_years(db):
             .filter(Journal.ref_module == RefModule.SALDO_AWAL,
                     Journal.ref_no.like('SA-%'),
                     Journal.status == StatusJurnal.POSTED,
-                    ~Journal.id.in_(reversed_ids))
+                    ~Journal.id.in_(reversed_ids),
+                    or_(Journal.tipe_transaksi.is_(None),
+                        Journal.tipe_transaksi == RefModule.SALDO_AWAL.value))
             .distinct().all())
     years = []
     for (ref,) in rows:

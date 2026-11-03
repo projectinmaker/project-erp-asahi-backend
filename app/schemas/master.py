@@ -280,6 +280,12 @@ class SaldoAwalInfoResponse(BaseSchema):
     # saldo_normal akun): piutang positif = masih ditagih, hutang positif =
     # masih harus dibayar. Termasuk saldo awal + seluruh mutasi transaksi.
     saldo_berjalan: Optional[Decimal] = None
+    # Update #030 — khusus pintu per-akun (daftar Akun Perkiraan): terisi
+    # bila akun BELUM punya saldo awal per-akun tetapi sudah masuk set
+    # saldo awal global (SA-INIT/SA-{tahun} dari form Tambah/Edit Akun
+    # Perkiraan) — dialog menampilkan penjelasan alih-alih form yang bakal
+    # ditolak guard 409. Selalu None untuk pintu pelanggan/supplier.
+    catatan_global: Optional[str] = None
 
 # ==========================================
 # 3. BARANG

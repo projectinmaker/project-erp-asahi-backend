@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 from app.models import KasBankAkun, SalesInvoice
+from app.models.transaksi.jurnal import RefModule
 from app.services import reporting_ledger as gl, cashflow_service as cashflow
 from app.services.aging_service import aging
 from app.services import settlement_service as settlement
@@ -212,10 +213,34 @@ def get_dashboard_laba_rugi(db, bulan, tahun):
 def get_dashboard_cashflow(db, bulan, tahun):
     start, end = gl.month_bounds(tahun, bulan)
     journals, ids = cashflow.cash_journals(db, start, end)
-    amounts = [sum((r.debit-r.kredit for r in j.details if r.akun_perkiraan_id in ids), gl.ZERO) for j in journals]
+
+    def _net_kas(j):
+        return sum((r.debit - r.kredit for r in j.details if r.akun_perkiraan_id in ids), gl.ZERO)
+
+    # === Update #030 — pisahkan INPUT SALDO AWAL dari Penerimaan/Pengeluaran ===
+    # Jurnal saldo awal kas/bank (RefModule.SALDO_AWAL: set global SA-INIT/SA-
+    # {tahun} dari form Akun Perkiraan, maupun per-akun lewat ikon Saldo Awal
+    # di daftar Akun Perkiraan) adalah penyiapan saldo pembukaan, BUKAN
+    # penerimaan operasional. Pembaliknya (jurnal REVERSAL yang menunjuk jurnal
+    # saldo awal) ikut dikelompokkan ke sini supaya proses "ganti/batal saldo
+    # awal" tidak muncul sebagai pengeluaran. Net bisa negatif (pembatalan)
+    # dan dibiarkan bertanda — baris tampilannya bertanda juga.
+    sa_ids = {j.id for j in journals if j.ref_module == RefModule.SALDO_AWAL}
+    _rev_of = {j.reversal_of_id for j in journals if j.reversal_of_id is not None}
+    if _rev_of:
+        _asli_sa = {row[0] for row in db.query(gl.Journal.id).filter(
+            gl.Journal.id.in_(_rev_of),
+            gl.Journal.ref_module == RefModule.SALDO_AWAL,
+        ).all()}
+        # tambahkan ID jurnal PEMBALIK (yang ada di bulan ini), bukan id aslinya
+        sa_ids |= {j.id for j in journals if j.reversal_of_id in _asli_sa}
+    kas, input_sa = [], []
+    for j in journals:
+        (input_sa if j.id in sa_ids else kas).append(_net_kas(j))
     return {'saldo_awal': cashflow.cash_balance(db, ids, before=start),
-            'penerimaan': sum((max(v, gl.ZERO) for v in amounts), gl.ZERO),
-            'pengeluaran': sum((max(-v, gl.ZERO) for v in amounts), gl.ZERO),
+            'penerimaan': sum((max(v, gl.ZERO) for v in kas), gl.ZERO),
+            'pengeluaran': sum((max(-v, gl.ZERO) for v in kas), gl.ZERO),
+            'input_saldo_awal': sum(input_sa, gl.ZERO),
             'saldo_akhir': cashflow.cash_balance(db, ids, end=end)}
 
 

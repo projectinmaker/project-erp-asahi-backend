@@ -457,8 +457,22 @@ def _active_opening_journals(db):
     reversal = aliased(JurnalUmum)
     reversed_ids = select(reversal.reversal_of_id).where(
         reversal.reversal_of_id.is_not(None), reversal.status == StatusJurnal.POSTED)
-    return db.query(JurnalUmum).filter(JurnalUmum.ref_module == RefModule.SALDO_AWAL,
-        JurnalUmum.status == StatusJurnal.POSTED, ~JurnalUmum.id.in_(reversed_ids))
+    return db.query(JurnalUmum).filter(
+        JurnalUmum.ref_module == RefModule.SALDO_AWAL,
+        JurnalUmum.status == StatusJurnal.POSTED, ~JurnalUmum.id.in_(reversed_ids),
+        # === Update #030 — scope jurnal GLOBAL saja ===
+        # Flow /coa/saldo-awal (form Akun Perkiraan) hanya boleh membaca/membalik
+        # jurnal set global SA-INIT/SA-{tahun}. Jurnal saldo awal PER-ENTITAS
+        # (tipe SALDO_AWAL_AR / SALDO_AWAL_AP dari dialog Pelanggan/Supplier #028,
+        # dan SALDO_AWAL_AKUN dari ikon per akun di daftar Akun Perkiraan #030)
+        # tidak boleh ikut terbalik saat user mengganti saldo awal global —
+        # sebelumnya filter rentang tanggal tahun bisa menyapu jurnal per-entitas
+        # yang bertanggal di tahun yang sama.
+        or_(
+            JurnalUmum.tipe_transaksi.is_(None),
+            JurnalUmum.tipe_transaksi == RefModule.SALDO_AWAL.value,
+        ),
+    )
 
 
 def _get_or_create_penampung(db: Session) -> AkunPerkiraan:
@@ -607,6 +621,33 @@ def save_saldo_awal(db: Session, items: list, tanggal_str: str, user_id: UUID,
             hint = info.get("hint") or "Kategori akun ini tidak didukung saldo awal langsung."
             raise ValueError(
                 f"Akun {account.kode} ({account.nama}) tidak didukung saldo awal: {hint}"
+            )
+        # === Update #030 — tolak dobel dengan saldo awal per-akun (ikon di
+        # daftar Akun Perkiraan). Akun yang saldo awalnya sudah dikelola dialog
+        # per-akun (tipe SALDO_AWAL_AKUN) tidak boleh diikutsertakan lagi di set
+        # global — saldonya akan tercatat dua kali. Jurnal yang sudah dibatalkan
+        # (punya pembalik POSTED) dianggap tidak aktif → boleh di-set ulang. ===
+        from sqlalchemy.orm import aliased as _aliased
+        _rev = _aliased(JurnalUmum)
+        _per_akun = (
+            db.query(JurnalUmum.no_jurnal)
+            .outerjoin(_rev, _rev.reversal_of_id == JurnalUmum.id)
+            .join(JurnalDetail, JurnalDetail.jurnal_umum_id == JurnalUmum.id)
+            .filter(
+                JurnalDetail.akun_perkiraan_id == identifier,
+                JurnalUmum.ref_module == RefModule.SALDO_AWAL,
+                JurnalUmum.status == StatusJurnal.POSTED,
+                JurnalUmum.tipe_transaksi == "SALDO_AWAL_AKUN",
+                _rev.id.is_(None),
+            )
+            .first()
+        )
+        if _per_akun:
+            raise ValueError(
+                f"Akun {account.kode} ({account.nama}) sudah punya saldo awal per-akun "
+                f"(jurnal {_per_akun[0]}, ikon Saldo Awal di daftar Akun Perkiraan). "
+                "Batalkan dulu saldo awal per-akun tersebut atau keluarkan akun ini "
+                "dari set global."
             )
         if account.saldo_normal == SaldoNormal.DEBIT:
             entries.append(JurnalEntryItem(identifier, nilai, Decimal("0"), "Saldo awal"))
