@@ -210,6 +210,13 @@ def create_sales_order(
     saja, urutan input). Total SELURUH termin harus sama dengan grand_total
     (validasi di sini); termin kosong/tidak dikirim = SO tanpa termin (tetap
     sah — pembayaran SO tidak tersedia, pakai alur invoice).
+
+    Update #032 — penawaran_id: link ke penawaran sumber (form SO "Pilih
+    Penawaran"; repeat order — satu penawaran boleh dipakai banyak SO).
+
+    Update #033 — pemakaian penawaran sumber menaikkan statusnya DRAFT/DIPROSES
+    → SELESAI (konsisten dengan convert_to_so; jalur form sebelumnya membiarkan
+    penawaran tetap DRAFT — inkonsisten dengan badge "dipakai N× SO").
     """
     try:
         biaya_data = biaya_data or []
@@ -248,19 +255,23 @@ def create_sales_order(
         # === Update #032 — validasi penawaran sumber (bila dikirim) ===
         # Guard: penawaran harus ada, pelanggan cocok, dan berstatus DRAFT /
         # SELESAI (SELESAI = repeat order; DIREVISI/DIBATALKAN ditolak).
+        # Update #033 — penawaran sumber kini BISA dikirim dari form SO
+        # ("Pilih Penawaran" / tombol Buat SO di daftar penawaran, yang kini
+        # membuka form terisi — bukan lagi membuat SO langsung).
+        _penawaran_sumber = None
         if penawaran_id is not None:
             from app.models.transaksi.penjualan.penawaran import Penawaran
-            penawaran = db.query(Penawaran).filter(Penawaran.id == penawaran_id).first()
-            if penawaran is None:
+            _penawaran_sumber = db.query(Penawaran).filter(Penawaran.id == penawaran_id).first()
+            if _penawaran_sumber is None:
                 raise ValueError(f"Penawaran dengan ID {penawaran_id} tidak ditemukan")
-            if penawaran.pelanggan_id != pelanggan_id:
+            if _penawaran_sumber.pelanggan_id != pelanggan_id:
                 raise ValueError(
                     "Penawaran sumber milik pelanggan yang berbeda — pilih "
                     "penawaran milik pelanggan ini atau hapus pilihannya."
                 )
-            if penawaran.status not in ("DRAFT", "DIPROSES", "SELESAI"):
+            if _penawaran_sumber.status not in ("DRAFT", "DIPROSES", "SELESAI"):
                 raise ValueError(
-                    f"Penawaran {penawaran.no_penawaran} berstatus {penawaran.status} "
+                    f"Penawaran {_penawaran_sumber.no_penawaran} berstatus {_penawaran_sumber.status} "
                     "— tidak bisa dipakai membuat Sales Order"
                 )
 
@@ -365,6 +376,17 @@ def create_sales_order(
         # (toleransi pembulatan 0.05). Urutan baris = urutan input user.
         if pembayaran_termin:
             _create_so_termins(db, so, pembayaran_termin)
+
+        # === Update #033 — penawaran sumber dipakai → status SELESAI ===
+        # Konsisten dengan convert_to_so: pemakaian PERTAMA menaikkan DRAFT/
+        # DIPROSES → SELESAI (penawaran tetap bisa dipilih lagi — repeat order;
+        # edit selanjutnya harus lewat jalur Revisi agar SO lama tak berubah
+        # diam-diam). Sebelum #033 hanya jalur tombol konversi yang menaikkan
+        # status; jalur form ("Pilih Penawaran") meninggalkan penawaran tetap
+        # DRAFT — inkonsisten dengan daftar (badge "dipakai N× SO").
+        if _penawaran_sumber is not None and _penawaran_sumber.status in ("DRAFT", "DIPROSES"):
+            _penawaran_sumber.status = "SELESAI"
+            db.add(_penawaran_sumber)
 
         # Order tidak mengakui pendapatan/piutang atau pembelian/utang.
         db.commit()

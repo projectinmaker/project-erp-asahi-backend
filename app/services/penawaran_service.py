@@ -563,6 +563,14 @@ def convert_to_so(db: Session, penawaran_id: UUID, user):
     - SO di-link ke penawaran sumber (penawaran_id) untuk counter repeat
       order; status penawaran DRAFT → SELESAI saat PERTAMA dipakai (SELESAI
       tetap SELESAI pada pemakaian berikutnya).
+
+    Update #033 — FRONTEND kini memakai JALUR FORM untuk "Buat SO" dari
+    daftar penawaran (form SO terisi otomatis dari penawaran → user mengatur
+    Pembayaran Termin beberapa kali bayar SEBELUM menyimpan; sebelumnya tombol
+    ini memanggil endpoint langsung → SO final tanpa termin, "sekali bayar
+    grand total"). Endpoint to-sales-order TETAP tersedia (kompatibilitas API
+    — hasil sama; termin tetap tidak bisa diatur lewat endpoint ini). Kenaikan
+    status penawaran kini juga ditangani di create_sales_order (jalur form).
     """
     from app.services import penjualan_service, workflow_service
 
