@@ -31,6 +31,8 @@ from app.models.detail.sales_invoice_detail import SalesInvoiceDetail
 from app.models.detail.sales_retur_detail import SalesReturDetail
 from app.models.detail.pengiriman_barang_detail import PengirimanBarangDetail
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
+from app.models.transaksi.payment_allocation import PaymentAllocation
+from app.models.detail.penerimaan_rincian import PenerimaanRincian
 from app.models.master.pelanggan import Pelanggan
 from app.models.master.barang import Barang  # Update #5: eager-load satuan barang utk detail response
 from app.models.transaksi.jurnal import RefModule
@@ -497,7 +499,148 @@ def get_open_termin_sos(db: Session, search: str | None = None, limit: int = 100
             {"id": termin.id, "urutan": termin.urutan, "nominal": termin.nominal}
         )
         entry["sisa_termin"] += termin.nominal or Decimal("0")
+
+    # === Update #036 — tandai SO yang sudah punya invoice AKTIF (POSTED) ===
+    # Pembayaran termin berikutnya untuk SO ini otomatis diterapkan ke akun
+    # Piutang invoice (bukan Uang Muka) — form Penerimaan menampilkan info
+    # ini supaya user tahu ke mana pembayaran akan dicatat.
+    so_ids = list(hasil.keys())
+    difakturkan: set = set()
+    if so_ids:
+        from app.services.settlement_service import active_documents
+
+        rows_si = (
+            db.query(SalesInvoice.sales_order_id)
+            .filter(
+                SalesInvoice.sales_order_id.in_(so_ids),
+                SalesInvoice.id.in_(active_documents(db, SalesInvoice).scalar_subquery()),
+            )
+            .distinct()
+            .all()
+        )
+        difakturkan = {r[0] for r in rows_si if r[0] is not None}
+    for entry in hasil.values():
+        entry["sudah_difakturkan"] = entry["sales_order_id"] in difakturkan
+
     return list(hasil.values())
+
+
+# ==========================================
+# HELPER: Update #036 — DP termin SO ↔ invoice
+# ==========================================
+def _penerimaan_termin_aktif_ids(db: Session, so_id: UUID) -> list:
+    """ID penerimaan termin SO yang AKTIF (jurnal POSTED, belum dibatalkan).
+
+    DP hanya dihitung dari penerimaan yang benar-benar menggerakkan kas —
+    penerimaan draft (menunggu approval) / sudah dibatalkan tidak dianggap
+    (konsisten dengan perhitungan sisa tagihan pelunasan:
+    settlement_service.active_documents).
+    """
+    from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas
+    from app.services.settlement_service import active_documents
+
+    rows = (
+        db.query(SalesOrderTermin.penerimaan_kas_id)
+        .filter(
+            SalesOrderTermin.sales_order_id == so_id,
+            SalesOrderTermin.penerimaan_kas_id.isnot(None),
+        )
+        .all()
+    )
+    ids = [r[0] for r in rows if r[0] is not None]
+    if not ids:
+        return []
+    aktif = {
+        row[0]
+        for row in active_documents(db, PenerimaanKas)
+        .filter(PenerimaanKas.id.in_(ids))
+        .all()
+    }
+    return [i for i in ids if i in aktif]
+
+
+def _dp_termin_per_akun(db: Session, so_id: UUID) -> list:
+    """DP termin SO yang sudah dibayar (aktif), dikelompokkan per akun lawan.
+
+    Tiap penerimaan termin punya SATU baris rincian akun lawan (default
+    Uang Muka Penjualan — bisa diganti per transaksi), jadi agregasi rincian
+    memberikan komposisi akun DP yang tepat untuk jurnal aplikasi.
+    Return [(akun_perkiraan_id, nilai)] urut akun pertama kali dipakai.
+    """
+    ids = _penerimaan_termin_aktif_ids(db, so_id)
+    if not ids:
+        return []
+    rincian = (
+        db.query(PenerimaanRincian)
+        .filter(PenerimaanRincian.penerimaan_id.in_(ids))
+        .order_by(PenerimaanRincian.created_at.asc())
+        .all()
+    )
+    per_akun: dict = {}
+    urutan_akun: list = []
+    for r in rincian:
+        key = r.akun_perkiraan_id
+        if key not in per_akun:
+            per_akun[key] = Decimal("0")
+            urutan_akun.append(key)
+        per_akun[key] += safe_decimal(r.nilai)
+    return [(k, per_akun[k]) for k in urutan_akun if per_akun[k] > 0]
+
+
+def _dp_termin_tersedia(
+    db: Session, so_id: UUID, exclude_invoice_id: Optional[UUID] = None
+) -> Decimal:
+    """DP termin yang BELUM diterapkan ke invoice aktif manapun dari SO ini.
+
+    = Σ pembayaran termin aktif − Σ dp_teraplikasi invoice AKTIF lain dari
+    SO yang sama (invoice yang sedang diposting dikecualikan). Menjaga
+    sebagian invoicing: satu DP tidak pernah diaplikasikan dua kali.
+    SO tanpa termin / tanpa pembayaran → 0 (perilaku pra-#036).
+    """
+    from app.services.settlement_service import active_documents
+
+    total = sum((nilai for _akun, nilai in _dp_termin_per_akun(db, so_id)), Decimal("0"))
+    if total <= 0:
+        return Decimal("0")
+
+    query = db.query(func.coalesce(func.sum(SalesInvoice.dp_teraplikasi), 0)).filter(
+        SalesInvoice.sales_order_id == so_id,
+        SalesInvoice.id.in_(active_documents(db, SalesInvoice).scalar_subquery()),
+    )
+    if exclude_invoice_id is not None:
+        query = query.filter(SalesInvoice.id != exclude_invoice_id)
+    terpakai = safe_decimal(query.scalar())
+    return max(Decimal("0"), total - terpakai)
+
+
+def _invoice_aktif_untuk_termin(db: Session, so: SalesOrder):
+    """Invoice AKTIF (POSTED) milik SO dengan sisa tagihan > 0 — target
+    pembayaran termin yang datang SETELAH invoice diposting (Update #036).
+
+    Dipilih invoice tertua yang masih bersisa; sisa dihitung dengan
+    settlement_service.balances (grand_total − bayar − retur − dp_teraplikasi).
+    Return (invoice, sisa_tagihan); (None, 0) bila tidak ada yang cocok.
+    """
+    from app.services.settlement_service import active_documents, balances
+
+    invoices = (
+        db.query(SalesInvoice)
+        .filter(
+            SalesInvoice.sales_order_id == so.id,
+            SalesInvoice.id.in_(active_documents(db, SalesInvoice).scalar_subquery()),
+        )
+        .order_by(SalesInvoice.tanggal.asc(), SalesInvoice.created_at.asc())
+        .all()
+    )
+    if not invoices:
+        return None, Decimal("0")
+    saldo = balances(db, invoices)
+    for inv in invoices:
+        info = saldo.get(inv.id) or {}
+        sisa = safe_decimal(info.get("sisa_tagihan", 0))
+        if sisa > 0:
+            return inv, sisa
+    return None, Decimal("0")
 
 
 def release_termin_links(db: Session, penerimaan_id: UUID) -> int:
@@ -534,14 +677,24 @@ def terima_pembayaran_termin(
 
     Alur (Update #031):
     - Validasi SO tidak DIBATALKAN, termin milik SO tsb dan BELUM dibayar.
-    - Akun lawan default = Uang Muka Penjualan (Setting Akun
-      UANG_MUKA_PENJUALAN; bisa diganti per transaksi via akun_perkiraan_id).
-    - Buat PenerimaanKas jenis TERMIN_SO (prefix nomor REC ASI/YYYY/NNN) dengan
-      SATU baris rincian akun lawan sebesar nominal termin; pelanggan SO
-      tercatat sebagai pemberi supaya list Kas & Bank menampilkan pihaknya.
+    - Buat PenerimaanKas jenis TERMIN_SO (prefix nomor REC ASI/YYYY/NNN)
+      dengan SATU baris rincian akun lawan sebesar nominal termin; pelanggan
+      SO tercatat sebagai pemberi supaya list Kas & Bank menampilkan pihaknya.
     - Link termin → penerimaan (status DIBAYAR).
     - Jurnal diposting lewat workflow penerimaan_kas oleh ENDPOINT (admin:
       langsung final; user biasa: menunggu approval — pola Penerimaan lain).
+
+    Update #036 — akun lawan default kini KONTEKSTUAL (sisa tagihan SO
+    berttermin di alur invoice):
+    - SO BELUM difakturkan → Uang Muka Penjualan (Setting Akun
+      UANG_MUKA_PENJUALAN) — DP klasik; nanti diterapkan otomatis ke
+      Piutang saat invoice SO diposting (post_sales_invoice).
+    - SO SUDAH punya invoice AKTIF yang masih bersisa → akun Piutang
+      invoice: pembayaran langsung melunasi piutang (jurnal D Kas/Bank,
+      K Piutang) + tercatat sebagai alokasi pembayaran invoice sehingga
+      sisa tagihannya ikut turun di Pelunasan/aging. Termin yang melebihi
+      sisa piutang (termin bebas > GT) → kelebihannya ke Uang Muka.
+    - Pilihan akun eksplisit (akun_perkiraan_id) SELALU dihormati.
 
     Return: (penerimaan, termin).
     """
@@ -571,29 +724,75 @@ def terima_pembayaran_termin(
             "Batalkan penerimaan tersebut dulu bila ingin dibayar ulang."
         )
 
-    # Akun lawan — default Uang Muka Penjualan (Setting Akun), bisa diganti.
-    akun_lawan_id = akun_perkiraan_id
-    if akun_lawan_id is None:
-        akun_lawan_id = get_akun_id_or_raise(
-            db, KEY_UANG_MUKA_PENJUALAN, "Uang Muka Penjualan (termin SO)"
-        )
-
+    # === Update #036 — akun lawan default kontekstual ===
     jumlah_termin = len(so.termin_pembayaran) if so.termin_pembayaran else 1
     keterangan_rincian = f"Termin {termin.urutan}/{jumlah_termin} SO {so.no_pesanan}"
     pemberi = so.pelanggan.nama if so.pelanggan else None
+    nominal = safe_decimal(termin.nominal)
+
+    target_invoice, sisa_target = None, Decimal("0")
+    if akun_perkiraan_id is None:
+        target_invoice, sisa_target = _invoice_aktif_untuk_termin(db, so)
+
+    rincian_rows: list = []
+    alokasi_nilai = Decimal("0")
+    akun_piutang_id = None
+    if target_invoice is not None and sisa_target > 0:
+        akun_piutang_id = target_invoice.akun_kontrol_id or (
+            so.pelanggan.akun_piutang_id if so.pelanggan else None
+        )
+    if akun_piutang_id is not None:
+        # Pembayaran termin SETELAH invoice diposting → langsung ke akun
+        # Piutang invoice (melunasi piutang + alokasi pembayaran invoice).
+        alokasi_nilai = min(nominal, sisa_target)
+        kelebihan = nominal - alokasi_nilai
+        rincian_rows.append(
+            {
+                "akun_perkiraan_id": str(akun_piutang_id),
+                "nilai": alokasi_nilai,
+                "keterangan": (
+                    f"Termin {termin.urutan}/{jumlah_termin} SO {so.no_pesanan} "
+                    f"— diterapkan ke {target_invoice.no_invoice}"
+                ),
+            }
+        )
+        if kelebihan > 0:
+            # Termin bebas melebihi sisa piutang → kelebihan tetap dicatat
+            # sebagai uang muka (kewajiban — bisa direfund/di-tagih balik).
+            akun_um = get_akun_id_or_raise(
+                db, KEY_UANG_MUKA_PENJUALAN, "Uang Muka Penjualan (termin SO)"
+            )
+            rincian_rows.append(
+                {
+                    "akun_perkiraan_id": str(akun_um),
+                    "nilai": kelebihan,
+                    "keterangan": (
+                        f"Termin {termin.urutan}/{jumlah_termin} SO {so.no_pesanan} "
+                        "— kelebihan ke Uang Muka"
+                    ),
+                }
+            )
+    else:
+        # SO belum difakturkan (atau akun dipilih eksplisit) — perilaku lama.
+        akun_lawan_id = akun_perkiraan_id
+        if akun_lawan_id is None:
+            akun_lawan_id = get_akun_id_or_raise(
+                db, KEY_UANG_MUKA_PENJUALAN, "Uang Muka Penjualan (termin SO)"
+            )
+        rincian_rows.append(
+            {
+                "akun_perkiraan_id": str(akun_lawan_id),
+                "nilai": nominal,
+                "keterangan": keterangan_rincian,
+            }
+        )
 
     penerimaan = create_penerimaan(
         db=db,
         no_nukti=no_nukti,
         tanggal=tanggal,
         kas_bank_id=kas_bank_id,
-        rincian_data=[
-            {
-                "akun_perkiraan_id": str(akun_lawan_id),
-                "nilai": termin.nominal,
-                "keterangan": keterangan_rincian,
-            }
-        ],
+        rincian_data=rincian_rows,
         no_cek=None,
         pemberi=pemberi,
         catatan=(catatan or "").strip() or keterangan_rincian,
@@ -609,6 +808,22 @@ def terima_pembayaran_termin(
     termin.penerimaan_kas_id = penerimaan.id
     from datetime import UTC as _UTC
     termin.dibayar_pada = datetime.now(_UTC)
+
+    # === Update #036 — alokasi pembayaran invoice untuk termin yang dibayar
+    # SETELAH invoice diposting: sisa tagihan invoice turun sebesar bagian
+    # yang masuk akun Piutang (setara pelunasan tunai). Pembatalan penerimaan
+    # otomatis mengecualikannya — balances() hanya menghitung alokasi dari
+    # penerimaan AKTIF (AUD2-E1), dan release_termin_links melepas termin.
+    if alokasi_nilai > 0 and target_invoice is not None and akun_piutang_id is not None:
+        penerimaan.alokasi.append(
+            PaymentAllocation(
+                sales_invoice_id=target_invoice.id,
+                nilai=alokasi_nilai,
+                akun_perkiraan_id=akun_piutang_id,
+                terutang=sisa_target,
+            )
+        )
+
     db.add(penerimaan)
     db.add(termin)
     db.commit()
@@ -1706,7 +1921,16 @@ def finish_sales_retur(db: Session, db_obj: SalesRetur) -> SalesRetur:
 
 
 def post_sales_invoice(db: Session, inv, created_by):
-    """Post the existing document; caller owns commit/rollback and workflow checks."""
+    """Post the existing document; caller owns commit/rollback and workflow checks.
+
+    Update #036 — DP termin SO diterapkan ke Piutang invoice: pembayaran
+    termin yang sudah diterima SEBELUM posting (aktif, umumnya di akun
+    Uang Muka Penjualan) diaplikasikan di jurnal invoice ini — Piutang
+    dibukukan NET (grand_total − DP) + D akun lawan termin sebesar DP.
+    Saldo Uang Muka ikut kosong dan Pelunasan hanya menagih sisa NET
+    (balances(): GT − bayar − retur − dp_teraplikasi) — customer tidak
+    ditagih dua kali untuk bagian DP.
+    """
     from app.services.document_totals import validate_postable
     validate_postable(db, inv)
     tanggal = inv.tanggal
@@ -1745,13 +1969,48 @@ def post_sales_invoice(db: Session, inv, created_by):
     if global_diskon:
         revenue_by_akun[default_rev_id] = revenue_by_akun.get(default_rev_id, Decimal("0")) - global_diskon
 
-    entries = [
-        JurnalEntryItem(
-            akun_perkiraan_id=pelanggan.akun_piutang_id,
-            debit=grand_total,
-            keterangan=f"INV {no_invoice} - {pelanggan.nama}",
-        ),
-    ]
+    # === Update #036 — susun aplikasi DP termin SO (bila ada) ===
+    # DP tersedia = Σ pembayaran termin aktif − yang sudah diterapkan ke
+    # invoice AKTIF lain dari SO yang sama (anti dobel untuk sebagian
+    # invoicing). Diaplikasikan maksimal sebesar grand_total invoice ini;
+    # kelebihannya tetap menggantung di Uang Muka (termin bebas > GT).
+    dp_rows: list = []
+    dp_apply = Decimal("0")
+    if inv.sales_order_id is not None:
+        tersedia = _dp_termin_tersedia(db, inv.sales_order_id, exclude_invoice_id=inv.id)
+        dp_apply = min(tersedia, grand_total)
+        anggaran = dp_apply
+        if anggaran > 0:
+            for akun_lawan, nilai in _dp_termin_per_akun(db, inv.sales_order_id):
+                if anggaran <= 0:
+                    break
+                pakai = min(nilai, anggaran)
+                dp_rows.append((akun_lawan, pakai))
+                anggaran -= pakai
+
+    piutang_debit = grand_total - dp_apply
+    entries = []
+    if piutang_debit > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=pelanggan.akun_piutang_id,
+                debit=piutang_debit,
+                keterangan=f"INV {no_invoice} - {pelanggan.nama}",
+            ),
+        )
+    if dp_rows:
+        so_no = "-"
+        if inv.sales_order_id is not None:
+            _so_src = db.get(SalesOrder, inv.sales_order_id)
+            so_no = getattr(_so_src, "no_pesanan", None) or "-"
+        for akun_lawan, nilai in dp_rows:
+            entries.append(
+                JurnalEntryItem(
+                    akun_perkiraan_id=akun_lawan,
+                    debit=nilai,
+                    keterangan=f"DP termin SO {so_no} diterapkan INV {no_invoice}",
+                ),
+            )
     for akun_rev, nilai in revenue_by_akun.items():
         if nilai == 0:
             continue
@@ -1824,6 +2083,9 @@ def post_sales_invoice(db: Session, inv, created_by):
         )
         inv.jurnal_umum_id = jurnal.id
         inv.akun_kontrol_id = pelanggan.akun_piutang_id
+        # Update #036 — simpan besaran DP yang diterapkan (dipakai
+        # settlement_service.balances utk sisa tagihan NET invoice ini).
+        inv.dp_teraplikasi = dp_apply
         inv.status = StatusPenjualan.SELESAI
     except Exception as e:
         raise ValueError(f"Jurnal INV gagal diposting: {e}")

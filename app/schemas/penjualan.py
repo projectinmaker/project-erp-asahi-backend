@@ -732,6 +732,10 @@ class SoTerminOpenItem(BaseSchema):
     grand_total: Decimal = Decimal("0")
     termin_belum_dibayar: List[SoTerminRingkas] = []
     sisa_termin: Decimal = Decimal("0")
+    # === Update #036 — SO sudah punya invoice AKTIF (POSTED): pembayaran
+    # termin berikutnya otomatis diterapkan ke akun Piutang invoice (bukan
+    # Uang Muka) — form menampilkan info ini ke user. ===
+    sudah_difakturkan: bool = False
 
 
 class TerimaPembayaranTerminRequest(BaseSchema):

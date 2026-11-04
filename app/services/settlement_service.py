@@ -82,7 +82,14 @@ def balances(db, invoices, as_of=None):
     result = {}
     for obj in invoices:
         bayar, retur = Decimal(paid.get(obj.id, 0)), Decimal(credit.get(obj.id, 0))
-        saldo = obj.grand_total - bayar - retur
+        # === Update #036 — DP termin SO yang diterapkan ke invoice ini ===
+        # Invoice dari SO berttermin yang DP-nya diterima SEBELUM posting:
+        # Piutang dibukukan net di jurnal invoice dan kolom dp_teraplikasi
+        # menyimpan besaran DP tsb. Sisa tagihan = NET (customer hanya
+        # ditagih bagian yang benar-benar belum dibayar, bukan dua kali DP).
+        # Invoice lama / tanpa termin / PI (hutang) → 0 (perilaku lama).
+        uang_muka = Decimal(getattr(obj, 'dp_teraplikasi', 0) or 0)
+        saldo = obj.grand_total - bayar - retur - uang_muka
         is_active = obj.id in active
         if not is_active:
             state = 'DIBATALKAN' if getattr(obj.status, 'value', obj.status) in ('BATAL', 'DIBATALKAN') or obj.jurnal_umum_id else 'BELUM_DIPOSTING'
@@ -92,7 +99,7 @@ def balances(db, invoices, as_of=None):
             state = 'LEBIH_BAYAR'
         elif saldo == 0:
             state = 'LUNAS'
-        elif bayar + retur > 0:
+        elif bayar + retur + uang_muka > 0:
             state = 'PARSIAL'
         else:
             state = 'BELUM_DIBAYAR'
@@ -100,6 +107,7 @@ def balances(db, invoices, as_of=None):
             'pihak_id': obj.pelanggan_id if ar else obj.supplier_id,
             'tanggal': local_day(obj.tanggal), 'jatuh_tempo': due_date(obj),
             'nilai_tagihan': obj.grand_total, 'total_bayar': bayar, 'total_retur': retur,
+            'uang_muka': uang_muka,
             'sisa_tagihan': max(ZERO, saldo) if is_active else ZERO,
             'kelebihan': max(ZERO, -saldo) if is_active else ZERO,
             'status_pembayaran': state, 'aktif': is_active}

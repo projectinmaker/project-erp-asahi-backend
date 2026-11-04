@@ -82,6 +82,10 @@ class InvoiceBalanceResponse(BaseSchema):
     nilai_tagihan: Decimal
     total_bayar: Decimal
     total_retur: Decimal
+    # === Update #036 — DP termin SO yang diterapkan ke invoice (piutang
+    # saja; invoice dari SO berttermin yang DP-nya diterima sebelum
+    # posting). Sisa tagihan sudah NET setelah DP ini. ===
+    uang_muka: Decimal = Decimal("0")
     sisa_tagihan: Decimal
     kelebihan: Decimal
     status_pembayaran: str

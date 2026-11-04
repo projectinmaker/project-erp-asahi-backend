@@ -37,6 +37,14 @@ class SalesInvoice(BaseModel, BaseMixin):
     pph23_applicable = Column(Boolean, nullable=False, default=False, server_default="false")
     pph23 = Column(Numeric(5, 2), default=2, nullable=False, server_default="2")
     total_pph23 = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
+
+    # === Update #036 — DP termin SO yang diterapkan ke invoice ini ===
+    # Diisi saat invoice diposting: total pembayaran termin SO sumber (aktif)
+    # yang diaplikasikan ke Piutang invoice (jurnal: D akun lawan termin
+    # — umumnya Uang Muka Penjualan — D Piutang net). Sisa tagihan invoice
+    # di Pelunasan/aging = grand_total − bayar − retur − dp_teraplikasi.
+    # Invoice lama tanpa kolom ini dianggap 0 (perilaku #031–#035).
+    dp_teraplikasi = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
     # LEGACY - DEPRECATED: SI posting via workflow, bukan auto_post
     auto_post_jurnal = Column(Boolean, default=False, nullable=False)  # Changed default to False
     jurnal_umum_id = Column(UUID(as_uuid=True), ForeignKey("jurnal_umum.id"), nullable=True)

@@ -324,8 +324,12 @@ def create_sales_order_terima_pembayaran(
     """Terima pembayaran SATU termin SO (jenis Penerimaan TERMIN_SO) — #031.
 
     - Satu SO bisa dipanggil BERKALI-KALI (tiap penerimaan = satu termin).
-    - Jurnal (saat diposting): D Kas/Bank, K akun lawan — default Uang Muka
-      Penjualan (Setting Akun UANG_MUKA_PENJUALAN), bisa diganti per transaksi.
+    - Jurnal (saat diposting): D Kas/Bank, K akun lawan. Update #036 — akun
+      lawan default kontekstual: SO belum difakturkan → Uang Muka Penjualan
+      (Setting Akun UANG_MUKA_PENJUALAN; diterapkan otomatis ke Piutang saat
+      invoice SO diposting); SO sudah punya invoice aktif → akun Piutang
+      invoice (langsung melunasi + alokasi pembayaran invoice). Pilihan
+      akun eksplisit tetap bisa diganti per transaksi.
     - Pembatalan penerimaan melepas termin otomatis (bisa dibayar ulang).
     """
     try:
