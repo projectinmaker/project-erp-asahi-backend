@@ -94,6 +94,10 @@ class PurchaseOrderDetailBase(BaseSchema):
     # Dasar belanja: CONSUMABLE / PROJECT / ASSET / ATK — penentu tujuan
     # posting COA saat invoice/penerimaan di-posting (divalidasi di service).
     jenis_pembelian: Optional[str] = None
+    # === Update #037 — jejak baris ROP sumber (menu Pembelian → Detail ROP
+    # → "Buat PO Draft"). Round-trip dari/ke FE agar link tetap terjaga saat
+    # PO draft di-edit (detail diganti seluruhnya tiap save). ===
+    rop_item_id: Optional[UUID] = None
 
 
 class PurchaseOrderDetailCreate(PurchaseOrderDetailBase):
@@ -107,12 +111,25 @@ class SalesOrderMiniResponse(BaseSchema):
     pelanggan_nama: Optional[str] = None
 
 
+class RopPoLinkResponse(BaseSchema):
+    """Baris ROP sumber untuk nested di baris PO (update #037) — menampilkan
+    chip "dari ROP ASI/..." di form/detail PO. ``rop_no`` dibaca dari property
+    model RequestOrderPartItem.rop_no."""
+    id: UUID
+    no: int = 0
+    id_part: Optional[str] = None
+    description: Optional[str] = None
+    rop_no: Optional[str] = None
+
+
 class PurchaseOrderDetailResponse(PurchaseOrderDetailBase):
     id: UUID
     barang: Optional[BarangSimpleResponse] = None
     satuan: Optional[SatuanSimpleResponse] = None  # Phase B
     # === Update ASAHI #002 — nested SO untuk kolom "Keterangan SO" ===
     sales_order: Optional[SalesOrderMiniResponse] = None
+    # === Update #037 — nested baris ROP sumber (chip "dari ROP") ===
+    rop_item: Optional[RopPoLinkResponse] = None
 
 
 # ==========================================
@@ -212,6 +229,78 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     def dasar_pajak(self) -> Decimal:
         """DPP (Dasar Pengenaan Pajak) = sub_total - total_diskon."""
         return self.sub_total - self.total_diskon
+
+
+# ==========================================
+# === Update #037 — DETAIL ROP (kolam belanja PIC Pembelian) ===
+# Satu baris = satu item ROP (DIBUAT). Qty belanja otomatis = kekurangan
+# (qty diminta − stok gudang). Status belanja derived dari PO aktif.
+# ==========================================
+class RopItemBelanjaResponse(BaseSchema):
+    """Baris daftar menu Pembelian → Detail ROP."""
+    id: UUID
+    no: int = 0
+    rop_id: UUID
+    no_rop: str
+    project_name: str
+    model: Optional[str] = None
+    tanggal: Optional[datetime] = None
+    sales_order_id: Optional[UUID] = None
+    sales_order_no: Optional[str] = None
+    # Kolom form ROP
+    id_part: Optional[str] = None
+    description: Optional[str] = None
+    material: Optional[str] = None
+    qty: Decimal = Decimal("0")
+    qs: Optional[str] = None
+    supplier_id: Optional[UUID] = None
+    supplier_nama: Optional[str] = None
+    # Master barang (null = part belum ada di master → stok 0)
+    barang_id: Optional[UUID] = None
+    barang_kode: Optional[str] = None
+    barang_nama: Optional[str] = None
+    barang_stok: int = 0
+    satuan_nama: Optional[str] = None
+    # Perhitungan belanja (semua Decimal — FE normalisasi sendiri)
+    kekurangan: Decimal = Decimal("0")
+    sudah_dibelanja: Decimal = Decimal("0")
+    sisa: Decimal = Decimal("0")
+    # BELUM / SEBAGIAN / LENGKAP / STOK_CUKUP
+    status: str
+    # Badge "sudah masuk PO draft" — PIC tahu item mana yang sedang dikerjakan
+    in_draft_po: bool = False
+    draft_po_nos: List[str] = []
+
+
+class RopSkippedItemResponse(BaseSchema):
+    """Item terpilih yang tidak masuk PO draft (stok cukup / sudah dibelanjakan)."""
+    no_rop: Optional[str] = None
+    id_part: Optional[str] = None
+    alasan: str
+
+
+class RopAutoCreatedBarangResponse(BaseSchema):
+    """Barang master yang dibuat otomatis dari part ROP saat PO disimpan."""
+    kode: str
+    nama: str
+
+
+class RopItemPoDraftCreate(BaseSchema):
+    """Payload POST /pembelian/rop-item/po-draft — seleksi item → supplier →
+    PO DRAFT (bisa dikoreksi lagi di menu Pesanan)."""
+    item_ids: List[UUID] = Field(min_length=1)
+    supplier_id: UUID
+    # Gudang tujuan (wajib — sama seperti form PO biasa).
+    alamat_pengiriman_id: UUID
+    tanggal: Optional[datetime] = None
+    keterangan: Optional[str] = None
+
+
+class RopPoDraftResponse(BaseSchema):
+    """Hasil spawn PO draft dari seleksi item ROP."""
+    purchase_order: PurchaseOrderResponse
+    skipped: List[RopSkippedItemResponse] = []
+    auto_created_barang: List[RopAutoCreatedBarangResponse] = []
 
 
 # ==========================================

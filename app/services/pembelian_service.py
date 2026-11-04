@@ -15,12 +15,13 @@ Menghandle CRUD + auto-posting jurnal untuk:
 from app.services.accounting_control import atomic_accounting_write, require_unposted, require_no_stock_movement
 from app.services.posting_service import reverse_journal
 
-from datetime import datetime, date
-from decimal import Decimal
-from typing import List, Optional, Tuple
+from datetime import datetime, date, timezone
+from decimal import Decimal, ROUND_CEILING
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.transaksi.pembelian.purchase_order import PurchaseOrder, JENIS_PEMBELIAN_VALUES
@@ -34,6 +35,12 @@ from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
 from app.models.master.supplier import Supplier
 from app.models.transaksi.penjualan.sales_order import StatusPenjualan, SalesOrder
+# === Update #037 — alur belanja dari ROP (Detail ROP → PO draft) ===
+from app.models.transaksi.produksi.request_order_part import (
+    RequestOrderPart,
+    RequestOrderPartItem,
+    StatusRequestOrderPart,
+)
 from app.models.transaksi.jurnal import RefModule
 from app.services.posting_service import auto_posting_jurnal, JurnalEntryItem
 from app.services.stok_service import update_stok_barang
@@ -58,8 +65,12 @@ def _validate_po_detail_refs(db: Session, details_data: list) -> None:
       CONSUMABLE / PROJECT / ASSET / ATK (dasar belanja → tujuan posting).
     - ``sales_order_id`` (opsional) harus merujuk SO yang ada — satu PO bisa
       memuat item dari beberapa SO berbeda (tracking per baris).
+    - Update #037: ``rop_item_id`` (opsional) harus merujuk baris ROP yang
+      ada — jejak baris PO berasal dari ROP mana (status belanja di
+      Pembelian → Detail ROP dihitung dari link ini).
     """
     so_ids = set()
+    rop_item_ids = set()
     for d in details_data:
         jenis = (d.get("jenis_pembelian") or "").strip() or None
         if jenis is not None and jenis not in JENIS_PEMBELIAN_VALUES:
@@ -69,6 +80,9 @@ def _validate_po_detail_refs(db: Session, details_data: list) -> None:
         so_id = d.get("sales_order_id")
         if so_id:
             so_ids.add(so_id)
+        rop_item_id = d.get("rop_item_id")
+        if rop_item_id:
+            rop_item_ids.add(rop_item_id)
     if so_ids:
         found = {
             row.id
@@ -77,6 +91,16 @@ def _validate_po_detail_refs(db: Session, details_data: list) -> None:
         missing = so_ids - found
         if missing:
             raise ValueError("Sales Order yang dipilih pada detail barang tidak ditemukan")
+    if rop_item_ids:
+        found_rop_items = {
+            row.id
+            for row in db.query(RequestOrderPartItem.id)
+            .filter(RequestOrderPartItem.id.in_(rop_item_ids))
+            .all()
+        }
+        missing_rop = rop_item_ids - found_rop_items
+        if missing_rop:
+            raise ValueError("Baris ROP yang ditaut pada detail barang tidak ditemukan")
 
 
 def _assert_po_details_replaceable(db: Session, db_obj: PurchaseOrder) -> None:
@@ -391,6 +415,8 @@ def create_purchase_order(
                 # === Update ASAHI #002 — tracking per baris: SO + jenis belanja ===
                 sales_order_id=d.get("sales_order_id"),
                 jenis_pembelian=(d.get("jenis_pembelian") or "").strip() or None,
+                # === Update #037 — jejak baris ROP sumber (Detail ROP → PO) ===
+                rop_item_id=d.get("rop_item_id"),
             )
             db.add(detail)
 
@@ -525,6 +551,9 @@ def update_purchase_order(
                     satuan_id=d.get("satuan_id"),
                     sales_order_id=d.get("sales_order_id"),
                     jenis_pembelian=(d.get("jenis_pembelian") or "").strip() or None,
+                    # === Update #037 — jejak baris ROP sumber tetap terjaga saat
+                    # PO draft di-edit (FE round-trip ropItemId per baris). ===
+                    rop_item_id=d.get("rop_item_id"),
                 )
             )
         db.flush()
@@ -556,6 +585,422 @@ def cancel_purchase_order(db: Session, db_obj: PurchaseOrder, user_id: Optional[
     db.refresh(db_obj)
     logger.info(f"PurchaseOrder cancelled: {db_obj.no_pesanan}")
     return db_obj
+
+
+# ==========================================
+# === Update #037 — DETAIL ROP (kolam belanja PIC Pembelian) ===
+# Alur: Engineering buat ROP (DIBUAT) → seluruh item masuk daftar Detail ROP
+# → PIC Pembelian centang item yang mau dibelanjakan → pilih supplier →
+# sistem buat PO DRAFT (bisa dikoreksi lagi di menu Pesanan). Qty belanja
+# otomatis = Kekurangan (qty diminta − stok tersedia gudang; jawaban user
+# "beli selisihnya saja"). Status "sudah dibelanjakan" = derived dari
+# SUM qty baris PO aktif (≠ DIBATALKAN) yang menaut item → PO dibatalkan /
+# barisnya dihapus otomatis mengembalikan item ke "belum dibelanjakan".
+# ==========================================
+
+# Status belanja per item ROP (nilai enum string — FE memakai labelnya).
+ROP_BELANJA_BELUM = "BELUM"            # perlu beli, belum masuk PO mana pun
+ROP_BELANJA_SEBAGIAN = "SEBAGIAN"      # sebagian kekurangan sudah masuk PO
+ROP_BELANJA_LENGKAP = "LENGKAP"        # seluruh kekurangan sudah masuk PO
+ROP_BELANJA_STOK_CUKUP = "STOK_CUKUP"  # stok gudang menutup qty diminta
+
+
+def _bought_qty_per_rop_item(db: Session, item_ids: List[UUID]) -> dict:
+    """Agregat qty per baris ROP dari PO aktif (status ≠ DIBATALKAN) —
+    satu query GROUP BY (hindari N+1). Derived: tidak ada kolom status
+    tersimpan, sehingga pembatalan/penghapusan PO otomatis membebaskan
+    item ROP kembali "belum dibelanjakan"."""
+    if not item_ids:
+        return {}
+    rows = (
+        db.query(PurchaseOrderDetail.rop_item_id, func.sum(PurchaseOrderDetail.qty))
+        .join(PurchaseOrder, PurchaseOrderDetail.purchase_order_id == PurchaseOrder.id)
+        .filter(
+            PurchaseOrderDetail.rop_item_id.in_(item_ids),
+            PurchaseOrder.status != StatusPenjualan.DIBATALKAN,
+        )
+        .group_by(PurchaseOrderDetail.rop_item_id)
+        .all()
+    )
+    return {rop_item_id: (qty or 0) for rop_item_id, qty in rows}
+
+
+def _draft_po_nos_per_rop_item(db: Session, item_ids: List[UUID]) -> dict:
+    """Nomor PO DRAFT yang menaut item (badge "sudah masuk PO draft" di
+    daftar Detail ROP — PIC tahu item mana yang sudah dikerjakan)."""
+    if not item_ids:
+        return {}
+    result: dict = {}
+    rows = (
+        db.query(PurchaseOrderDetail.rop_item_id, PurchaseOrder.no_pesanan)
+        .join(PurchaseOrder, PurchaseOrderDetail.purchase_order_id == PurchaseOrder.id)
+        .filter(
+            PurchaseOrderDetail.rop_item_id.in_(item_ids),
+            PurchaseOrder.status == StatusPenjualan.DRAFT,
+        )
+        .order_by(PurchaseOrder.no_pesanan)
+        .all()
+    )
+    for rop_item_id, no_pesanan in rows:
+        result.setdefault(rop_item_id, []).append(no_pesanan)
+    return result
+
+
+def _rop_item_belanja_row(item: RequestOrderPartItem, bought: Decimal, draft_nos: List[str]) -> Dict[str, Any]:
+    """Serialisasi satu baris daftar belanja Detail ROP (+ hitung stok /
+    kekurangan / sisa / status). Dipisah agar testable tanpa DB."""
+    rop = item.request_order_part
+    barang = getattr(item, "barang", None)
+    qty = safe_decimal(item.qty) or Decimal("0")
+    stok = int(getattr(barang, "stok", 0) or 0) if barang else 0
+    kekurangan = qty - Decimal(stok)
+    if kekurangan < 0:
+        kekurangan = Decimal("0")
+    sudah = bought or Decimal("0")
+    sisa = kekurangan - sudah
+    if sisa < 0:
+        sisa = Decimal("0")
+    if kekurangan <= 0:
+        status = ROP_BELANJA_STOK_CUKUP
+    elif sisa <= 0:
+        status = ROP_BELANJA_LENGKAP
+    elif sudah > 0:
+        status = ROP_BELANJA_SEBAGIAN
+    else:
+        status = ROP_BELANJA_BELUM
+    supplier = getattr(item, "supplier", None)
+    so = getattr(rop, "sales_order", None)
+    return {
+        "id": item.id,
+        "no": item.no,
+        "rop_id": rop.id,
+        "no_rop": rop.no_rop,
+        "project_name": rop.project_name,
+        "model": rop.model,
+        "tanggal": rop.tanggal,
+        "sales_order_id": rop.sales_order_id,
+        "sales_order_no": (so.no_pesanan if so else None),
+        "id_part": item.id_part,
+        "description": item.description,
+        "material": item.material,
+        "qty": qty,
+        "qs": item.qs,
+        "supplier_id": item.supplier_id,
+        "supplier_nama": (supplier.nama if supplier else None),
+        "barang_id": item.barang_id,
+        "barang_kode": (barang.kode if barang else None),
+        "barang_nama": (barang.nama if barang else None),
+        "barang_stok": stok,
+        "satuan_nama": (getattr(barang.satuan, "nama", None) if barang and getattr(barang, "satuan", None) else None),
+        "kekurangan": kekurangan,
+        "sudah_dibelanja": sudah,
+        "sisa": sisa,
+        "status": status,
+        "in_draft_po": bool(draft_nos),
+        "draft_po_nos": draft_nos,
+    }
+
+
+def get_rop_item_belanja_list(
+    db: Session,
+    search: Optional[str] = None,
+    supplier_id: Optional[UUID] = None,
+    status_filter: Optional[str] = None,
+    need_purchase: bool = False,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Daftar seluruh item ROP berstatus DIBUAT — kolam belanja PIC
+    Pembelian (menu Pembelian → Detail ROP, di atas Pesanan).
+
+    - Satu baris = satu item ROP (tidak digabung antar ROP supaya jejak
+      ROP/SO per baris jelas; 4 ROP × 10 item = 40 baris).
+    - Stok tersedia dibaca dari master barang (total semua gudang); baris
+      tanpa link master → stok 0 (seluruh qty dianggap kekurangan).
+    - Filter ``need_purchase=True`` → hanya baris dengan sisa > 0.
+    """
+    query = (
+        db.query(RequestOrderPartItem)
+        .join(RequestOrderPart, RequestOrderPartItem.request_order_part_id == RequestOrderPart.id)
+        .options(
+            joinedload(RequestOrderPartItem.barang).joinedload("satuan"),
+            joinedload(RequestOrderPartItem.supplier),
+            joinedload(RequestOrderPartItem.request_order_part).joinedload(RequestOrderPart.sales_order),
+        )
+        .filter(RequestOrderPart.status == StatusRequestOrderPart.DIBUAT)
+    )
+    if search:
+        like = f"%{search}%"
+        query = query.filter(
+            or_(
+                RequestOrderPartItem.id_part.ilike(like),
+                RequestOrderPartItem.description.ilike(like),
+                RequestOrderPart.no_rop.ilike(like),
+                RequestOrderPart.project_name.ilike(like),
+            )
+        )
+    if supplier_id:
+        query = query.filter(RequestOrderPartItem.supplier_id == supplier_id)
+    rows = (
+        query.order_by(
+            RequestOrderPart.tanggal.desc(),
+            RequestOrderPart.created_at.desc(),
+            RequestOrderPartItem.no,
+        )
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return []
+
+    item_ids = [r.id for r in rows]
+    bought_map = _bought_qty_per_rop_item(db, item_ids)
+    draft_map = _draft_po_nos_per_rop_item(db, item_ids)
+
+    result = []
+    for it in rows:
+        row = _rop_item_belanja_row(it, Decimal(str(bought_map.get(it.id, 0) or 0)), draft_map.get(it.id, []))
+        if need_purchase and row["sisa"] <= 0:
+            continue
+        if status_filter and row["status"] != status_filter:
+            continue
+        result.append(row)
+    return result
+
+
+def _get_or_create_rop_kategori(db: Session):
+    """Kategori default barang hasil auto-create dari ROP (get-or-create)."""
+    from app.models.master.kategori_barang import KategoriBarang
+
+    kat = db.query(KategoriBarang).filter(func.upper(KategoriBarang.nama) == "ROP").first()
+    if kat:
+        return kat
+    kat = KategoriBarang(kode="ROP", nama="ROP", status="AKTIF")
+    db.add(kat)
+    db.flush()
+    return kat
+
+
+def _get_or_create_rop_satuan(db: Session):
+    """Satuan default barang hasil auto-create dari ROP (get-or-create PCS)."""
+    from app.models.master.satuan import Satuan
+
+    sat = db.query(Satuan).filter(func.upper(Satuan.nama) == "PCS").first()
+    if sat:
+        return sat
+    sat = Satuan(nama="PCS", status="AKTIF")
+    db.add(sat)
+    db.flush()
+    return sat
+
+
+def _generate_barang_kode(db: Session, base: str) -> str:
+    """Kode barang unik dari ID PART (sanitasi + anti-bentrok, maks 20 char)."""
+    import re
+
+    kode = re.sub(r"[^A-Za-z0-9\-_/]", "-", (base or "").strip().upper())[:20].strip("-") or "ROP"
+    if db.query(Barang.id).filter(func.upper(Barang.kode) == kode.upper()).first() is None:
+        return kode
+    for i in range(2, 100):
+        suffix = f"-{i}"
+        candidate = kode[: 20 - len(suffix)] + suffix
+        if db.query(Barang.id).filter(func.upper(Barang.kode) == candidate.upper()).first() is None:
+            return candidate
+    raise ValueError("Gagal membuat kode barang unik dari ID PART — ubah kode secara manual di master barang")
+
+
+def _resolve_or_create_barang_from_rop_item(db: Session, item: RequestOrderPartItem, auto_created: list) -> Barang:
+    """Pastikan baris ROP punya barang master (jawaban user #037 no. 6c).
+
+    Urutan resolusi:
+    1. ``item.barang_id`` terisi & valid → pakai master itu.
+    2. Auto-match by kode: ID PART persis sama dengan kode barang master
+       (case-insensitive) → pakai & relink (stok gudang langsung berlaku).
+    3. Belum ada → buat barang baru otomatis: kode = ID PART (sanitasi,
+       anti-bentrok), nama = description, kategori "ROP", satuan "PCS",
+       item_type BARANG_BAKU (part produksi), stock-tracked, harga 0
+       (PIC mengisi harga di PO draft). Akun persediaan null → fallback
+       posting via item_type (PERSEDIAAN_BAHAN_BAKU) seperti barang master
+       lain yang belum dipetakan.
+    """
+    if item.barang_id:
+        existing = db.query(Barang).filter(Barang.id == item.barang_id).first()
+        if existing:
+            return existing
+        # link basi (master dihapus) → jatuh ke resolusi di bawah & relink.
+
+    from app.models.master.barang import ItemTypeBarang
+
+    kode_sumber = (item.id_part or "").strip()
+    if kode_sumber:
+        matched = db.query(Barang).filter(func.upper(Barang.kode) == kode_sumber.upper()).first()
+        if matched:
+            item.barang_id = matched.id
+            return matched
+
+    kode = _generate_barang_kode(db, kode_sumber or f"ROP-{str(item.id)[:8]}")
+    barang = Barang(
+        kode=kode,
+        nama=(item.description or kode).strip()[:200],
+        kategori_id=_get_or_create_rop_kategori(db).id,
+        satuan_id=_get_or_create_rop_satuan(db).id,
+        item_type=ItemTypeBarang.BARANG_BAKU,
+        stock_item=True,
+        harga_pokok=Decimal("0"),
+        harga_jual=Decimal("0"),
+        stok=0,
+        stok_minimum=0,
+        status="AKTIF",
+    )
+    db.add(barang)
+    db.flush()
+    item.barang_id = barang.id
+    auto_created.append({"kode": barang.kode, "nama": barang.nama})
+    logger.info(f"Barang auto-create dari ROP: {barang.kode} — {barang.nama}")
+    return barang
+
+
+@atomic_accounting_write
+def create_po_draft_from_rop_items(
+    db: Session,
+    item_ids: List[UUID],
+    supplier_id: UUID,
+    alamat_pengiriman_id: UUID,
+    tanggal: Optional[datetime] = None,
+    created_by: Optional[UUID] = None,
+    keterangan: Optional[str] = None,
+) -> Tuple[PurchaseOrder, Dict[str, Any]]:
+    """Buat PO DRAFT dari seleksi item ROP (tombol "Buat PO Draft" di menu
+    Pembelian → Detail ROP).
+
+    - Item boleh dari BEBERAPA ROP sekaligus (mis. 4 ROP → 1 PO); tiap baris
+      PO menyimpan rop_item_id + sales_order_id ROP asalnya (tracking per
+      baris, pola #002) + jenis_pembelian default "PROJECT" (bisa diganti
+      per baris di form PO — keputusan user "jenis belanja tetap per baris").
+    - Qty per baris = sisa kekurangan LANGSUNG saat ini (qty diminta − stok
+      tersedia − yang sudah masuk PO aktif lain); pecahan dibulatkan KE ATAS
+      supaya tidak kurang beli.
+    - Harga = harga pokok master (boleh 0) — PIC pelengkap di PO draft.
+    - Barang master untuk part yang belum terdaftar dibuat OTOMATIS
+      (lihat _resolve_or_create_barang_from_rop_item).
+    - Status PO = DRAFT — TIDAK memanggil workflow direct_complete, jadi
+      PO hasil spawn SELALU bisa dikoreksi dulu di menu Pesanan (permintaan
+      user: "simpan draft ... agar nanti bisa dikoreksi lagi"), termasuk
+      untuk user Administrator.
+    """
+    if not item_ids:
+        raise ValueError("Pilih minimal satu item ROP")
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise ValueError(f"Supplier dengan ID {supplier_id} tidak ditemukan")
+
+    rows = (
+        db.query(RequestOrderPartItem)
+        .join(RequestOrderPart, RequestOrderPartItem.request_order_part_id == RequestOrderPart.id)
+        .options(
+            joinedload(RequestOrderPartItem.barang),
+            joinedload(RequestOrderPartItem.request_order_part).joinedload(RequestOrderPart.sales_order),
+        )
+        .filter(
+            RequestOrderPartItem.id.in_(item_ids),
+            RequestOrderPart.status == StatusRequestOrderPart.DIBUAT,
+        )
+        .all()
+    )
+    found_ids = {r.id for r in rows}
+    if len(found_ids) != len(set(item_ids)):
+        raise ValueError(
+            "Ada item yang bukan bagian ROP berstatus DIBUAT (mungkin masih DRAFT atau sudah dihapus) — muat ulang daftar Detail ROP"
+        )
+
+    # Urutkan baris PO: ROP terlama dulu lalu no baris (kronologis & rapi).
+    rows = sorted(
+        rows,
+        key=lambda it: (it.request_order_part.tanggal, it.request_order_part.no_rop, it.no),
+    )
+
+    bought_map = _bought_qty_per_rop_item(db, [r.id for r in rows])
+    auto_created: list = []
+    skipped: list = []
+    linked_rops: list = []
+    details_data: list = []
+
+    for it in rows:
+        barang = _resolve_or_create_barang_from_rop_item(db, it, auto_created)
+        qty = safe_decimal(it.qty) or Decimal("0")
+        stok = int(getattr(barang, "stok", 0) or 0)
+        kekurangan = qty - Decimal(stok)
+        if kekurangan < 0:
+            kekurangan = Decimal("0")
+        sudah = Decimal(str(bought_map.get(it.id, 0) or 0))
+        sisa = kekurangan - sudah
+        if sisa < 0:
+            sisa = Decimal("0")
+        if sisa <= 0:
+            skipped.append(
+                {
+                    "no_rop": it.request_order_part.no_rop,
+                    "id_part": it.id_part,
+                    "alasan": "stok gudang cukup / kekurangan sudah masuk PO lain",
+                }
+            )
+            continue
+        # PO qty bertipe integer — pecahan dibulatkan ke atas (tidak kurang beli).
+        qty_po = int(sisa.quantize(Decimal("1"), rounding=ROUND_CEILING))
+        if qty_po <= 0:
+            skipped.append(
+                {
+                    "no_rop": it.request_order_part.no_rop,
+                    "id_part": it.id_part,
+                    "alasan": "sisa kekurangan terlalu kecil",
+                }
+            )
+            continue
+        harga = safe_decimal(getattr(barang, "harga_pokok", 0)) or Decimal("0")
+        details_data.append(
+            {
+                "barang_id": barang.id,
+                "harga": harga,
+                "qty": qty_po,
+                "diskon": Decimal("0"),
+                "sub_total": harga * qty_po,
+                "satuan_id": getattr(barang, "satuan_id", None),
+                # Tracking per baris (#002): SO asal dari ROP + jenis default
+                # PROJECT (editabel per baris di PO draft — keputusan user).
+                "sales_order_id": it.request_order_part.sales_order_id,
+                "jenis_pembelian": "PROJECT",
+                # Jejak baris ROP sumber (#037).
+                "rop_item_id": it.id,
+            }
+        )
+        no_rop = it.request_order_part.no_rop
+        if no_rop not in linked_rops:
+            linked_rops.append(no_rop)
+
+    if not details_data:
+        raise ValueError("Semua item terpilih tidak perlu dibelanjakan (stok cukup atau kekurangan sudah masuk PO lain)")
+
+    ket = (keterangan or "").strip()
+    if not ket:
+        ket = f"Dari ROP: {', '.join(linked_rops)}"
+    if skipped:
+        ket += f" — {len(skipped)} item terpilih dilewati (stok cukup/sudah dibelanjakan)"
+
+    po = create_purchase_order(
+        db=db,
+        tanggal=tanggal or datetime.now(timezone.utc),
+        supplier_id=supplier_id,
+        details_data=details_data,
+        biaya_data=[],
+        keterangan=ket,
+        created_by=created_by,
+        alamat_pengiriman_id=alamat_pengiriman_id,
+    )
+    info = {"skipped": skipped, "auto_created_barang": auto_created, "linked_rops": linked_rops}
+    logger.info(
+        f"PO draft dari ROP: {po.no_pesanan} | {len(details_data)} baris dari {len(linked_rops)} ROP "
+        f"| auto-create barang: {len(auto_created)}"
+    )
+    return po, info
 
 
 # ==========================================

@@ -84,6 +84,12 @@ class RequestOrderPartItem(BaseModel, BaseMixin):
     no = Column(Integer, nullable=False, default=1)
 
     # ── Kelompok kolom ORDER ──────────────────────────────────────────
+    # Update #037 — link opsional ke master barang: baris part bisa dipilih
+    # dari master (stok gudang terbaca akurat → dasar hitung kekurangan di
+    # modul Pembelian → Detail ROP). NULL = part belum ada di master
+    # (diperlakukan stok 0 → seluruh qty dibelanjakan; saat PO dibuat,
+    # barang masternya bisa di-auto-create).
+    barang_id = Column(UUID(as_uuid=True), ForeignKey("barang.id", ondelete="SET NULL"), nullable=True, index=True)
     id_part = Column(String(100), nullable=True)
     description = Column(String(500), nullable=True)
     material = Column(String(200), nullable=True)
@@ -100,5 +106,15 @@ class RequestOrderPartItem(BaseModel, BaseMixin):
     keterangan_stok = Column(String(500), nullable=True)
 
     # Relationships
+    barang = relationship("Barang")
     supplier = relationship("Supplier")
     request_order_part = relationship("RequestOrderPart", back_populates="items")
+
+    # === Update #037 — helper serialize (dipakai nested RopPoLinkResponse
+    # di baris PO: menampilkan "dari ROP ASI/..." tanpa join tambahan). ===
+    @property
+    def rop_no(self) -> "str | None":
+        try:
+            return self.request_order_part.no_rop if self.request_order_part else None
+        except Exception:
+            return None

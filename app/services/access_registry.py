@@ -511,6 +511,11 @@ _ROUTER_PREFIXES = {
         ('penerimaan', 'purchase.goods_receipt'),
         ('lppb', 'purchase.lppb'),  # Update ASAHI #005
         ('invoice_belum_bayar', 'purchase.ap_settlement'),
+        # Update #037 — Detail ROP (kolam belanja PIC Pembelian): GET /rop-item
+        # → purchase.purchase_order.view; POST /rop-item/po-draft → .create.
+        # Tanpa kode permission baru — role yang sudah bisa membuka/membuat PO
+        # otomatis bisa memakai alur ROP → PO.
+        ('rop_item', 'purchase.purchase_order'),
     ],
     'kas_bank': [
         ('pembayaran', 'finance.cash_payment'),

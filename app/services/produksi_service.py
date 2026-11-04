@@ -40,10 +40,16 @@ def _resolve_so_pelanggan(db: Session, sales_order_id: UUID) -> SalesOrder:
     return so
 
 
-def _validate_items(items: Optional[List[Dict[str, Any]]]) -> None:
-    """Validasi ringan daftar item sebelum disimpan."""
+def _validate_items(db: Session, items: Optional[List[Dict[str, Any]]]) -> None:
+    """Validasi ringan daftar item sebelum disimpan.
+
+    Update #037: ``barang_id`` (opsional) harus merujuk barang master yang
+    ada — baris ber-link membaca stok gudang secara akurat di modul
+    Pembelian → Detail ROP.
+    """
     if items is None:
         return
+    barang_ids = set()
     for idx, it in enumerate(items, start=1):
         qty = it.get("qty")
         if qty is not None and Decimal(str(qty)) < 0:
@@ -53,16 +59,30 @@ def _validate_items(items: Optional[List[Dict[str, Any]]]) -> None:
         qs = it.get("qs")
         if qs is not None and len(str(qs)) > 100:
             raise ValueError(f"QS baris {idx} maksimal 100 karakter")
+        bid = it.get("barang_id")
+        if bid:
+            barang_ids.add(bid)
+    if barang_ids:
+        from app.models.master.barang import Barang
+        found = {
+            row.id
+            for row in db.query(Barang.id).filter(Barang.id.in_(barang_ids)).all()
+        }
+        missing = barang_ids - found
+        if missing:
+            raise ValueError("Barang master yang dipilih pada baris part tidak ditemukan")
 
 
 def _replace_items(db: Session, rop: RequestOrderPart, items: List[Dict[str, Any]]) -> None:
     """Ganti seluruh baris item (renumber urut mulai 1)."""
-    _validate_items(items)
+    _validate_items(db, items)
     rop.items = []  # cascade delete-orphan membersihkan baris lama
     db.flush()
     for idx, it in enumerate(items, start=1):
         rop.items.append(RequestOrderPartItem(
             no=idx,
+            # Update #037 — link opsional ke master barang (stok akurat).
+            barang_id=(it.get("barang_id") or None),
             id_part=(it.get("id_part") or None),
             description=(it.get("description") or None),
             material=(it.get("material") or None),
@@ -75,8 +95,23 @@ def _replace_items(db: Session, rop: RequestOrderPart, items: List[Dict[str, Any
 
 
 def _serialize_item(item: RequestOrderPartItem) -> Dict[str, Any]:
+    # Update #037 — info master barang (stok gudang akurat) ikut terserialisasi
+    # untuk form/view ROP; baris tanpa link → barang None (stok dianggap 0).
+    barang = getattr(item, "barang", None)
     return {
         "no": item.no,
+        "barang_id": str(item.barang_id) if item.barang_id else None,
+        "barang": (
+            {
+                "id": str(barang.id),
+                "kode": barang.kode,
+                "nama": barang.nama,
+                "stok": int(barang.stok or 0),
+                "satuan_nama": (barang.satuan.nama if getattr(barang, "satuan", None) else None),
+            }
+            if barang
+            else None
+        ),
         "id_part": item.id_part,
         "description": item.description,
         "material": item.material,
@@ -174,7 +209,10 @@ def get_request_order_part_by_id(db: Session, rop_id: UUID) -> Optional[RequestO
     return (
         db.query(RequestOrderPart)
         .options(
+            # Update #037 — ikut load master barang (+satuan) per baris supaya
+            # info stok gudang terserialisasi tanpa N+1.
             joinedload(RequestOrderPart.items).joinedload(RequestOrderPartItem.supplier),
+            joinedload(RequestOrderPart.items).joinedload(RequestOrderPartItem.barang).joinedload("satuan"),
             joinedload(RequestOrderPart.sales_order),
             joinedload(RequestOrderPart.pelanggan),
             joinedload(RequestOrderPart.creator),
@@ -184,7 +222,7 @@ def get_request_order_part_by_id(db: Session, rop_id: UUID) -> Optional[RequestO
     )
 
 
-def get_request_order_part_options(db: Session, limit_so: int = 200) -> Dict[str, Any]:
+def get_request_order_part_options(db: Session, limit_so: int = 200, limit_barang: int = 500) -> Dict[str, Any]:
     """Dropdown form ROP dalam satu endpoint (update ASAHI #018).
 
     Role Staf Engineering kini HANYA membawa permission produksi — form ROP
@@ -193,9 +231,14 @@ def get_request_order_part_options(db: Session, limit_so: int = 200) -> Dict[str
     dua panggilan lama (GET /penjualan/sales-order + /master/supplier-dropdown)
     sehingga modul produksi mandiri tanpa membuka akses modul lain.
 
+    Update #037: + daftar barang master AKTIF (id/kode/nama/stok/satuan/
+    harga_pokok) — dipakai picker master per baris part supaya stok gudang
+    terbaca akurat (basis hitung kekurangan belanja di Detail ROP).
+
     Payload sengaja ringan dan non-finansial:
     - SO: id, no_pesanan, customer_po_number, tanggal, status, pelanggan nama.
     - Supplier: id, kode, nama (hanya status AKTIF).
+    - Barang: id, kode, nama, stok, satuan_id, harga_pokok (AKTIF, urut kode).
     """
     sos = (
         db.query(SalesOrder)
@@ -209,6 +252,17 @@ def get_request_order_part_options(db: Session, limit_so: int = 200) -> Dict[str
         db.query(Supplier)
         .filter(Supplier.status == "AKTIF")
         .order_by(Supplier.nama)
+        .all()
+    )
+    # Update #037 — barang master AKTIF untuk picker per baris form ROP
+    # (stok ikut dikirim → Engineering langsung melihat ketersediaan
+    # gudang; kombinasi dengan quick-add barang di baris).
+    from app.models.master.barang import Barang
+    barangs = (
+        db.query(Barang)
+        .filter(Barang.status == "AKTIF")
+        .order_by(Barang.kode)
+        .limit(limit_barang)
         .all()
     )
     return {
@@ -229,6 +283,19 @@ def get_request_order_part_options(db: Session, limit_so: int = 200) -> Dict[str
         ],
         "suppliers": [
             {"id": str(s.id), "kode": s.kode, "nama": s.nama} for s in suppliers
+        ],
+        # Update #037 — field ringan ala barang-dropdown: stok + satuan dasar
+        # + harga pokok (auto-fill harga saat PO dibuat dari ROP).
+        "barangs": [
+            {
+                "id": str(b.id),
+                "kode": b.kode,
+                "nama": b.nama,
+                "stok": int(b.stok or 0),
+                "satuan_id": str(b.satuan_id) if b.satuan_id else None,
+                "harga_pokok": str(b.harga_pokok or 0),
+            }
+            for b in barangs
         ],
     }
 
@@ -258,7 +325,7 @@ def create_request_order_part(
     if not project_name or not project_name.strip():
         raise ValueError("Project Name wajib diisi")
     so = _resolve_so_pelanggan(db, sales_order_id)
-    _validate_items(items)
+    _validate_items(db, items)
     if not items:
         raise ValueError("Minimal 1 baris part diperlukan")
 
@@ -289,6 +356,8 @@ def create_request_order_part(
     for idx, it in enumerate(items, start=1):
         rop.items.append(RequestOrderPartItem(
             no=idx,
+            # Update #037 — link opsional ke master barang (stok akurat).
+            barang_id=(it.get("barang_id") or None),
             id_part=(it.get("id_part") or None),
             description=(it.get("description") or None),
             material=(it.get("material") or None),

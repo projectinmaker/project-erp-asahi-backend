@@ -27,8 +27,16 @@ class PurchaseOrderDetail(BaseModel, BaseMixin):
     sales_order_id = Column(UUID(as_uuid=True), ForeignKey("sales_order.id", name="fk_po_detail_sales_order", ondelete="SET NULL"), nullable=True, index=True)
     jenis_pembelian = Column(String(20), nullable=True)
 
+    # === Update #037 — jejak baris PO berasal dari baris ROP mana ===
+    # Satu PO bisa memuat item dari beberapa ROP (relasi per baris, pola
+    # sales_order_id). Dipakai modul Pembelian → Detail ROP untuk status
+    # "sudah dibelanjakan" (derived: SUM qty PO aktif ≠ DIBATALKAN) → PO
+    # dibatalkan/dihapus otomatis mengembalikan item ke "belum dibelanjakan".
+    rop_item_id = Column(UUID(as_uuid=True), ForeignKey("request_order_part_item.id", name="fk_po_detail_rop_item", ondelete="SET NULL"), nullable=True, index=True)
+
     # Relationships
     purchase_order = relationship("PurchaseOrder", back_populates="details")
     barang = relationship("Barang")
     satuan = relationship("Satuan", foreign_keys=[satuan_id])
     sales_order = relationship("SalesOrder", foreign_keys=[sales_order_id])
+    rop_item = relationship("RequestOrderPartItem", foreign_keys=[rop_item_id])

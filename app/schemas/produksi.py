@@ -46,8 +46,21 @@ class PenggunaSimpleResponse(BaseSchema):
 # ==========================================
 # REQUEST ORDER PART — ITEM
 # ==========================================
+class RopBarangInfoResponse(BaseSchema):
+    """Info master barang per baris ROP (update #037) — stok gudang akurat
+    untuk form/view ROP (baris tanpa link → None → stok dianggap 0)."""
+    id: UUID
+    kode: str
+    nama: str
+    stok: int = 0
+    satuan_nama: Optional[str] = None
+
+
 class RequestOrderPartItemBase(BaseSchema):
     no: int = 0
+    # Update #037 — link opsional ke master barang (picker di form ROP);
+    # dipakai modul Pembelian → Detail ROP untuk hitung kekurangan.
+    barang_id: Optional[UUID] = None
     # Kolom ORDER
     id_part: Optional[str] = None
     description: Optional[str] = None
@@ -78,6 +91,8 @@ class RequestOrderPartItemCreate(RequestOrderPartItemBase):
 class RequestOrderPartItemResponse(RequestOrderPartItemBase):
     id: UUID
     supplier: Optional[SupplierSimpleResponse] = None
+    # Update #037 — info master barang (kode/nama/stok) per baris.
+    barang: Optional[RopBarangInfoResponse] = None
 
 
 # ==========================================
@@ -168,6 +183,19 @@ class RopSalesOrderOption(BaseSchema):
     pelanggan: Optional[PelangganSimpleResponse] = None
 
 
+class RopBarangOption(BaseSchema):
+    """Opsi barang master ringan untuk picker baris ROP (update #037).
+
+    Ala barang-dropdown: kode (label), nama, stok gudang, satuan dasar,
+    harga pokok — cukup untuk form + hitung kekurangan di sisi FE."""
+    id: UUID
+    kode: str
+    nama: str
+    stok: int = 0
+    satuan_id: Optional[UUID] = None
+    harga_pokok: Decimal = Decimal("0")
+
+
 class RequestOrderPartOptionsResponse(BaseSchema):
     """Dropdown form ROP digabung satu endpoint, scoped permission produksi.
 
@@ -175,6 +203,10 @@ class RequestOrderPartOptionsResponse(BaseSchema):
     sales.sales_order.view) dan GET /master/supplier-dropdown (butuh
     master.supplier.view). Role Staf Engineering kini hanya berpermission
     produksi — kedua sumber data itu dilayani endpoint ini.
+
+    Update #037: + ``barangs`` (master AKTIF, urut kode) — picker per baris
+    part supaya stok gudang terbaca akurat (basis kekurangan belanja).
     """
     sales_orders: List[RopSalesOrderOption] = []
     suppliers: List[SupplierSimpleResponse] = []
+    barangs: List[RopBarangOption] = []

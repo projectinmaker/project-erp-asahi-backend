@@ -21,6 +21,8 @@ from app.schemas.pembelian import (
     PenerimaanBarangCreate, PenerimaanBarangUpdate, PenerimaanBarangResponse,
     PurchaseOrderSisaResponse,
     LppbCreate, LppbUpdate, LppbResponse, LppbListResponse,
+    # === Update #037 — Detail ROP (kolam belanja PIC Pembelian) ===
+    RopItemBelanjaResponse, RopItemPoDraftCreate, RopPoDraftResponse,
 )
 from app.services import pembelian_service as svc
 from app.services import lppb_service as lppb_svc
@@ -127,6 +129,81 @@ def get_purchase_order_detail(
     if not item:
         raise HTTPException(status_code=404, detail="Purchase Order tidak ditemukan")
     return item
+
+
+# ==========================================
+# === Update #037 — DETAIL ROP (kolam belanja PIC Pembelian) ===
+# Nama fungsi memuat 'rop_item' → prefix RBAC purchase.purchase_order
+# (view untuk GET, create untuk POST) — tidak ada kode permission baru.
+# ==========================================
+
+@router.get("/rop-item", response_model=list[RopItemBelanjaResponse])
+def get_rop_item_belanja_list(
+    search: Optional[str] = Query(None, description="Cari ID PART / description / no ROP / project"),
+    supplier_id: Optional[UUID] = Query(None, description="Filter supplier (kolom SUPPLIER di ROP)"),
+    status_filter: Optional[str] = Query(
+        None,
+        alias="status",
+        description="Filter status belanja: BELUM / SEBAGIAN / LENGKAP / STOK_CUKUP",
+    ),
+    need_purchase: bool = Query(False, description="True = hanya baris dengan sisa kekurangan > 0"),
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar seluruh item ROP berstatus DIBUAT — menu Pembelian → Detail ROP.
+
+    Satu baris = satu item ROP (mis. 4 ROP × 10 item = 40 baris). Per baris
+    disertakan: qty diminta, stok gudang tersedia (master barang; tanpa link
+    master = 0), kekurangan (qty − stok), sudah dibelanjakan (SUM qty PO
+    aktif yang menaut baris — PO DIBATALKAN tidak dihitung), sisa, status,
+    supplier, serta nomor PO DRAFT yang sedang menaut (bila ada).
+    """
+    return svc.get_rop_item_belanja_list(
+        db,
+        search=search,
+        supplier_id=supplier_id,
+        status_filter=status_filter,
+        need_purchase=need_purchase,
+        limit=limit,
+    )
+
+
+@router.post("/rop-item/po-draft", response_model=RopPoDraftResponse, status_code=status.HTTP_201_CREATED)
+def create_rop_item_po_draft(
+    data_in: RopItemPoDraftCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buat PO DRAFT dari seleksi item ROP (alur Detail ROP).
+
+    - Item boleh dari beberapa ROP sekaligus → satu PO (item digelondongkan
+      ke supplier yang dipilih).
+    - Qty per baris otomatis = sisa kekurangan (qty diminta − stok tersedia −
+      yang sudah masuk PO aktif lain).
+    - Baris menyimpan jejak ROP + SO asal; jenis belanja default PROJECT
+      (editabel per baris di PO draft).
+    - Part yang belum ada di master barang → barang master dibuat OTOMATIS.
+    - PO disimpan berstatus DRAFT (TIDAK auto-final meski dibuat Administrator)
+      supaya bisa dikoreksi dulu di menu Pesanan — finalisasi lewat alur biasa.
+    """
+    try:
+        po, info = svc.create_po_draft_from_rop_items(
+            db,
+            item_ids=data_in.item_ids,
+            supplier_id=data_in.supplier_id,
+            alamat_pengiriman_id=data_in.alamat_pengiriman_id,
+            tanggal=data_in.tanggal,
+            created_by=current_user.id,
+            keterangan=data_in.keterangan,
+        )
+        return {
+            "purchase_order": po,
+            "skipped": info.get("skipped", []),
+            "auto_created_barang": info.get("auto_created_barang", []),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.get("/purchase-order/{po_id}/sisa", response_model=PurchaseOrderSisaResponse)
