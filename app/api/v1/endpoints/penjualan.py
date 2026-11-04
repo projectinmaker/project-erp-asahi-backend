@@ -29,6 +29,8 @@ from app.schemas.penjualan import (
     NomorQuotationPreviewResponse,
     SoTerminResponse,
     SoTerminOpenItem,
+    # === Update #032 — dropdown penawaran utk form SO ===
+    PenawaranUntukSoItem,
     TerimaPembayaranTerminRequest,
 )
 # Update #031 — response penerimaan termin SO (mirror kas_bank endpoint).
@@ -146,6 +148,9 @@ def create_sales_order(
             currency=data_in.currency,
             # === Update #031 — Pembayaran Termin (baris nominal) ===
             pembayaran_termin=list(data_in.pembayaran_termin or []),
+            # === Update #032 — link penawaran sumber ("Pilih Penawaran" di
+            # form SO; repeat order — satu penawaran boleh dipakai banyak SO) ===
+            penawaran_id=data_in.penawaran_id,
         )
         # Update #031 — SO langsung final tanpa langkah approval untuk SEMUA
         # user (force=True); order berhenti di APPROVED (terminal, tanpa jurnal).
@@ -184,6 +189,9 @@ def get_sales_order_sisa(
       pengiriman baris SO tersebut.
     - sisaKirim = qtyPesanan - qtyTerkirim (min 0);
       sisaFaktur = qtyPesanan - qtyTerfaktur (min 0).
+    - Update #032: baris ITEM BEBAS (barang_id None) ikut keluar dengan
+      is_bebas=True — tidak bisa dikirim (UI pengiriman menyembunyikan)
+      tapi bisa difakturkan (sisaFaktur dihitung normal via link detail).
     """
     so = svc.get_sales_order_by_id(db, so_id)
     if not so:
@@ -193,13 +201,17 @@ def get_sales_order_sisa(
     for d in so.details:
         qty_terkirim = get_qty_delivered_so_far(db, d.id)
         qty_terfaktur = get_qty_invoiced_for_so_detail(db, d.id)
+        is_bebas = d.barang_id is None
         details.append({
             "sales_order_detail_id": d.id,
             "barang_id": d.barang_id,
+            "item_nama": d.item_nama,
+            "item_satuan": d.item_satuan,
+            "is_bebas": is_bebas,
             "kode_barang": d.barang.kode if d.barang else None,
-            "nama_barang": d.barang.nama if d.barang else None,
+            "nama_barang": (d.barang.nama if d.barang else d.item_nama),
             "satuan_id": d.satuan_id,
-            "satuan_nama": d.satuan.nama if d.satuan else None,
+            "satuan_nama": (d.satuan.nama if d.satuan else d.item_satuan),
             "qty_pesanan": d.qty,
             "qty_terkirim": qty_terkirim,
             "qty_terfaktur": qty_terfaktur,
@@ -893,6 +905,39 @@ def get_penawaran_katalog(
     return penawaran_service.get_katalog_items(db, search=search, limit=limit)
 
 
+# === Update #032 — dropdown penawaran utk form SO (dideklarasikan SEBELUM
+# /penawaran/{penawaran_id} supaya path literal tidak tertelan param UUID). ===
+@router.get("/penawaran/untuk-so", response_model=list[PenawaranUntukSoItem])
+def get_penawaran_untuk_so(
+    search: str | None = Query(None, description="Cari no penawaran / nama pelanggan"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar penawaran yang bisa dipilih saat membuat Sales Order — #032.
+
+    Hanya DRAFT / SELESAI (SELESAI tetap bisa — REPEAT ORDER: satu penawaran
+    boleh dipakai beberapa SO). DIREVISI & DIBATALKAN tidak ditawarkan.
+    Form SO memakai ini untuk auto-isi pelanggan + item (barang master &
+    item bebas) + harga saat "Pilih Penawaran".
+    """
+    return [
+        {
+            "id": p.id,
+            "no_penawaran": p.no_penawaran,
+            "revisi_ke": p.revisi_ke or 1,
+            "status": p.status,
+            "tanggal": p.tanggal,
+            "pelanggan_id": p.pelanggan_id,
+            "pelanggan_nama": p.pelanggan.nama if p.pelanggan else None,
+            "grand_total": p.grand_total or 0,
+            "digunakan_count": p.digunakan_count,
+            "jumlah_item": len(p.details or []),
+        }
+        for p in penawaran_service.get_penawaran_untuk_so(db, search=search, limit=limit)
+    ]
+
+
 @router.get("/penawaran", response_model=PaginatedResponse[PenawaranResponse])
 def get_penawaran_list(
     skip: int = Query(0, ge=0),
@@ -1002,16 +1047,43 @@ def cancel_penawaran(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+# === Update #032 — REVISI PENAWARAN: dokumen baru nomor sama (Rev. N). ===
+@router.post("/penawaran/{penawaran_id}/revisi", response_model=PenawaranResponse, status_code=status.HTTP_201_CREATED)
+def revisi_penawaran(
+    penawaran_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buat dokumen REVISI penawaran — Update #032.
+
+    - Guard: hanya penawaran berstatus SELESAI (sudah dipakai/final).
+      DRAFT cukup diedit langsung; DIREVISI/DIBATALKAN ditolak.
+    - Dokumen BARU dibuat: No Quotation SAMA + "Rev. N" (revisi_ke+1),
+      status DRAFT (bisa diedit), isi disalin utuh dari dokumen asal.
+    - Dokumen asal berubah jadi DIREVISI (terkunci — tidak bisa dipakai
+      buat SO / diedit; jejak harga lama utuh untuk audit).
+    """
+    try:
+        return penawaran_service.create_revisi(db, penawaran_id, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
 @router.post("/penawaran/{penawaran_id}/to-sales-order")
 def convert_penawaran_to_sales_order(
     penawaran_id: UUID,
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Konversi Penawaran menjadi Sales Order (Update #3).
+    """Konversi Penawaran menjadi Sales Order (Update #3, revisi #032).
 
-    - Guard: hanya penawaran berstatus DRAFT/DIPROSES (panggil kedua kali → 400).
-    - SO dibuat + difinalisasi (admin: langsung APPROVED), penawaran jadi SELESAI.
+    - Guard: penawaran berstatus DRAFT/DIPROSES/**SELESAI** — Update #032
+      REPEAT ORDER: SELESAI tetap bisa dikonversi LAGI (SO baru tiap kali;
+      penawaran tidak "hangus"). DIREVISI/DIBATALKAN → 400.
+    - Item BEBAS diteruskan ke SO sebagai item bebas (tanpa membuat master
+      barang — Update #032; perilaku #031 yang auto-create DIHAPUS).
+    - SO dibuat + difinalisasi (langsung APPROVED tanpa approval), dan
+      SO di-link ke penawaran (penawaran_id).
     - Return: {"salesOrderId": str, "noPesanan": str}.
     """
     try:

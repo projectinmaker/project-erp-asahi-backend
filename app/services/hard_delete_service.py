@@ -22,6 +22,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from loguru import logger
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -180,6 +181,17 @@ def _apply_guards(db: Session, document_type: str, obj):
             raise ValueError(
                 'Order masih direferensikan dokumen lanjutan (penerimaan/invoice/retur). '
                 'Hapus dokumen lanjutan terlebih dahulu.'
+            )
+
+    # === Update #032 — penawaran yang sudah dipakai SO tidak boleh dihapus:
+    # SO menaut penawaran_id (repeat order); menghapus memutus riwayat/audit.
+    # Penawaran yang belum pernah dipakai (DRAFT umumnya) tetap bisa dihapus. ===
+    if document_type == 'penawaran':
+        used = db.query(func.count(SalesOrder.id)).filter(SalesOrder.penawaran_id == obj.id).scalar() or 0
+        if used > 0:
+            raise ValueError(
+                f'Penawaran sudah dipakai membuat {used} Sales Order — tidak dapat '
+                'dihapus (riwayat repeat order). Batalkan/hapus SO terkait lebih dulu.'
             )
 
     # 4. Transaksi aset POSTED -> hanya yang terakhir; pulihkan state aset (sebelum).

@@ -69,6 +69,16 @@ class SalesOrder(BaseModel, BaseMixin):
     fulfillment_status = Column(String(20), nullable=True)  # OPEN/PARTIAL/FULFILLED/CLOSED
     currency = Column(String(3), nullable=False, default='IDR')
 
+    # === Update #032 — link ke Penawaran sumber ===
+    # SO dibuat dari penawaran (konversi tombol "Buat SO" maupun form SO baru
+    # dengan "Pilih Penawaran"). Satu penawaran boleh menaut BANYAK SO
+    # (repeat order) — link dipakai untuk counter pemakaian penawaran dan
+    # menjaga integritas hapus. NULL = SO manual tanpa sumber penawaran.
+    penawaran_id = Column(
+        UUID(as_uuid=True), ForeignKey("penawaran.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+
     # Relationships
     syarat_bayar = relationship("SyaratBayar")
     pelanggan = relationship("Pelanggan")
@@ -77,6 +87,8 @@ class SalesOrder(BaseModel, BaseMixin):
     details = relationship("SalesOrderDetail", back_populates="sales_order", cascade="all, delete-orphan")
     biaya_tambahan = relationship("TransaksiBiaya", back_populates="sales_order", cascade="all, delete-orphan")
     pengiriman = relationship("PengirimanBarang", back_populates="sales_order")
+    # Update #032 — penawaran sumber (repeat order: satu penawaran → banyak SO).
+    penawaran = relationship("Penawaran", back_populates="sales_orders")
     # === Update #031 — termin pembayaran (baris nominal; dibayar via Penerimaan
     # jenis TERMIN_SO). Urutan baris mengikuti urutan input. ===
     termin_pembayaran = relationship(
@@ -96,6 +108,15 @@ class SalesOrder(BaseModel, BaseMixin):
         return sum(
             (t.nominal or 0 for t in self.termin_pembayaran if t.penerimaan_kas_id is not None), 0
         )
+
+    # === Update #032 — info penawaran sumber (repeat order; None = SO manual) ===
+    @property
+    def penawaran_no(self):
+        return self.penawaran.no_penawaran if self.penawaran is not None else None
+
+    @property
+    def penawaran_revisi(self):
+        return (self.penawaran.revisi_ke or 1) if self.penawaran is not None else None
 
     @property
     def pelanggan_nama(self):

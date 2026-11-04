@@ -122,6 +122,8 @@ def get_sales_order_list(
         joinedload(SalesOrder.pelanggan),
         joinedload(SalesOrder.syarat_bayar),
         joinedload(SalesOrder.creator),
+        # Update #032 — info penawaran sumber (kolom "Dari Penawaran")
+        joinedload(SalesOrder.penawaran),
         joinedload(SalesOrder.details).joinedload(SalesOrderDetail.barang),
         # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
         joinedload(SalesOrder.details).joinedload(SalesOrderDetail.satuan),
@@ -157,6 +159,8 @@ def get_sales_order_by_id(db: Session, so_id: UUID) -> Optional[SalesOrder]:
             joinedload(SalesOrder.syarat_bayar),
             joinedload(SalesOrder.creator),
             joinedload(SalesOrder.jurnal),
+            # Update #032 — info penawaran sumber (kolom "Dari Penawaran")
+            joinedload(SalesOrder.penawaran),
             joinedload(SalesOrder.details).joinedload(SalesOrderDetail.barang),
             # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
             joinedload(SalesOrder.details).joinedload(SalesOrderDetail.satuan),
@@ -188,6 +192,9 @@ def create_sales_order(
     currency: str = "IDR",
     # === Update #031 — Pembayaran Termin (baris nominal, mis. 3x pembayaran) ===
     pembayaran_termin: Optional[list] = None,
+    # === Update #032 — link ke Penawaran sumber (form SO "Pilih Penawaran"
+    # / tombol konversi; repeat order: satu penawaran → banyak SO) ===
+    penawaran_id: Optional[UUID] = None,
 ) -> SalesOrder:
     """Buat SalesOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis
@@ -219,6 +226,43 @@ def create_sales_order(
         pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
         if not pelanggan:
             raise ValueError(f"Pelanggan dengan ID {pelanggan_id} tidak ditemukan")
+
+        # === Update #032 — validasi baris: barang master ATAU item bebas ===
+        # Baris wajib punya barang_id ATAU item_nama (item bebas ditarik dari
+        # penawaran / diketik manual — tidak ada di master barang; tidak
+        # menyentuh gudang. Tidak bisa dikirim, bisa difakturkan).
+        for i, d in enumerate(details_data, start=1):
+            has_barang = d.get("barang_id") is not None
+            item_nama = (d.get("item_nama") or "").strip()
+            if not has_barang and not item_nama:
+                raise ValueError(
+                    f"Baris {i}: pilih barang dari master ATAU isi nama item bebas"
+                )
+            if has_barang:
+                d["item_nama"] = None
+                d["item_satuan"] = None
+            else:
+                d["item_nama"] = item_nama
+                d["item_satuan"] = (d.get("item_satuan") or "").strip() or None
+
+        # === Update #032 — validasi penawaran sumber (bila dikirim) ===
+        # Guard: penawaran harus ada, pelanggan cocok, dan berstatus DRAFT /
+        # SELESAI (SELESAI = repeat order; DIREVISI/DIBATALKAN ditolak).
+        if penawaran_id is not None:
+            from app.models.transaksi.penjualan.penawaran import Penawaran
+            penawaran = db.query(Penawaran).filter(Penawaran.id == penawaran_id).first()
+            if penawaran is None:
+                raise ValueError(f"Penawaran dengan ID {penawaran_id} tidak ditemukan")
+            if penawaran.pelanggan_id != pelanggan_id:
+                raise ValueError(
+                    "Penawaran sumber milik pelanggan yang berbeda — pilih "
+                    "penawaran milik pelanggan ini atau hapus pilihannya."
+                )
+            if penawaran.status not in ("DRAFT", "DIPROSES", "SELESAI"):
+                raise ValueError(
+                    f"Penawaran {penawaran.no_penawaran} berstatus {penawaran.status} "
+                    "— tidak bisa dipakai membuat Sales Order"
+                )
 
         # Hitung sub_total dan total_diskon dari detail
         sub_total = Decimal("0")
@@ -277,6 +321,8 @@ def create_sales_order(
             customer_po_number=customer_po_number,
             customer_po_date=customer_po_date,
             currency=currency,
+            # Update #032 — link penawaran sumber (repeat order)
+            penawaran_id=penawaran_id,
         )
         db.add(so)
         db.flush()
@@ -285,7 +331,11 @@ def create_sales_order(
         for d in details_data:
             detail = SalesOrderDetail(
                 sales_order_id=so.id,
-                barang_id=d["barang_id"],
+                # Update #032 — barang_id bisa None (baris item bebas dari
+                # penawaran; nama + satuan bebas tersimpan di baris ini).
+                barang_id=d.get("barang_id"),
+                item_nama=d.get("item_nama"),
+                item_satuan=d.get("item_satuan"),
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
@@ -716,6 +766,23 @@ def create_sales_invoice(
                     raise ValueError("Sales Order lama masih memiliki jurnal. Rekonsiliasi jurnal order sebelum membuat invoice.")
         biaya_data = biaya_data or []
 
+        # === Update #032 — validasi baris invoice: barang master ATAU item
+        # bebas (jasa/custom — barang_id None + item_nama wajib). ===
+        for i, d in enumerate(details_data, start=1):
+            has_barang = d.get("barang_id") is not None
+            item_nama = (d.get("item_nama") or "").strip()
+            if not has_barang and not item_nama:
+                raise ValueError(
+                    f"Baris invoice {i}: pilih barang dari master ATAU isi nama "
+                    "item bebas (jasa/custom)"
+                )
+            if has_barang:
+                d["item_nama"] = None
+                d["item_satuan"] = None
+            else:
+                d["item_nama"] = item_nama
+                d["item_satuan"] = (d.get("item_satuan") or "").strip() or None
+
         # Validasi pelanggan
         pelanggan = db.query(Pelanggan).filter(Pelanggan.id == pelanggan_id).first()
         if not pelanggan:
@@ -787,7 +854,11 @@ def create_sales_invoice(
         for d in details_data:
             detail = SalesInvoiceDetail(
                 sales_invoice_id=inv.id,
-                barang_id=d["barang_id"],
+                # Update #032 — barang_id bisa None (baris item bebas jasa/
+                # custom dari penawaran → SO; wajib item_nama bila tanpa barang).
+                barang_id=d.get("barang_id"),
+                item_nama=d.get("item_nama"),
+                item_satuan=d.get("item_satuan"),
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
@@ -885,11 +956,25 @@ def update_sales_invoice(
     # Update #3 — penggantian baris detail (persist link source-line
     # sales_order_detail_id / delivery_detail_id) saat invoice masih draft.
     if details is not None:
+        # Update #032 — baris item bebas (jasa/custom): barang_id None +
+        # item_nama wajib; normalisasi sama dengan create.
+        for i, d in enumerate(details, start=1):
+            has_barang = d.get("barang_id") is not None
+            item_nama = (d.get("item_nama") or "").strip()
+            if not has_barang and not item_nama:
+                raise ValueError(
+                    f"Baris invoice {i}: pilih barang dari master ATAU isi nama "
+                    "item bebas (jasa/custom)"
+                )
+            d["item_nama"] = item_nama if not has_barang else None
+            d["item_satuan"] = (d.get("item_satuan") or "").strip() or None if not has_barang else None
         db_obj.details.clear()
         db.flush()
         for d in details:
             db_obj.details.append(SalesInvoiceDetail(
-                barang_id=d["barang_id"],
+                barang_id=d.get("barang_id"),
+                item_nama=d.get("item_nama"),
+                item_satuan=d.get("item_satuan"),
                 harga=Decimal(str(d["harga"])),
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
@@ -1279,6 +1364,15 @@ def create_pengiriman(
                     f"Baris detail menunjuk SalesOrderDetail yang tidak termasuk dalam "
                     f"Sales Order dokumen ini. Pengiriman {no_surat_jalan} dibatalkan."
                 )
+            # Update #032 — baris SO item bebas tidak bisa dikirim (tidak ada
+            # di master barang / gudang — hanya bisa difakturkan).
+            if sod.barang_id is None:
+                raise ValueError(
+                    f"Baris SO \"{sod.item_nama or 'item bebas'}\" adalah item bebas "
+                    f"(jasa/custom) — tidak bisa dikirim lewat gudang. Hanya barang "
+                    f"master yang bisa dibuatkan Pengiriman Barang. "
+                    f"Pengiriman {no_surat_jalan} dibatalkan."
+                )
             if str(sod.barang_id) != str(d.get("barang_id")):
                 raise ValueError(
                     f"Barang pada baris detail tidak sama dengan barang di line SO "
@@ -1489,7 +1583,7 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
     for detail in db_obj.details:
         if detail.qty <= 0:
             raise ValueError(
-                f"Qty pengiriman harus > 0 (baris {detail.barang.kode if detail.barang else 'unknown'}: {detail.qty})"
+                f"Qty pengiriman harus > 0 (baris {(detail.barang.kode if detail.barang else getattr(detail, 'item_nama', None)) or 'unknown'}: {detail.qty})"
             )
         # Phase C: over-delivery check (kalau detail punya sales_order_detail_id)
         if detail.sales_order_detail_id:
@@ -1743,7 +1837,7 @@ def post_sales_retur(db: Session, retur, created_by):
             if inv_detail and detail.harga != inv_detail.harga:
                 raise ValueError(
                     f"Harga retur ({detail.harga}) tidak boleh berbeda dari harga invoice sumber "
-                    f"({inv_detail.harga}) untuk barang {detail.barang.kode if detail.barang else 'unknown'}. "
+                    f"({inv_detail.harga}) untuk barang {(detail.barang.kode if detail.barang else getattr(detail, 'item_nama', None)) or 'unknown'}. "
                     f"(Catatan Sales Return §3: Financial return harus memakai harga snapshot Invoice sumber)"
                 )
 

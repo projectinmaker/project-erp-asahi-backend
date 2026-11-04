@@ -87,7 +87,11 @@ class TransaksiBiayaResponse(TransaksiBiayaBase):
 # SALES ORDER DETAIL
 # ==========================================
 class SalesOrderDetailBase(BaseSchema):
-    barang_id: UUID
+    # === Update #032 — barang_id OPSIONAL: baris bisa berupa ITEM BEBAS ===
+    # (jasa/custom dari penawaran; wajib item_nama saat barang_id NULL).
+    barang_id: UUID | None = None
+    item_nama: str | None = None
+    item_satuan: str | None = None
     harga: Decimal = Decimal("0")
     qty: int = 0
     diskon: Optional[Decimal] = Decimal("0")
@@ -135,6 +139,10 @@ class SalesOrderBase(BaseSchema):
 class SalesOrderCreate(SalesOrderBase):
     details: List[SalesOrderDetailCreate]
     biaya_tambahan: List[TransaksiBiayaCreate] = []
+    # === Update #032 — SO dibuat dari Penawaran (form SO: "Pilih Penawaran"
+    # atau tombol konversi): link ke dokumen sumber. Repeat order — satu
+    # penawaran boleh dipakai beberapa SO; kosong = SO manual. ===
+    penawaran_id: UUID | None = None
     # === Update #031 — Pembayaran Termin (field di form SO setelah Diskon):
     # baris-baris nominal saja (mis. 3x pembayaran). Total harus = grand_total
     # (divalidasi service). Kosong = SO tanpa termin. ===
@@ -163,6 +171,10 @@ class SalesOrderUpdate(BaseSchema):
 class SalesOrderResponse(SalesOrderBase):
     id: UUID
     no_pesanan: str
+    # === Update #032 — sumber penawaran (repeat order; None = SO manual) ===
+    penawaran_id: Optional[UUID] = None
+    penawaran_no: Optional[str] = None
+    penawaran_revisi: Optional[int] = None
     sub_total: Decimal
     total_diskon: Decimal
     total_ppn: Decimal
@@ -196,7 +208,12 @@ class SalesOrderResponse(SalesOrderBase):
 # SALES INVOICE DETAIL
 # ==========================================
 class SalesInvoiceDetailBase(BaseSchema):
-    barang_id: UUID
+    # === Update #032 — barang_id OPSIONAL: baris invoice bisa berupa ITEM
+    # BEBAS (jasa/custom dari penawaran → SO; wajib item_nama bila tanpa
+    # barang). Pendapatan baris bebas posting ke akun default. ===
+    barang_id: UUID | None = None
+    item_nama: str | None = None
+    item_satuan: str | None = None
     harga: Decimal = Decimal("0")
     qty: int = 0
     diskon: Optional[Decimal] = Decimal("0")
@@ -478,7 +495,13 @@ class SalesOrderSisaDetailResponse(BaseSchema):
     baris SO ini) — mirror sales_validation.get_qty_invoiced_for_so_detail.
     """
     sales_order_detail_id: UUID
-    barang_id: UUID
+    # === Update #032 — barang_id OPSIONAL: baris bisa berupa ITEM BEBAS ===
+    # (jasa/custom). is_bebas=True → baris TIDAK bisa dikirim (tidak ada di
+    # gudang) tapi BOLEH difakturkan; UI pengiriman menyembunyikan baris ini.
+    barang_id: UUID | None = None
+    item_nama: str | None = None
+    item_satuan: str | None = None
+    is_bebas: bool = False
     kode_barang: str | None = None
     nama_barang: str | None = None
     satuan_id: UUID | None = None
@@ -619,6 +642,10 @@ class PenawaranUpdate(BaseSchema):
 class PenawaranResponse(PenawaranBase):
     id: UUID
     no_penawaran: str
+    # === Update #032 — revisi dokumen (1 = asal; 2 = Rev. 2, dst) + jumlah
+    # pemakaian SO (repeat order; baris ini dihitung dari link SO). ===
+    revisi_ke: int = 1
+    digunakan_count: int = 0
     sub_total: Decimal
     total_diskon: Decimal
     total_ppn: Decimal
@@ -652,6 +679,27 @@ class PenawaranKatalogItemResponse(BaseSchema):
 class NomorQuotationPreviewResponse(BaseSchema):
     """Preview No Quotation berikutnya (indikatif; final saat create)."""
     nomor: str
+
+
+# ==========================================
+# Update #032 — REVISI PENAWARAN + DROPDOWN PENAWARAN UNTUK SO
+# ==========================================
+class PenawaranUntukSoItem(BaseSchema):
+    """Baris dropdown "Pilih Penawaran" di form Sales Order.
+
+    Hanya penawaran berstatus DRAFT / SELESAI (SELESAI tetap bisa dipilih —
+    repeat order; DIREVISI & DIBATALKAN tidak ditawarkan).
+    """
+    id: UUID
+    no_penawaran: str
+    revisi_ke: int = 1
+    status: str
+    tanggal: datetime
+    pelanggan_id: UUID
+    pelanggan_nama: str | None = None
+    grand_total: Decimal = Decimal("0")
+    digunakan_count: int = 0
+    jumlah_item: int = 0
 
 
 class SoTerminRingkas(BaseSchema):

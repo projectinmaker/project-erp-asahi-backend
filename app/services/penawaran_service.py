@@ -1,6 +1,6 @@
 """penawaran_service.py
 
-Service layer untuk modul Penawaran (quotation) — Update #3, revisi #031.
+Service layer untuk modul Penawaran (quotation) — Update #3, revisi #031/#032.
 
 Blueprint = SalesOrder (header + detail + TransaksiBiaya), TANPA jurnal dan
 TANPA workflow:
@@ -16,14 +16,24 @@ TANPA workflow:
   manual (belum ada di master barang — item penawaran "belum ada di gudang").
   Item bebas TIDAK dibuatkan di master data; tersimpan di tabel katalog
   penawaran (penawaran_katalog_item) supaya item berulang tinggal dipilih lagi.
-  Saat konversi ke Sales Order, item bebas BARU dibuatkan di master barang
-  (stock_item=False — bukan barang stok).
+- Update #032 — item bebas diteruskan ke SO SEBAGAI ITEM BEBAS (nama + satuan
+  + harga manual; TIDAK dibuatkan di master barang, tidak menyentuh gudang —
+  perilaku lama #031 yang auto-create master barang DIHAPUS). Item bebas
+  tidak bisa dikirim (pengiriman hanya barang master) tapi bisa difakturkan.
 - update_penawaran: hanya status DRAFT; full update header + replace details + biaya.
   Pelanggan tidak bisa diganti (bagian dari identitas nomor Quotation) —
   buat penawaran baru untuk pelanggan berbeda.
 - convert_to_so: konversi jadi Sales Order (create_sales_order + direct_complete
-  force — Update #031: SO langsung final untuk semua user, tanpa workflow),
-  lalu penawaran menjadi SELESAI.
+  force — SO langsung final untuk semua user, tanpa workflow), lalu penawaran
+  menjadi SELESAI.
+- Update #032 — REPEAT ORDER + REVISI:
+  * Penawaran SELESAI tetap bisa dipakai lagi membuat SO baru (repeat order);
+    penawaran tidak "hangus". Counter pemakaian = jumlah SO yang menaut
+    penawaran_id (model property digunakan_count).
+  * create_revisi: penawaran SELESAI direvisi → dokumen BARU berstatus DRAFT,
+    no_penawaran SAMA, revisi_ke+1 (tampil "Rev. N"); dokumen asal jadi
+    DIREVISI (terkunci — tidak bisa dipakai/diedit; jejak harga lama utuh).
+    DRAFT cukup diedit langsung (tanpa dokumen baru — keputusan user #032).
 """
 
 from datetime import UTC, date, datetime
@@ -32,15 +42,13 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.detail.penawaran_detail import PenawaranDetail
-from app.models.master.barang import Barang, MetodeValuasi
-from app.models.master.kategori_barang import KategoriBarang
 from app.models.master.pelanggan import Pelanggan
 from app.models.master.penawaran_katalog import PenawaranKatalogItem
-from app.models.master.satuan import Satuan
 from app.models.transaksi.penjualan.penawaran import Penawaran
+from app.models.transaksi.penjualan.sales_order import SalesOrder
 from app.models.transaksi.transaksi_biaya import TransaksiBiaya
 from app.services.accounting_control import atomic_accounting_write, accounting_lock
 from app.services.decimal_utils import safe_decimal, safe_int
@@ -234,7 +242,11 @@ def get_penawaran_list(
     tanggal_from: date | None = None,
     tanggal_to: date | None = None,
 ) -> tuple[list[Penawaran], int]:
-    """Ambil daftar penawaran dengan filter & pagination (mirror list SO)."""
+    """Ambil daftar penawaran dengan filter & pagination (mirror list SO).
+
+    Update #032: selectinload sales_orders (counter "dipakai N× SO" di
+    response tanpa N+1 query).
+    """
     query = db.query(Penawaran).options(
         joinedload(Penawaran.pelanggan),
         joinedload(Penawaran.syarat_bayar),
@@ -242,6 +254,8 @@ def get_penawaran_list(
         joinedload(Penawaran.details).joinedload(PenawaranDetail.barang),
         joinedload(Penawaran.details).joinedload(PenawaranDetail.satuan),
         joinedload(Penawaran.biaya_tambahan),
+        # Update #032 — repeat order counter
+        selectinload(Penawaran.sales_orders),
     )
 
     if search:
@@ -275,6 +289,8 @@ def get_penawaran_by_id(db: Session, penawaran_id: UUID) -> Penawaran | None:
             joinedload(Penawaran.details).joinedload(PenawaranDetail.barang),
             joinedload(Penawaran.details).joinedload(PenawaranDetail.satuan),
             joinedload(Penawaran.biaya_tambahan),
+            # Update #032 — repeat order counter
+            selectinload(Penawaran.sales_orders),
         )
         .filter(Penawaran.id == penawaran_id)
         .first()
@@ -434,7 +450,7 @@ def update_penawaran(
     details: list | None = None,
     biaya_tambahan: list | None = None,
 ) -> Penawaran:
-    """Update penawaran — hanya status DRAFT (revisi = edit DRAFT, opsi user #031).
+    """Update penawaran — hanya status DRAFT (DRAFT diedit langsung — #032).
 
     Full update: field header + (opsional) replace seluruh baris detail dan
     biaya tambahan (pola mirror update_penerimaan). Totals dihitung ulang
@@ -527,127 +543,60 @@ def update_penawaran(
     return db_obj
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Update #031 — konversi: item bebas → master barang (stock_item=False)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _next_kode_barang_otomatis(db: Session) -> str:
-    """Kode barang otomatis "ITM-0001" (sequence berlanjut dari yang ada)."""
-    rows = db.query(Barang.kode).filter(Barang.kode.like("ITM-%")).all()
-    last = max(
-        (int(r[0].rsplit("-", 1)[-1]) for r in rows if r[0] and r[0].rsplit("-", 1)[-1].isdigit()),
-        default=0,
-    )
-    return f"ITM-{last + 1:04d}"
-
-
-def _ensure_satuan_by_nama(db: Session, nama: str) -> Satuan:
-    """Cari satuan by nama (case-insensitive); buat bila belum ada."""
-    norm = (nama or "").strip()
-    satuan = (
-        db.query(Satuan)
-        .filter(func.lower(func.trim(Satuan.nama)) == norm.lower(), Satuan.status == "AKTIF")
-        .first()
-    )
-    if satuan is not None:
-        return satuan
-    satuan = Satuan(nama=norm[:20] or "PCS", status="AKTIF")
-    db.add(satuan)
-    db.flush()
-    return satuan
-
-
-def _ensure_kategori_umum(db: Session) -> KategoriBarang:
-    """Kategori default "Umum" untuk barang hasil konversi item bebas."""
-    kategori = (
-        db.query(KategoriBarang)
-        .filter(func.lower(func.trim(KategoriBarang.nama)) == "umum", KategoriBarang.status == "AKTIF")
-        .first()
-    )
-    if kategori is not None:
-        return kategori
-    kategori = KategoriBarang(kode="UMUM", nama="Umum", status="AKTIF")
-    db.add(kategori)
-    db.flush()
-    return kategori
-
-
-def _ensure_barang_dari_item_bebas(db: Session, d: PenawaranDetail) -> Barang:
-    """Buat master barang dari baris item bebas saat konversi ke SO — #031.
-
-    Item bebas tidak pernah menyentuh master selama masih penawaran; saat
-    customer SETUJU (order nyata), item dibuatkan di master supaya SO →
-    pengiriman → invoice bisa berjalan normal:
-    - stock_item=False (bukan barang stok — jasa/non-stok, tidak mengganggu
-      gudang), metode valuasi AVERAGE, kategori "Umum".
-    - satuan dari teks bebas baris (dicari/dibuat by nama; fallback PCS).
-    - harga jual = harga penawaran.
-    - kode otomatis ITM-0001 (berurutan).
-    """
-    nama = (d.item_nama or "").strip()
-    if not nama:
-        raise ValueError("Baris item bebas tanpa nama tidak bisa dikonversi")
-    satuan = _ensure_satuan_by_nama(db, d.item_satuan or "PCS")
-    kategori = _ensure_kategori_umum(db)
-    barang = Barang(
-        kode=_next_kode_barang_otomatis(db),
-        nama=nama[:200],
-        kategori_id=kategori.id,
-        satuan_id=satuan.id,
-        metode_valuasi=MetodeValuasi.AVERAGE,
-        status="AKTIF",
-        stock_item=False,  # item bebas penawaran — bukan barang stok
-        harga_jual=d.harga or Decimal("0"),
-        harga_pokok=Decimal("0"),
-    )
-    db.add(barang)
-    db.flush()
-    return barang
-
-
 @atomic_accounting_write
 def convert_to_so(db: Session, penawaran_id: UUID, user):
-    """Konversi Penawaran menjadi Sales Order (Update #3, revisi #031).
+    """Konversi Penawaran menjadi Sales Order (Update #3, revisi #031/#032).
 
-    - Guard: hanya penawaran berstatus DRAFT / DIPROSES.
+    - Guard: hanya penawaran berstatus DRAFT / DIPROSES / SELESAI.
+      Update #032 — REPEAT ORDER: penawaran SELESAI tetap bisa dikonversi
+      LAGI (SO baru dengan nomor SO sendiri); penawaran tidak "hangus".
+      DIREVISI (sudah digantikan revisi lebih baru) dan DIBATALKAN ditolak.
     - SO dibuat lewat create_sales_order lalu difinalisasi dengan
       workflow_service.direct_complete FORCE=True (Update #031: SO langsung
       final tanpa langkah approval untuk SEMUA user — bukan hanya admin).
     - Copy: tanggal = now, pelanggan, syarat_bayar, alamat_pengiriman,
       keterangan = "Dari Penawaran {no}" (+ keterangan lama), diskon_global,
       ppn, details (harga/qty/diskon/satuan), biaya_tambahan.
-    - Update #031: baris item BEBAS otomatis dibuatkan master barang
-      (stock_item=False) sebelum masuk SO — SO tetap berisi barang nyata.
-    - Penawaran ditandai SELESAI.
+    - Update #032 — item BEBAS diteruskan ke SO SEBAGAI ITEM BEBAS
+      (barang_id=None + item_nama/item_satuan — TIDAK dibuatkan di master
+      barang; tidak menyentuh gudang. Bisa difakturkan, tidak bisa dikirim).
+    - SO di-link ke penawaran sumber (penawaran_id) untuk counter repeat
+      order; status penawaran DRAFT → SELESAI saat PERTAMA dipakai (SELESAI
+      tetap SELESAI pada pemakaian berikutnya).
     """
     from app.services import penjualan_service, workflow_service
 
     penawaran = get_penawaran_by_id(db, penawaran_id)
     if penawaran is None:
         raise ValueError(f"Penawaran dengan ID {penawaran_id} tidak ditemukan")
-    if penawaran.status not in ("DRAFT", "DIPROSES"):
+    if penawaran.status not in ("DRAFT", "DIPROSES", "SELESAI"):
         raise ValueError(
-            f"Penawaran dengan status {penawaran.status} tidak bisa dikonversi "
-            f"menjadi Sales Order"
+            f"Penawaran dengan status {penawaran.status} tidak bisa dipakai "
+            f"membuat Sales Order"
+            + (
+                " — sudah digantikan revisi lebih baru"
+                if penawaran.status == "DIREVISI"
+                else ""
+            )
         )
     if not penawaran.details:
         raise ValueError("Penawaran tidak memiliki baris detail")
 
     keterangan = f"Dari Penawaran {penawaran.no_penawaran}"
+    if penawaran.revisi_ke and penawaran.revisi_ke > 1:
+        keterangan += f" Rev. {penawaran.revisi_ke}"
     if penawaran.keterangan:
         keterangan = f"{keterangan} — {penawaran.keterangan}"
 
     details_data = []
     for d in penawaran.details:
-        # Update #031 — item bebas → master barang (stock_item=False)
-        barang_id = d.barang_id
-        if not barang_id:
-            barang = _ensure_barang_dari_item_bebas(db, d)
-            barang_id = barang.id
+        # Update #032 — item bebas diteruskan APA ADANYA (tanpa master barang):
+        # barang_id None + item_nama/item_satuan dari baris penawaran.
         details_data.append(
             {
-                "barang_id": barang_id,
+                "barang_id": d.barang_id,
+                "item_nama": d.item_nama,
+                "item_satuan": d.item_satuan,
                 "satuan_id": d.satuan_id,
                 "qty": d.qty,
                 "harga": d.harga,
@@ -678,6 +627,8 @@ def convert_to_so(db: Session, penawaran_id: UUID, user):
         customer_code=penawaran.customer_code,
         created_by=getattr(user, "id", None) or penawaran.created_by,
         currency=penawaran.mata_uang,
+        # Update #032 — link sumber (repeat order counter + integrasi list).
+        penawaran_id=penawaran.id,
     )
 
     # Finalisasi (Update #031): FORCE untuk semua user — SO langsung jadi
@@ -685,12 +636,144 @@ def convert_to_so(db: Session, penawaran_id: UUID, user):
     # tanpa posting jurnal).
     workflow_service.direct_complete(db, user, "sales_order", so.id, force=True)
 
-    # Tandai penawaran selesai
-    penawaran.status = "SELESAI"
-    db.add(penawaran)
+    # Update #032 — status: DRAFT → SELESAI saat PERTAMA dipakai; SELESAI
+    # tetap SELESAI (repeat order — pemakaian berikutnya tidak mengubah apa pun).
+    if penawaran.status in ("DRAFT", "DIPROSES"):
+        penawaran.status = "SELESAI"
+        db.add(penawaran)
     db.commit()
     db.refresh(so)
     logger.info(
-        f"Penawaran {penawaran.no_penawaran} converted to SalesOrder {so.no_pesanan}"
+        f"Penawaran {penawaran.no_penawaran}"
+        + (f" Rev. {penawaran.revisi_ke}" if (penawaran.revisi_ke or 1) > 1 else "")
+        + f" converted to SalesOrder {so.no_pesanan}"
     )
     return so
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Update #032 — REVISI PENAWARAN + DROPDOWN UNTUK FORM SO
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@atomic_accounting_write
+def create_revisi(db: Session, penawaran_id: UUID, user) -> Penawaran:
+    """Buat dokumen REVISI penawaran — Update #032.
+
+    Penawaran SELESAI (sudah dipakai / final) direvisi menjadi dokumen BARU:
+    - no_penawaran SAMA (nomor tidak berubah — revisi_ke+1, tampil "Rev. N").
+    - Semua header + detail (barang master & item bebas) + biaya tambahan
+      disalin utuh; status DRAFT → bisa diedit seperti penawaran baru
+      (pelanggan & No Quotation tetap terkunci — bagian dari nomor).
+    - Dokumen ASAL berubah jadi DIREVISI: terkunci (tidak bisa dipakai buat
+      SO / diedit / direvisi lagi) — jejak harga lama tetap utuh untuk audit.
+    - SO-SO yang sudah dibuat dari dokumen asal TIDAK berubah (mereka memakai
+      snapshot data saat konversi; link penawaran_id tetap menunjuk asal).
+
+    Guard: hanya status SELESAI. DRAFT cukup diedit langsung; DIREVISI/DIBATALKAN
+    tidak bisa direvisi.
+    """
+    penawaran = get_penawaran_by_id(db, penawaran_id)
+    if penawaran is None:
+        raise ValueError(f"Penawaran dengan ID {penawaran_id} tidak ditemukan")
+    if penawaran.status != "SELESAI":
+        raise ValueError(
+            f"Penawaran dengan status {penawaran.status} tidak bisa direvisi"
+            + (
+                " — dokumen DRAFT cukup diedit langsung (tombol Edit)"
+                if penawaran.status == "DRAFT"
+                else " — hanya penawaran berstatus SELESAI yang bisa direvisi"
+            )
+        )
+
+    revisi_ke = (penawaran.revisi_ke or 1) + 1
+
+    baru = Penawaran(
+        no_penawaran=penawaran.no_penawaran,
+        revisi_ke=revisi_ke,
+        tanggal=datetime.now(UTC),
+        berlaku_hingga=penawaran.berlaku_hingga,
+        pelanggan_id=penawaran.pelanggan_id,
+        syarat_bayar_id=penawaran.syarat_bayar_id,
+        alamat_pengiriman=penawaran.alamat_pengiriman,
+        keterangan=penawaran.keterangan,
+        customer_po_number=penawaran.customer_po_number,
+        customer_code=penawaran.customer_code,
+        mata_uang=penawaran.mata_uang,
+        diskon_global=penawaran.diskon_global,
+        ppn=penawaran.ppn,
+        sub_total=penawaran.sub_total,
+        total_diskon=penawaran.total_diskon,
+        total_ppn=penawaran.total_ppn,
+        total_biaya_tambahan=penawaran.total_biaya_tambahan,
+        grand_total=penawaran.grand_total,
+        status="DRAFT",
+        created_by=getattr(user, "id", None) or penawaran.created_by,
+    )
+    db.add(baru)
+    db.flush()
+
+    # Salin baris detail (barang master & item bebas apa adanya — link
+    # katalog tetap dibawa supaya saran katalog tetap relevan).
+    for d in penawaran.details:
+        db.add(PenawaranDetail(
+            penawaran_id=baru.id,
+            barang_id=d.barang_id,
+            katalog_id=d.katalog_id,
+            item_nama=d.item_nama,
+            item_satuan=d.item_satuan,
+            satuan_id=d.satuan_id,
+            qty=d.qty,
+            harga=d.harga,
+            diskon=d.diskon,
+            sub_total=d.sub_total,
+            keterangan=d.keterangan,
+        ))
+
+    # Salin biaya tambahan
+    for b in penawaran.biaya_tambahan:
+        db.add(TransaksiBiaya(
+            penawaran_id=baru.id,
+            nama=b.nama,
+            jumlah=b.jumlah,
+        ))
+
+    # Dokumen asal terkunci sebagai DIREVISI
+    penawaran.status = "DIREVISI"
+    db.add(penawaran)
+
+    db.commit()
+    db.refresh(baru)
+    logger.info(
+        f"Penawaran {penawaran.no_penawaran} direvisi → Rev. {revisi_ke} "
+        f"(dokumen lama {penawaran.id} → DIREVISI)"
+    )
+    return baru
+
+
+def get_penawaran_untuk_so(
+    db: Session,
+    search: str | None = None,
+    limit: int = 200,
+) -> list[Penawaran]:
+    """Daftar penawaran yang bisa dipilih di form Sales Order — Update #032.
+
+    Hanya status DRAFT / SELESAI (SELESAI tetap ditawarkan — repeat order).
+    DIREVISI & DIBATALKAN tidak muncul. Diurutkan terbaru dulu.
+    """
+    query = (
+        db.query(Penawaran)
+        .options(
+            joinedload(Penawaran.pelanggan),
+            selectinload(Penawaran.sales_orders),
+            selectinload(Penawaran.details),
+        )
+        .filter(Penawaran.status.in_(("DRAFT", "SELESAI")))
+    )
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = (
+            query.outerjoin(Pelanggan, Pelanggan.id == Penawaran.pelanggan_id)
+            .filter(Penawaran.no_penawaran.ilike(pattern) | Pelanggan.nama.ilike(pattern))
+        )
+    return query.order_by(Penawaran.created_at.desc()).limit(max(1, min(limit, 500))).all()
