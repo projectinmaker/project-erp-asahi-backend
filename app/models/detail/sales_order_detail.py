@@ -22,6 +22,13 @@ class SalesOrderDetail(BaseModel, BaseMixin):
     qty = Column(Integer, default=0, nullable=False)
     diskon = Column(Numeric(5, 2), default=0, nullable=True)
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
+    # === Update #041 — DP per baris (alur DP bertahap tanpa merusak harga
+    #     satuan): nominal uang muka yang ditagihkan untuk baris ini. Saat
+    #     terisi (> 0), sub_total baris = dp — harga & qty tetap utuh (nilai
+    #     penuh dari penawaran); grand total SO = Σ dp (+ppn/biaya). Kosong =
+    #     baris biasa. Diteruskan otomatis ke baris invoice saat tarik data
+    #     SO (endpoint /sisa). ===
+    dp = Column(Numeric(18, 2), nullable=True)
 
     # === NEW Phase B — Catatan Sales Order §5: UOM on detail ===
     satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id", name="fk_so_detail_satuan"), nullable=True, index=True)

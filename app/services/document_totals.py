@@ -33,6 +33,15 @@ def refresh_totals(obj):
         for row in obj.details:
             if strict and row.qty <= 0:
                 raise ValueError('Kuantitas harus lebih dari nol')
+            # === Update #041 — DP per baris: bila baris punya dp > 0, nilai
+            # yang ditagih untuk baris tsb = dp (harga satuan & qty tetap
+            # utuh); diskon baris diabaikan untuk baris ber-DP. ===
+            dp_val = getattr(row, 'dp', None)
+            if dp_val is not None and amount(dp_val) > 0:
+                dp_amt = money(amount(dp_val))
+                row.sub_total = dp_amt
+                subtotal += dp_amt
+                continue
             gross = money(amount(row.harga) * row.qty)
             pct = amount(getattr(row, 'diskon', 0))
             if pct > 100:

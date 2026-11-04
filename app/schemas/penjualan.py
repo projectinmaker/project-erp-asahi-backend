@@ -101,6 +101,10 @@ class SalesOrderDetailBase(BaseSchema):
     qty: int = 0
     diskon: Optional[Decimal] = Decimal("0")
     sub_total: Decimal = Decimal("0")
+    # === Update #041 — DP per baris: nominal uang muka yang ditagih untuk
+    # baris ini. Terisi (> 0) → sub_total baris = dp (harga & qty utuh).
+    # None/0 = baris biasa. ===
+    dp: Optional[Decimal] = None
     # Phase B — UOM on detail
     satuan_id: Optional[UUID] = None
 
@@ -225,6 +229,9 @@ class SalesInvoiceDetailBase(BaseSchema):
     qty: int = 0
     diskon: Optional[Decimal] = Decimal("0")
     sub_total: Decimal = Decimal("0")
+    # === Update #041 — DP per baris invoice (tarikan baris SO ber-DP /
+    # isi manual). Terisi (> 0) → sub_total baris = dp. ===
+    dp: Optional[Decimal] = None
     # === Phase 4 — Source-line trace (Roadmap §14) ===
     # Link baris invoice ke baris SO dan/atau baris pengiriman sumber
     # (dipakai fitur tarik-data + hitung sisa faktur per SO line).
@@ -423,10 +430,15 @@ class SalesReturResponse(SalesReturBase):
 # PENGIRIMAN BARANG DETAIL
 # ==========================================
 class PengirimanBarangDetailBase(BaseSchema):
-    barang_id: UUID
-    # Phase C fix (Catatan Audit Delivery §10): qty wajib > 0
+    # === Update #041 — barang_id/satuan_id OPSIONAL + item bebas: baris DO
+    # bisa berupa ITEM BEBAS dari SO manufaktur/jasa/custom (wajib item_nama
+    # bila barang_id NULL). Baris bebas TIDAK menggerakkan stok/HPP saat
+    # finish — murni baris surat jalan. ===
+    barang_id: UUID | None = None
+    item_nama: str | None = None
+    item_satuan: str | None = None
     qty: int = Field(gt=0, description="Qty pengiriman harus bilangan bulat positif (> 0)")
-    satuan_id: UUID
+    satuan_id: Optional[UUID] = None
     # Phase C fix (Catatan Audit Delivery §7): link ke SO detail untuk over-delivery check
     sales_order_detail_id: Optional[UUID] = None
 
@@ -520,6 +532,8 @@ class SalesOrderSisaDetailResponse(BaseSchema):
     sisa_faktur: int
     harga: float
     diskon: float
+    # === Update #041 — DP baris SO (ikut ditarik form invoice). ===
+    dp: float | None = None
 
 
 class SalesOrderSisaResponse(BaseSchema):
@@ -547,7 +561,11 @@ class PengirimanSisaDetailResponse(BaseSchema):
     """
     delivery_detail_id: UUID
     sales_order_detail_id: UUID | None = None
-    barang_id: UUID
+    # === Update #041 — barang_id OPSIONAL (baris DO item bebas — SO
+    # manufaktur/custom). dp ditarik dari line SO asal bila ada. ===
+    barang_id: UUID | None = None
+    item_nama: str | None = None
+    item_satuan: str | None = None
     kode_barang: str | None = None
     nama_barang: str | None = None
     satuan_id: UUID | None = None
@@ -557,6 +575,7 @@ class PengirimanSisaDetailResponse(BaseSchema):
     sisa_faktur: int
     harga: float = 0
     diskon: float = 0
+    dp: float | None = None
 
 
 class PengirimanSisaResponse(BaseSchema):

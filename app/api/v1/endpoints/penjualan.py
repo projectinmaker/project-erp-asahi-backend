@@ -219,6 +219,9 @@ def get_sales_order_sisa(
             "sisa_faktur": max(d.qty - qty_terfaktur, 0),
             "harga": float(d.harga or 0),
             "diskon": float(d.diskon or 0),
+            # === Update #041 — DP baris SO (ikut ditarik form invoice: baris
+            # invoice dp = dp baris SO ini, sub_total = dp). ===
+            "dp": float(d.dp) if d.dp is not None else None,
         })
 
     return {
@@ -678,16 +681,22 @@ def get_pengiriman_sisa(
         details.append({
             "delivery_detail_id": d.id,
             "sales_order_detail_id": d.sales_order_detail_id,
+            # === Update #041 — barang_id bisa None (baris DO ITEM BEBAS — SO
+            # manufaktur/jasa/custom); nama/satuan fallback ke item bebas.
+            # dp ditarik dari line SO asal bila ada. ===
             "barang_id": d.barang_id,
+            "item_nama": d.item_nama,
+            "item_satuan": d.item_satuan,
             "kode_barang": d.barang.kode if d.barang else None,
-            "nama_barang": d.barang.nama if d.barang else None,
+            "nama_barang": d.barang.nama if d.barang else d.item_nama,
             "satuan_id": d.satuan_id,
-            "satuan_nama": d.satuan.nama if d.satuan else None,
+            "satuan_nama": d.satuan.nama if d.satuan else d.item_satuan,
             "qty_kirim": d.qty,
             "qty_terfaktur": qty_terfaktur,
             "sisa_faktur": max(d.qty - qty_terfaktur, 0),
             "harga": float(so_line.harga or 0) if so_line is not None else 0.0,
             "diskon": float(so_line.diskon or 0) if so_line is not None else 0.0,
+            "dp": float(so_line.dp) if (so_line is not None and so_line.dp is not None) else None,
         })
 
     return {

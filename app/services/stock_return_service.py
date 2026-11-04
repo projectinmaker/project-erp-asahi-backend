@@ -20,6 +20,11 @@ def execute_sales_return(db, obj):
     earlier = db.query(SalesRetur).filter_by(pengiriman_id=source.id, status='SELESAI').all()
     grouped = {}
     for detail in obj.details:
+        # === Update #041 — baris ITEM BEBAS (barang_id None — jasa/custom
+        # tanpa barang master) tidak punya stok/HPP yang bisa dikembalikan:
+        # lewati (tidak masuk grouped) supaya retur baris master tetap jalan. ===
+        if detail.barang_id is None:
+            continue
         grouped[detail.barang_id] = grouped.get(detail.barang_id, 0) + detail.qty
     entries = []
     for item_id, qty in grouped.items():

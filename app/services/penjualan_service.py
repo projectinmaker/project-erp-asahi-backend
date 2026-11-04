@@ -289,11 +289,18 @@ def create_sales_order(
             harga = safe_decimal(d.get("harga"))
             qty = safe_int(d.get("qty"))
             diskon = safe_decimal(d.get("diskon"))
+            # === Update #041 — DP per baris: normalisasi (None/<=0 → None).
+            # Saat terisi, sub_total baris = dp — harga satuan & qty tetap
+            # utuh; refresh_totals (dipanggil di bawah) menghitung header
+            # mengikuti Σ dp. ===
+            dp_raw = d.get("dp")
+            dp_val = safe_decimal(dp_raw) if dp_raw is not None else None
+            d["dp"] = dp_val if (dp_val is not None and dp_val > 0) else None
             line_total = harga * qty
             diskon_nilai = line_total * diskon / Decimal("100")
             sub_total += line_total
             total_diskon += diskon_nilai
-            d["sub_total"] = line_total - diskon_nilai  # Update sub_total per line
+            d["sub_total"] = d["dp"] if d["dp"] is not None else (line_total - diskon_nilai)  # Update sub_total per line
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
         # Sales Order belum mendukung pilihan PPh23 (default PPN aktif).
@@ -358,6 +365,8 @@ def create_sales_order(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
+                # Update #041 — DP per baris (sub_total = dp saat terisi).
+                dp=d.get("dp"),
                 # Update #7 (B-05): persist satuan per baris (schema Phase B sudah
                 # punya field; sebelumnya diabaikan → kolom DB selalu NULL dan FE
                 # menampilkan dialog warning "satuan belum tersimpan").
@@ -1035,11 +1044,16 @@ def create_sales_invoice(
             harga = safe_decimal(d.get("harga"))
             qty = safe_int(d.get("qty"))
             diskon = safe_decimal(d.get("diskon"))
+            # === Update #041 — DP per baris invoice (tarikan baris SO ber-DP /
+            # isi manual): terisi → sub_total baris = dp. ===
+            dp_raw = d.get("dp")
+            dp_val = safe_decimal(dp_raw) if dp_raw is not None else None
+            d["dp"] = dp_val if (dp_val is not None and dp_val > 0) else None
             line_total = harga * qty
             diskon_nilai = line_total * diskon / Decimal("100")
             sub_total += line_total
             total_diskon += diskon_nilai
-            d["sub_total"] = line_total - diskon_nilai
+            d["sub_total"] = d["dp"] if d["dp"] is not None else (line_total - diskon_nilai)
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
         total_ppn, total_pph23, grand_total = _hitung_grand_total(
@@ -1103,6 +1117,8 @@ def create_sales_invoice(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
+                # Update #041 — DP per baris invoice (sub_total = dp saat terisi).
+                dp=d.get("dp"),
                 # === Phase 4 — source-line trace (Roadmap §14) ===
                 sales_order_detail_id=d.get("sales_order_detail_id"),
                 delivery_detail_id=d.get("delivery_detail_id"),
@@ -1219,6 +1235,12 @@ def update_sales_invoice(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d.get("sub_total", 0))),
+                # Update #041 — DP per baris invoice (round-trip saat edit draft).
+                dp=(
+                    safe_decimal(d.get("dp"))
+                    if d.get("dp") is not None and safe_decimal(d.get("dp")) > 0
+                    else None
+                ),
                 sales_order_detail_id=d.get("sales_order_detail_id"),
                 delivery_detail_id=d.get("delivery_detail_id"),
             ))
@@ -1594,6 +1616,23 @@ def create_pengiriman(
         from app.models.detail.sales_order_detail import SalesOrderDetail
 
         so_qty_map: dict = defaultdict(int)
+        # === Update #041 — baris ITEM BEBAS (SO manufaktur/jasa/custom): kini
+        #     BOLEH dikirim sebagai baris surat jalan (tanpa stok/HPP).
+        #     Validasi mirror #032: barang master ATAU item_nama. ===
+        for i, d in enumerate(details_data, start=1):
+            has_barang = d.get("barang_id") is not None
+            item_nama = (d.get("item_nama") or "").strip()
+            if not has_barang and not item_nama:
+                raise ValueError(
+                    f"Baris {i}: pilih barang dari master ATAU isi nama item bebas"
+                )
+            if has_barang:
+                d["item_nama"] = None
+                d["item_satuan"] = None
+            else:
+                d["item_nama"] = item_nama
+                d["item_satuan"] = (d.get("item_satuan") or "").strip() or None
+
         for d in details_data:
             sod_id = d.get("sales_order_detail_id")
             if not sod_id:
@@ -1604,16 +1643,9 @@ def create_pengiriman(
                     f"Baris detail menunjuk SalesOrderDetail yang tidak termasuk dalam "
                     f"Sales Order dokumen ini. Pengiriman {no_surat_jalan} dibatalkan."
                 )
-            # Update #032 — baris SO item bebas tidak bisa dikirim (tidak ada
-            # di master barang / gudang — hanya bisa difakturkan).
-            if sod.barang_id is None:
-                raise ValueError(
-                    f"Baris SO \"{sod.item_nama or 'item bebas'}\" adalah item bebas "
-                    f"(jasa/custom) — tidak bisa dikirim lewat gudang. Hanya barang "
-                    f"master yang bisa dibuatkan Pengiriman Barang. "
-                    f"Pengiriman {no_surat_jalan} dibatalkan."
-                )
-            if str(sod.barang_id) != str(d.get("barang_id")):
+            # Update #041 — baris SO item bebas kini BOLEH dikirim (surat jalan
+            # tanpa stok); kecocokan barang hanya dicek untuk baris master.
+            if sod.barang_id is not None and str(sod.barang_id) != str(d.get("barang_id")):
                 raise ValueError(
                     f"Barang pada baris detail tidak sama dengan barang di line SO "
                     f"({sod.barang.kode if sod.barang else sod.barang_id}). "
@@ -1651,9 +1683,14 @@ def create_pengiriman(
         for d in details_data:
             detail = PengirimanBarangDetail(
                 pengiriman_id=pengiriman.id,
-                barang_id=d["barang_id"],
+                # Update #041 — barang_id bisa None (baris ITEM BEBAS — SO
+                # manufaktur/jasa/custom; nama + satuan bebas tersimpan di
+                # baris ini, tidak menyentuh stok/HPP saat finish).
+                barang_id=d.get("barang_id"),
+                item_nama=d.get("item_nama"),
+                item_satuan=d.get("item_satuan"),
                 qty=int(d["qty"]),
-                satuan_id=d["satuan_id"],
+                satuan_id=d.get("satuan_id"),
                 sales_order_detail_id=d.get("sales_order_detail_id"),
             )
             db.add(detail)
@@ -1842,6 +1879,11 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
         total_hpp = Decimal("0")
         cost_entries = []
         for detail in db_obj.details:
+            # === Update #041 — baris ITEM BEBAS (barang_id None): tidak
+            #     menyentuh stok/HPP — murni baris surat jalan (SO manufaktur/
+            #     jasa/custom). Baris master tetap mengurangi stok seperti biasa. ===
+            if detail.barang_id is None:
+                continue
             movement = update_stok_barang(
                 db=db,
                 barang_id=detail.barang_id,
@@ -1959,7 +2001,14 @@ def post_sales_invoice(db: Session, inv, created_by):
     for d in inv.details:
         gross = safe_decimal(d.harga) * safe_int(d.qty)
         d_net = safe_decimal(d.sub_total)
-        line_discount_total += (gross - d_net)
+        # === Update #041 — baris DP: selisih gross vs sub_total adalah DP
+        # (nilai yang belum ditagih tahap ini — BUKAN diskon). Hanya baris
+        # biasa yang menyumbang line_discount_total, supaya global_diskon
+        # (= total_diskon − diskon baris) tetap akurat dan jurnal balance:
+        # pendapatan K = Σ sub_total baris − diskon global = dasar pajak. ===
+        dp_val = d.dp if getattr(d, "dp", None) is not None else None
+        if not (dp_val is not None and safe_decimal(dp_val) > 0):
+            line_discount_total += (gross - d_net)
         akun_rev = None
         if d.barang is not None:
             akun_rev = getattr(d.barang, "akun_penjualan_id", None)
