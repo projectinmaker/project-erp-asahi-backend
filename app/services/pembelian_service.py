@@ -722,7 +722,9 @@ def get_rop_item_belanja_list(
         db.query(RequestOrderPartItem)
         .join(RequestOrderPart, RequestOrderPartItem.request_order_part_id == RequestOrderPart.id)
         .options(
-            joinedload(RequestOrderPartItem.barang).joinedload("satuan"),
+            # Hotfix #038 — SQLAlchemy 2.x menolak string pada joinedload;
+            # wajib class-bound attribute (Barang.satuan).
+            joinedload(RequestOrderPartItem.barang).joinedload(Barang.satuan),
             joinedload(RequestOrderPartItem.supplier),
             joinedload(RequestOrderPartItem.request_order_part).joinedload(RequestOrderPart.sales_order),
         )
