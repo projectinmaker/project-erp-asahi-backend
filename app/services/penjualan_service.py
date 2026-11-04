@@ -22,6 +22,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
+from app.models.transaksi.penjualan.sales_order_termin import SalesOrderTermin
 from app.models.transaksi.penjualan.sales_invoice import SalesInvoice
 from app.models.transaksi.penjualan.sales_retur import SalesRetur
 from app.models.transaksi.penjualan.pengiriman_barang import PengirimanBarang
@@ -45,6 +46,8 @@ from app.services.setting_akun_service import (
     KEY_PERSEDIAAN_BARANG_JADI,
     # === Update ASAHI — PPh23 opsional pada Invoice Penjualan ===
     KEY_PPH23_DIBAYAR_DIMUKA,
+    # === Update #031 — akun lawan default penerimaan Termin SO ===
+    KEY_UANG_MUKA_PENJUALAN,
 )
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
@@ -183,6 +186,8 @@ def create_sales_order(
     customer_po_number: Optional[str] = None,
     customer_po_date: Optional[date] = None,
     currency: str = "IDR",
+    # === Update #031 — Pembayaran Termin (baris nominal, mis. 3x pembayaran) ===
+    pembayaran_termin: Optional[list] = None,
 ) -> SalesOrder:
     """Buat SalesOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis
@@ -193,6 +198,11 @@ def create_sales_order(
     (singkatan bebas nama perusahaan customer) menjadi segmen nomor pesanan:
         terisi  → "SO ASI/TBI/2026/001"
         kosong  → "SO ASI/-/2026/001"
+
+    Update #031 — pembayaran_termin: daftar nominal termin (tiap baris nominal
+    saja, urutan input). Total SELURUH termin harus sama dengan grand_total
+    (validasi di sini); termin kosong/tidak dikirim = SO tanpa termin (tetap
+    sah — pembayaran SO tidak tersedia, pakai alur invoice).
     """
     try:
         biaya_data = biaya_data or []
@@ -300,6 +310,12 @@ def create_sales_order(
         db.flush()
         refresh_totals(so)
 
+        # === Update #031 — Pembayaran Termin (baris nominal) ===
+        # Tiap baris nominal saja; total harus sama dengan grand_total
+        # (toleransi pembulatan 0.05). Urutan baris = urutan input user.
+        if pembayaran_termin:
+            _create_so_termins(db, so, pembayaran_termin)
+
         # Order tidak mengakui pendapatan/piutang atau pembelian/utang.
         db.commit()
         db.refresh(so)
@@ -310,6 +326,225 @@ def create_sales_order(
         db.rollback()
         logger.error(f"Error creating SalesOrder: {e}")
         raise
+
+
+# ==========================================
+# Update #031 — TERMIN PEMBAYARAN SALES ORDER
+# ==========================================
+
+
+def _create_so_termins(db: Session, so: SalesOrder, pembayaran_termin: list) -> None:
+    """Validasi + buat baris termin pembayaran SO (dipanggil create_sales_order).
+
+    - Tiap baris nominal saja (angka > 0).
+    - Total seluruh termin HARUS sama dengan grand_total SO (toleransi 0.05
+      untuk pembulatan Decimal); kalau tidak → ValueError dengan pesan jelas.
+    - Urutan baris mengikuti urutan input (urutan 1..n).
+    """
+
+    nominals: list[Decimal] = []
+    for t in pembayaran_termin:
+        nilai = safe_decimal(t)
+        if nilai <= 0:
+            raise ValueError("Nominal termin pembayaran harus lebih dari 0")
+        nominals.append(nilai)
+
+    total_termin = sum(nominals, Decimal("0"))
+    grand = so.grand_total or Decimal("0")
+    if abs(total_termin - grand) > Decimal("0.05"):
+        raise ValueError(
+            f"Total pembayaran termin ({total_termin:,.2f}) harus sama dengan "
+            f"Grand Total Sales Order ({grand:,.2f}). Kurangi/tambah baris atau "
+            "sesuaikan nominalnya."
+        )
+
+    for urutan, nilai in enumerate(nominals, start=1):
+        db.add(SalesOrderTermin(
+            sales_order_id=so.id,
+            urutan=urutan,
+            nominal=nilai,
+        ))
+    db.flush()
+
+
+def get_sales_order_termins(db: Session, so_id: UUID) -> list[SalesOrderTermin]:
+    """Daftar termin SO (urut) beserta status bayar + no bukti penerimaannya."""
+
+    return (
+        db.query(SalesOrderTermin)
+        .options(joinedload(SalesOrderTermin.penerimaan))
+        .filter(SalesOrderTermin.sales_order_id == so_id)
+        .order_by(SalesOrderTermin.urutan.asc())
+        .all()
+    )
+
+
+def get_open_termin_sos(db: Session, search: str | None = None, limit: int = 100):
+    """SO yang masih punya termin BELUM dibayar — pilihan di form Penerimaan.
+
+    Satu SO bisa muncul berkali-kali untuk pembayaran (tiap penerimaan membayar
+    SATU termin). Filter opsional: no pesanan / nama pelanggan.
+    """
+
+    query = (
+        db.query(SalesOrder, SalesOrderTermin)
+        .join(SalesOrderTermin, SalesOrderTermin.sales_order_id == SalesOrder.id)
+        .options(joinedload(SalesOrder.pelanggan))
+        .filter(
+            SalesOrderTermin.penerimaan_kas_id.is_(None),
+            SalesOrder.status != StatusPenjualan.DIBATALKAN,
+        )
+        .order_by(SalesOrder.created_at.desc(), SalesOrderTermin.urutan.asc())
+    )
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.outerjoin(Pelanggan, Pelanggan.id == SalesOrder.pelanggan_id).filter(
+            SalesOrder.no_pesanan.ilike(pattern) | Pelanggan.nama.ilike(pattern)
+        )
+    rows = query.limit(max(1, min(limit, 500))).all()
+
+    # Gabungkan per SO: daftar termin belum dibayar + ringkasan.
+    hasil: dict[UUID, dict] = {}
+    for so, termin in rows:
+        entry = hasil.setdefault(
+            so.id,
+            {
+                "sales_order_id": so.id,
+                "no_pesanan": so.no_pesanan,
+                "pelanggan_id": so.pelanggan_id,
+                "pelanggan_nama": so.pelanggan.nama if so.pelanggan else None,
+                "grand_total": so.grand_total,
+                "termin_belum_dibayar": [],
+                "sisa_termin": Decimal("0"),
+            },
+        )
+        entry["termin_belum_dibayar"].append(
+            {"id": termin.id, "urutan": termin.urutan, "nominal": termin.nominal}
+        )
+        entry["sisa_termin"] += termin.nominal or Decimal("0")
+    return list(hasil.values())
+
+
+def release_termin_links(db: Session, penerimaan_id: UUID) -> int:
+    """Lepas link termin milik penerimaan ini (dipanggil alur pembatalan).
+
+    Mirror pembersihan alokasi pelunasan (AUD2-E1): termin adalah data turunan;
+    saat penerimaan TERMIN_SO dibatalkan (jurnal pembalik) / dihapus draft,
+    termin kembali BELUM dibayar sehingga bisa dibayar ulang. Jejak audit tetap
+    utuh lewat jurnal. Return jumlah baris termin yang dilepas.
+    """
+
+    return (
+        db.query(SalesOrderTermin)
+        .filter(SalesOrderTermin.penerimaan_kas_id == penerimaan_id)
+        .update(
+            {SalesOrderTermin.penerimaan_kas_id: None, SalesOrderTermin.dibayar_pada: None},
+            synchronize_session=False,
+        )
+    )
+
+
+def terima_pembayaran_termin(
+    db: Session,
+    so_id: UUID,
+    termin_id: UUID,
+    kas_bank_id: UUID,
+    tanggal: datetime,
+    created_by: UUID,
+    akun_perkiraan_id: Optional[UUID] = None,
+    no_nukti: Optional[str] = None,
+    catatan: Optional[str] = None,
+):
+    """Terima pembayaran SATU termin SO — satu SO bisa dipanggil berkali-kali.
+
+    Alur (Update #031):
+    - Validasi SO tidak DIBATALKAN, termin milik SO tsb dan BELUM dibayar.
+    - Akun lawan default = Uang Muka Penjualan (Setting Akun
+      UANG_MUKA_PENJUALAN; bisa diganti per transaksi via akun_perkiraan_id).
+    - Buat PenerimaanKas jenis TERMIN_SO (prefix nomor REC ASI/YYYY/NNN) dengan
+      SATU baris rincian akun lawan sebesar nominal termin; pelanggan SO
+      tercatat sebagai pemberi supaya list Kas & Bank menampilkan pihaknya.
+    - Link termin → penerimaan (status DIBAYAR).
+    - Jurnal diposting lewat workflow penerimaan_kas oleh ENDPOINT (admin:
+      langsung final; user biasa: menunggu approval — pola Penerimaan lain).
+
+    Return: (penerimaan, termin).
+    """
+    from app.services.kas_bank_service import create_penerimaan
+    from app.models.transaksi.kas_bank.pembayaran import JENIS_TRANSAKSI_TERMIN_SO
+
+    so = get_sales_order_by_id(db, so_id)
+    if so is None:
+        raise ValueError(f"Sales Order dengan ID {so_id} tidak ditemukan")
+    if so.status == StatusPenjualan.DIBATALKAN:
+        raise ValueError("Sales Order sudah dibatalkan — termin tidak bisa dibayar")
+
+    termin = (
+        db.query(SalesOrderTermin)
+        .filter(
+            SalesOrderTermin.id == termin_id,
+            SalesOrderTermin.sales_order_id == so_id,
+        )
+        .first()
+    )
+    if termin is None:
+        raise ValueError("Termin tidak ditemukan pada Sales Order ini")
+    if termin.penerimaan_kas_id is not None:
+        raise ValueError(
+            f"Termin {termin.urutan} sudah dibayar (penerimaan "
+            f"{termin.penerimaan.no_bukti if termin.penerimaan else '-'}). "
+            "Batalkan penerimaan tersebut dulu bila ingin dibayar ulang."
+        )
+
+    # Akun lawan — default Uang Muka Penjualan (Setting Akun), bisa diganti.
+    akun_lawan_id = akun_perkiraan_id
+    if akun_lawan_id is None:
+        akun_lawan_id = get_akun_id_or_raise(
+            db, KEY_UANG_MUKA_PENJUALAN, "Uang Muka Penjualan (termin SO)"
+        )
+
+    jumlah_termin = len(so.termin_pembayaran) if so.termin_pembayaran else 1
+    keterangan_rincian = f"Termin {termin.urutan}/{jumlah_termin} SO {so.no_pesanan}"
+    pemberi = so.pelanggan.nama if so.pelanggan else None
+
+    penerimaan = create_penerimaan(
+        db=db,
+        no_nukti=no_nukti,
+        tanggal=tanggal,
+        kas_bank_id=kas_bank_id,
+        rincian_data=[
+            {
+                "akun_perkiraan_id": str(akun_lawan_id),
+                "nilai": termin.nominal,
+                "keterangan": keterangan_rincian,
+            }
+        ],
+        no_cek=None,
+        pemberi=pemberi,
+        catatan=(catatan or "").strip() or keterangan_rincian,
+        auto_post_jurnal=False,
+        created_by=created_by,
+        jenis_transaksi=JENIS_TRANSAKSI_TERMIN_SO,
+    )
+
+    # Catat pelanggan SO di penerimaan (list Kas & Bank menampilkan pihak)
+    penerimaan.pelanggan_id = so.pelanggan_id
+
+    # Link termin → penerimaan (status DIBAYAR)
+    termin.penerimaan_kas_id = penerimaan.id
+    from datetime import UTC as _UTC
+    termin.dibayar_pada = datetime.now(_UTC)
+    db.add(penerimaan)
+    db.add(termin)
+    db.commit()
+    db.refresh(penerimaan)
+    db.refresh(termin)
+
+    logger.info(
+        f"Penerimaan termin SO {so.no_pesanan} termin {termin.urutan}/{jumlah_termin} "
+        f"→ {penerimaan.no_bukti} ({termin.nominal})"
+    )
+    return penerimaan, termin
 
 
 @atomic_accounting_write

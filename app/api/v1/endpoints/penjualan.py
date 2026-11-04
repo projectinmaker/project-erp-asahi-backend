@@ -24,7 +24,15 @@ from app.schemas.penjualan import (
     SalesOrderSisaResponse,
     PengirimanSisaResponse,
     PenawaranCreate, PenawaranUpdate, PenawaranResponse,
+    # === Update #031 — No Quotation + katalog item + termin SO ===
+    PenawaranKatalogItemResponse,
+    NomorQuotationPreviewResponse,
+    SoTerminResponse,
+    SoTerminOpenItem,
+    TerimaPembayaranTerminRequest,
 )
+# Update #031 — response penerimaan termin SO (mirror kas_bank endpoint).
+from app.schemas.kas_bank import PenerimaanKasResponse
 from app.schemas.tukar_faktur import (
     TukarFakturCreate, TukarFakturUpdate, TukarFakturResponse,
 )
@@ -59,6 +67,28 @@ router = APIRouter()
 # SALES ORDER
 # ==========================================
 
+# === Update #031 — termin pembayaran SO (dideklarasikan SEBELUM route
+# /sales-order/{so_id} supaya path literal tidak tertelan param UUID) ===
+
+
+@router.get("/sales-order/termin-open", response_model=list[SoTerminOpenItem])
+def get_sales_order_termin_open(
+    search: str | None = Query(None, description="Cari no pesanan / nama pelanggan"),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """SO yang masih punya termin BELUM dibayar — pilihan di form Penerimaan.
+
+    Satu SO bisa dipanggil berkali-kali untuk pembayaran (tiap penerimaan
+    membayar SATU termin — Update #031).
+    """
+    try:
+        return svc.get_open_termin_sos(db, search=search, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/sales-order", response_model=PaginatedResponse[SalesOrderResponse])
 def get_sales_order_list(
     skip: int = Query(0, ge=0),
@@ -86,7 +116,11 @@ def create_sales_order(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat Sales Order baru."""
+    """Buat Sales Order baru.
+
+    Update #031: SO LANGSUNG JADI tanpa workflow — finalisasi dipaksa untuk
+    semua user (bukan hanya admin). Pembayaran termin (baris nominal) opsional.
+    """
     try:
         details_data = [d.model_dump() for d in data_in.details]
         biaya_data = [b.model_dump() for b in data_in.biaya_tambahan]
@@ -110,9 +144,12 @@ def create_sales_order(
             customer_po_number=data_in.customer_po_number,
             customer_po_date=data_in.customer_po_date,
             currency=data_in.currency,
+            # === Update #031 — Pembayaran Termin (baris nominal) ===
+            pembayaran_termin=list(data_in.pembayaran_termin or []),
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'sales_order', obj.id)
+        # Update #031 — SO langsung final tanpa langkah approval untuk SEMUA
+        # user (force=True); order berhenti di APPROVED (terminal, tanpa jurnal).
+        workflow_service.direct_complete(db, current_user, 'sales_order', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -224,6 +261,80 @@ def cancel_sales_order(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
+# Update #031 — TERMIN PEMBAYARAN SALES ORDER
+# ==========================================
+
+@router.get("/sales-order/{so_id}/termin", response_model=list[SoTerminResponse])
+def get_sales_order_termin(
+    so_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar termin pembayaran SO (urut) + status bayar tiap baris."""
+    so = svc.get_sales_order_by_id(db, so_id)
+    if not so:
+        raise HTTPException(status_code=404, detail="Sales Order tidak ditemukan")
+    termins = svc.get_sales_order_termins(db, so_id)
+    hasil = []
+    for t in termins:
+        hasil.append(
+            {
+                "id": t.id,
+                "sales_order_id": t.sales_order_id,
+                "urutan": t.urutan,
+                "nominal": t.nominal,
+                "penerimaan_kas_id": t.penerimaan_kas_id,
+                "dibayar_pada": t.dibayar_pada,
+                "no_bukti_penerimaan": t.penerimaan.no_bukti if t.penerimaan else None,
+                "status_penerimaan": (
+                    getattr(t.penerimaan.status, "value", t.penerimaan.status)
+                    if t.penerimaan else None
+                ),
+            }
+        )
+    return hasil
+
+
+@router.post(
+    "/sales-order/{so_id}/terima-pembayaran",
+    response_model=PenerimaanKasResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_sales_order_terima_pembayaran(
+    so_id: UUID,
+    data_in: TerimaPembayaranTerminRequest,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Terima pembayaran SATU termin SO (jenis Penerimaan TERMIN_SO) — #031.
+
+    - Satu SO bisa dipanggil BERKALI-KALI (tiap penerimaan = satu termin).
+    - Jurnal (saat diposting): D Kas/Bank, K akun lawan — default Uang Muka
+      Penjualan (Setting Akun UANG_MUKA_PENJUALAN), bisa diganti per transaksi.
+    - Pembatalan penerimaan melepas termin otomatis (bisa dibayar ulang).
+    """
+    try:
+        penerimaan, _termin = svc.terima_pembayaran_termin(
+            db=db,
+            so_id=so_id,
+            termin_id=data_in.termin_id,
+            kas_bank_id=data_in.kas_bank_id,
+            tanggal=data_in.tanggal,
+            created_by=current_user.id,
+            akun_perkiraan_id=data_in.akun_perkiraan_id,
+            no_nukti=data_in.no_nukti,
+            catatan=data_in.catatan,
+        )
+        # Mirror endpoint POST /kas-bank/penerimaan: administrator langsung
+        # final (posting jurnal); user biasa menunggu approval workflow.
+        workflow_service.direct_complete(db, current_user, 'penerimaan_kas', penerimaan.id)
+        db.refresh(penerimaan)
+        return penerimaan
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
 # ==========================================
@@ -740,8 +851,47 @@ def get_invoice_belum_bayar(
 
 
 # ==========================================
-# PENAWARAN (quotation — Update #3)
+# PENAWARAN (quotation — Update #3, revisi No Quotation #031)
 # ==========================================
+
+# === Update #031 — endpoint literal dideklarasikan SEBELUM /penawaran/{id}
+# supaya path tidak tertelan param UUID. ===
+
+
+@router.get("/penawaran/next-nomor", response_model=NomorQuotationPreviewResponse)
+def get_penawaran_next_nomor(
+    pelanggan_id: UUID = Query(..., description="Pelanggan — penentu singkatan & sequence"),
+    bulan: int = Query(..., ge=1, le=12, description="Bulan nomor Quotation (1-12)"),
+    tahun: int = Query(..., ge=2000, le=2100, description="Tahun nomor Quotation"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Preview No Quotation BERIKUTNYA (indikatif, tanpa create) — Update #031.
+
+    Format: QUOT ASI/001/MJE/X/2026 — urut per pelanggan reset tahunan,
+    singkatan dari master pelanggan, bulan romawi + tahun dari input user.
+    Dipakai form Penawaran (pola "No. Dokumen" form Penerimaan #16); nomor
+    final di-generate ulang saat create.
+    """
+    try:
+        return {"nomor": penawaran_service.peek_nomor_penawaran(db, pelanggan_id, bulan, tahun)}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+@router.get("/penawaran/katalog", response_model=list[PenawaranKatalogItemResponse])
+def get_penawaran_katalog(
+    search: str | None = Query(None, description="Cari nama item bebas"),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Katalog item BEBAS penawaran (Update #031) — item yang pernah diketik
+    manual di penawaran (tidak masuk master data), urut paling sering dipakai.
+    Dipakai form sebagai saran cepat untuk item berulang.
+    """
+    return penawaran_service.get_katalog_items(db, search=search, limit=limit)
+
 
 @router.get("/penawaran", response_model=PaginatedResponse[PenawaranResponse])
 def get_penawaran_list(
@@ -791,6 +941,9 @@ def create_penawaran(
             ppn=data_in.ppn,
             berlaku_hingga=data_in.berlaku_hingga,
             created_by=current_user.id,
+            # === Update #031 — No Quotation: user hanya input bulan & tahun ===
+            bulan=data_in.bulan,
+            tahun=data_in.tahun,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e

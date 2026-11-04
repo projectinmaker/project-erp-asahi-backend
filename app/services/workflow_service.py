@@ -197,7 +197,7 @@ def describe(db, obj, user):
     }
 
 
-def direct_complete(db, user, kind, document_id):
+def direct_complete(db, user, kind, document_id, force: bool = False):
     """ADMINISTRATOR bypass: finalisasi dokumen otomatis tanpa langkah approval.
 
     Dipanggil endpoint create SETELAH dokumen tersimpan (DRAFT). Bila user bukan
@@ -208,16 +208,21 @@ def direct_complete(db, user, kind, document_id):
 
     Bila finalisasi gagal (mis. validasi posting), hanya transaksi ini yang
     dibatalkan — dokumen tetap DRAFT dan bisa diselesaikan manual lewat tombol.
+
+    Update #031 — force=True: finalisasi untuk SEMUA user (bukan hanya
+    administrator). Dipakai alur dokumen yang memang tanpa workflow (mis.
+    Sales Order "langsung jadi"). Event submit/approve tetap dicatat atas
+    nama user pembuat sehingga jejak audit utuh.
     """
     # Idempotency-Key sudah dikonsumsi transaksi create; buang agar wrapper tidak
     # menganggap finalisasi ini sebagai replay request yang sama.
     db.info.pop('idempotency', None)
-    return _direct_complete_tx(db, user, kind, document_id)
+    return _direct_complete_tx(db, user, kind, document_id, force=force)
 
 
 @atomic_accounting_write
-def _direct_complete_tx(db, user, kind, document_id):
-    if not is_administrator(db, user):
+def _direct_complete_tx(db, user, kind, document_id, force: bool = False):
+    if not force and not is_administrator(db, user):
         return None
     obj = get_document(db, kind, document_id, lock=True)
     from app.services.penutupan_periode_service import validate_periode_not_closed

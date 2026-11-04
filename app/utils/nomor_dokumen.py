@@ -27,6 +27,19 @@ from app.services import app_setting_service
 KEY_KODE_PERUSAHAAN_NOMOR = "KODE_PERUSAHAAN_NOMOR"
 DEFAULT_KODE_PERUSAHAAN = "ASI"
 
+# === Update #031 — bulan romawi utk nomor Quotation (001/MJE/X/2026) ===
+ROMAN_MONTHS = [
+    "I", "II", "III", "IV", "V", "VI",
+    "VII", "VIII", "IX", "X", "XI", "XII",
+]
+
+
+def roman_month(bulan: int) -> str:
+    """Nama bulan romawi (1 → "I" ... 12 → "XII"). Naik ValueError bila di luar 1-12."""
+    if not isinstance(bulan, int) or bulan < 1 or bulan > 12:
+        raise ValueError("Bulan harus angka 1-12")
+    return ROMAN_MONTHS[bulan - 1]
+
 
 # Mapping doc_type ke prefix default — referensi tunggal (Update ASAHI #019:
 # dilengkapi agar konsisten dengan nilai yang dipakai call site + registry
@@ -42,7 +55,9 @@ default_prefix_map = {
     "MANUAL_JURNAL": "JV",
     # Entri selaras call site (Update ASAHI #019)
     "SALES_ORDER": "SO",
-    "PENAWARAN": "PEN",
+    # Update #031 — prefix Quotation: format baru "QUOT ASI/001/MJE/X/2026"
+    # (nomor urut per pelanggan, reset tahunan, bulan romawi).
+    "PENAWARAN": "QUOT",
     "PENGIRIMAN_BARANG": "DO",  # Update ASAHI #3: dulu "KB" (Kartu/Bukti) — kini Delivery Order
     "SALES_INVOICE": "INV",
     "RETUR_PENJUALAN": "RET-J",

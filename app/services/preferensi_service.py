@@ -181,7 +181,7 @@ _PREFS: list[PrefDef] = [
             "Kode perusahaan (segmen nomor dokumen)", "text", DEFAULT_KODE_PERUSAHAAN_NOMOR,
             help="Segmen perusahaan pada nomor dokumen, contoh: SO ASI/2026/001."),
     PrefDef("PREFIX_SALES_ORDER", "penomoran", "Pesanan Penjualan (SO)", "text", "SO"),
-    PrefDef("PREFIX_PENAWARAN", "penomoran", "Penawaran", "text", "PEN"),
+    PrefDef("PREFIX_PENAWARAN", "penomoran", "Penawaran (Quotation)", "text", "QUOT"),
     PrefDef("PREFIX_PENGIRIMAN_BARANG", "penomoran", "Pengiriman Barang (DO)", "text", "DO"),
     PrefDef("PREFIX_SALES_INVOICE", "penomoran", "Invoice Penjualan", "text", "INV"),
     PrefDef("PREFIX_RETUR_PENJUALAN", "penomoran", "Retur Penjualan", "text", "RET-J"),

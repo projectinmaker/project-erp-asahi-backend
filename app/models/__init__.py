@@ -88,6 +88,9 @@ from app.models.detail.lppb_detail import LppbDetail
 from app.models.detail.barang_satuan import BarangSatuan
 from app.models.detail.penawaran_detail import PenawaranDetail
 from app.models.detail.tukar_faktur_detail import TukarFakturDetail
+# === Update #031 — katalog item penawaran + termin pembayaran SO ===
+from app.models.master.penawaran_katalog import PenawaranKatalogItem
+from app.models.transaksi.penjualan.sales_order_termin import SalesOrderTermin
 
 __all__ = [
     # Master
@@ -120,6 +123,8 @@ __all__ = [
     "SalesInvoice",
     "SalesRetur",
     "Penawaran",
+    "PenawaranKatalogItem",
+    "SalesOrderTermin",
     "TukarFaktur",
     # Transaksi - Pembelian
     "PurchaseOrder",

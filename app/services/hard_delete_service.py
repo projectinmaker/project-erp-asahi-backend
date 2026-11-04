@@ -302,6 +302,14 @@ def _delete_document(db: Session, document_type: str, obj, journal_id):
             synchronize_session=False)
         db.flush()
 
+    # 1a. Update #031 — lepas link termin pembayaran SO milik penerimaan kas
+    # yang dihapus (draft TERMIN_SO): termin kembali belum dibayar. (Juga aman
+    # untuk FK SET NULL di DB — ini versi eksplisit supaya session konsisten.)
+    if document_type == 'penerimaan_kas':
+        from app.services.penjualan_service import release_termin_links
+        release_termin_links(db, doc_id)
+        db.flush()
+
     # 1b. WorkflowEvent -> DocumentWorkflow.
     wf = find_workflow(db, obj)
     if wf is not None:

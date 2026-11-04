@@ -69,6 +69,13 @@ KEY_PPH23_DIBAYAR_DIMUKA = "PPH23_DIBAYAR_DIMUKA"
 # Akun laba ditahan (321000) — tujuan transfer laba/rugi saat year-end closing
 KEY_LABA_DITAHAN = "LABA_DITAHAN"
 
+# === Update #031 — akun lawan default penerimaan Termin SO ===
+# Dipakai saat pelanggan membayar termin Sales Order (DP / cicilan) SEBELUM
+# invoice terbit — jurnal: D Kas/Bank, K akun ini (default "Uang Muka
+# Penjualan"). Bisa diganti per transaksi di form Penerimaan, dan default
+# bisa dikonfigurasi lewat Pengaturan → Setting Akun.
+KEY_UANG_MUKA_PENJUALAN = "UANG_MUKA_PENJUALAN"
+
 # === Update cetak "Bayar Pemasok" ===
 # Akun potongan hutang pelunasan — dikredit saat pembayaran ke supplier
 # memakai diskon per faktur (kas keluar < hutang dilunasi). Bersifat
@@ -140,6 +147,8 @@ KNOWN_SETTING_LABELS = {
     KEY_LABA_RUGI_TEREALISIR: "Laba/(Rugi) Terealisir",
     KEY_LABA_RUGI_TAK_TEREALISIR: "Laba/(Rugi) Tak Terealisir",
     KEY_BIAYA_PESANAN: "Biaya Pesanan",
+    # === Update #031 — penerimaan Termin SO ===
+    KEY_UANG_MUKA_PENJUALAN: "Uang Muka Penjualan (Termin SO)",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)
@@ -200,6 +209,15 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
         "kode": ["213002", "213.002", "215200002"],
         "nama_exact": ["Hutang PPh 23", "Hutang PPh23"],
         "nama_like": ["%hutang pph 23%", "%hutang pph23%"],
+    },
+    # === Update #031 — Uang Muka Penjualan (akun lawan Termin SO) ===
+    # Dicocokkan longgar: nama mengandung "uang muka" + "penjualan" (COA ASAHI
+    # umumnya menaruhnya sebagai kewajiban 213xxx atau kontra-aset 115xxx —
+    # keduanya ditoleransi, user bisa meng-override lewat Setting Akun).
+    KEY_UANG_MUKA_PENJUALAN: {
+        "kode": ["213001", "115000", "220127002"],
+        "nama_exact": ["Uang Muka Penjualan", "UANG MUKA PENJUALAN", "Uang Muka Penjualan (Customer Deposit)"],
+        "nama_like": ["%uang muka%penjualan%", "%uang muka penjualan%", "%pendapatan diterima di muka%"],
     },
     # === Update AUD-17 — akun PPN untuk posting SI/PI ber-PPN ===
     # COA v2: PPN Keluaran 230100001 (fallback legacy 213005 VAT_OUTPUT),

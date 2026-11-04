@@ -77,6 +77,25 @@ class SalesOrder(BaseModel, BaseMixin):
     details = relationship("SalesOrderDetail", back_populates="sales_order", cascade="all, delete-orphan")
     biaya_tambahan = relationship("TransaksiBiaya", back_populates="sales_order", cascade="all, delete-orphan")
     pengiriman = relationship("PengirimanBarang", back_populates="sales_order")
+    # === Update #031 — termin pembayaran (baris nominal; dibayar via Penerimaan
+    # jenis TERMIN_SO). Urutan baris mengikuti urutan input. ===
+    termin_pembayaran = relationship(
+        "SalesOrderTermin", back_populates="sales_order",
+        cascade="all, delete-orphan", order_by="SalesOrderTermin.urutan",
+    )
+
+    # === Update #031 — ringkasan termin untuk list/kolom "Pembayaran" ===
+    @property
+    def termin_total(self):
+        """Total nominal seluruh termin (0 bila SO tanpa termin)."""
+        return sum((t.nominal or 0 for t in self.termin_pembayaran), 0)
+
+    @property
+    def termin_dibayar(self):
+        """Total nominal termin yang sudah dibayar (link penerimaan aktif)."""
+        return sum(
+            (t.nominal or 0 for t in self.termin_pembayaran if t.penerimaan_kas_id is not None), 0
+        )
 
     @property
     def pelanggan_nama(self):

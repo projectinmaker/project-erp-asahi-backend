@@ -154,6 +154,15 @@ def _cancel_posted_document(db: Session, document_type: str, obj, user, reason: 
         removed_allocations = db.query(PaymentAllocation).filter(
             payment_col == obj.id).delete(synchronize_session=False)
 
+    # === Update #031 — lepas link termin pembayaran SO milik penerimaan ini.
+    # Termin adalah data turunan (mirror alokasi): penerimaan TERMIN_SO dibatalkan
+    # → termin kembali BELUM DIBAYAR dan bisa dibayar ulang; jurnal pembalik
+    # tetap utuh sebagai audit trail. ===
+    released_termins = 0
+    if document_type == 'penerimaan_kas':
+        from app.services.penjualan_service import release_termin_links
+        released_termins = release_termin_links(db, obj.id)
+
     # Status dokumen → BATAL/DIBATALKAN (dokumen & jurnal asli dipertahankan).
     _set_status_cancelled(obj, target)
     _record_workflow_event(db, obj, user, str(status_before or ''), target, reason)
@@ -181,6 +190,8 @@ def _cancel_posted_document(db: Session, document_type: str, obj, user, reason: 
             f'Dokumen berstatus {target}; jurnal asli tetap tersimpan untuk audit.'
             + (f' {removed_allocations} baris alokasi pelunasan turunannya dibersihkan.'
                if removed_allocations else '')
+            + (f' {released_termins} termin pembayaran SO dikembalikan ke belum dibayar.'
+               if released_termins else '')
         ),
     }
 

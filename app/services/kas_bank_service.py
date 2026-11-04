@@ -239,8 +239,11 @@ def _prefix_nomor_penerimaan(db: Session, jenis: Optional[str]) -> str:
 
     === Update ASAHI #019 — prefix kini dibaca dari Preferensi → Penomoran ===
     (key PREFIX_PENERIMAAN / PREFIX_PENERIMAAN_LAIN; fallback nilai lama).
+
+    === Update #031 — TERMIN_SO (pembayaran termin Sales Order dari pelanggan)
+    ikut prefix PENERIMAAN "REC" — sama-sama penerimaan dari pelanggan. ===
     """
-    if (jenis or "").strip().upper() == "PELUNASAN_INVOICE":
+    if (jenis or "").strip().upper() in ("PELUNASAN_INVOICE", "TERMIN_SO"):
         return resolve_prefix(db, "PENERIMAAN", "REC")
     return resolve_prefix(db, "PENERIMAAN_LAIN", "PB")
 

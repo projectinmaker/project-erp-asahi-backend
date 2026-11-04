@@ -135,6 +135,10 @@ class SalesOrderBase(BaseSchema):
 class SalesOrderCreate(SalesOrderBase):
     details: List[SalesOrderDetailCreate]
     biaya_tambahan: List[TransaksiBiayaCreate] = []
+    # === Update #031 — Pembayaran Termin (field di form SO setelah Diskon):
+    # baris-baris nominal saja (mis. 3x pembayaran). Total harus = grand_total
+    # (divalidasi service). Kosong = SO tanpa termin. ===
+    pembayaran_termin: List[Decimal] = []
 
 
 class SalesOrderUpdate(BaseSchema):
@@ -167,6 +171,10 @@ class SalesOrderResponse(SalesOrderBase):
     status: str
     jurnal_umum_id: Optional[UUID] = None  # LEGACY — should always be null
     fulfillment_status: Optional[str] = None  # Phase B
+    # === Update #031 — ringkasan termin pembayaran (kolom "Pembayaran" di
+    # daftar SO: mis. "2/3 · Rp 30.000.000"). 0/None = SO tanpa termin. ===
+    termin_total: Optional[Decimal] = None
+    termin_dibayar: Optional[Decimal] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
@@ -538,7 +546,14 @@ class PengirimanSisaResponse(BaseSchema):
 # PENAWARAN (quotation — Update #3)
 # ==========================================
 class PenawaranDetailBase(BaseSchema):
-    barang_id: UUID
+    # === Update #031 — barang_id OPSIONAL: baris bisa berupa item BEBAS yang
+    # diketik manual (belum ada di master barang). Baris bebas wajib punya
+    # item_nama; item_satuan/katalog_id opsional. Item bebas tidak masuk
+    # master data — tersimpan di katalog penawaran (upsert service). ===
+    barang_id: UUID | None = None
+    katalog_id: UUID | None = None
+    item_nama: str | None = None
+    item_satuan: str | None = None
     harga: Decimal = Decimal("0")
     qty: int = 0
     diskon: Decimal | None = Decimal("0")
@@ -578,6 +593,10 @@ class PenawaranBase(BaseSchema):
 class PenawaranCreate(PenawaranBase):
     details: list[PenawaranDetailCreate]
     biaya_tambahan: list[TransaksiBiayaCreate] = []
+    # === Update #031 — No Quotation: user hanya input bulan & tahun; nomor
+    # urut otomatis per pelanggan (reset tahunan), singkatan dari master. ===
+    bulan: int | None = Field(None, ge=1, le=12, description="Bulan nomor Quotation (1-12)")
+    tahun: int | None = Field(None, ge=2000, le=2100, description="Tahun nomor Quotation")
 
 
 class PenawaranUpdate(BaseSchema):
@@ -614,3 +633,64 @@ class PenawaranResponse(PenawaranBase):
     creator: PenggunaSimpleResponse | None = None
     details: list[PenawaranDetailResponse] = []
     biaya_tambahan: list[TransaksiBiayaResponse] = []
+
+
+# ==========================================
+# Update #031 — KATALOG ITEM PENAWARAN + NO QUOTATION + TERMIN SO
+# ==========================================
+class PenawaranKatalogItemResponse(BaseSchema):
+    """Item katalog penawaran (item bebas yang pernah dipakai — saran cepat
+    saat membuat penawaran berikutnya; tidak ada di master barang)."""
+    id: UUID
+    nama: str
+    satuan_nama: str | None = None
+    harga: Decimal = Decimal("0")
+    dipakai_count: int = 1
+    keterangan: str | None = None
+
+
+class NomorQuotationPreviewResponse(BaseSchema):
+    """Preview No Quotation berikutnya (indikatif; final saat create)."""
+    nomor: str
+
+
+class SoTerminRingkas(BaseSchema):
+    id: UUID
+    urutan: int
+    nominal: Decimal
+
+
+class SoTerminResponse(BaseSchema):
+    """Satu baris termin pembayaran SO + status bayarnya."""
+    id: UUID
+    sales_order_id: UUID
+    urutan: int
+    nominal: Decimal
+    penerimaan_kas_id: Optional[UUID] = None
+    dibayar_pada: Optional[datetime] = None
+    # No bukti + status penerimaan pembayar (info ringan utk tampilan).
+    no_bukti_penerimaan: Optional[str] = None
+    status_penerimaan: Optional[str] = None
+
+
+class SoTerminOpenItem(BaseSchema):
+    """SO dengan termin belum dibayar — pilihan dropdown di form Penerimaan."""
+    sales_order_id: UUID
+    no_pesanan: str
+    pelanggan_id: Optional[UUID] = None
+    pelanggan_nama: Optional[str] = None
+    grand_total: Decimal = Decimal("0")
+    termin_belum_dibayar: List[SoTerminRingkas] = []
+    sisa_termin: Decimal = Decimal("0")
+
+
+class TerimaPembayaranTerminRequest(BaseSchema):
+    """Body POST /penjualan/sales-order/{so_id}/terima-pembayaran."""
+    termin_id: UUID
+    kas_bank_id: UUID
+    tanggal: datetime
+    # Akun lawan jurnal (K). None = default Setting Akun UANG_MUKA_PENJUALAN
+    # (bisa diganti per transaksi — jawaban user E9).
+    akun_perkiraan_id: Optional[UUID] = None
+    no_nukti: Optional[str] = None
+    catatan: Optional[str] = None

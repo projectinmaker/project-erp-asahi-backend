@@ -33,9 +33,14 @@ class StatusTransaksi(str, enum.Enum):
 # untuk upgrade database berjalan.
 JENIS_TRANSAKSI_PELUNASAN_INVOICE = "PELUNASAN_INVOICE"
 JENIS_TRANSAKSI_LAINNYA = "TRANSAKSI_LAINNYA"
+# === Update #031 — penerimaan pembayaran termin Sales Order (DP / cicilan).
+# Penerimaan kas dari pelanggan atas SATU termin SO: pilih SO → termin belum
+# dibayar → nominal → jurnal D Kas/Bank, K Uang Muka Penjualan (bisa diganti).
+JENIS_TRANSAKSI_TERMIN_SO = "TERMIN_SO"
 JENIS_TRANSAKSI_KAS = (
     JENIS_TRANSAKSI_PELUNASAN_INVOICE,
     JENIS_TRANSAKSI_LAINNYA,
+    JENIS_TRANSAKSI_TERMIN_SO,
 )
 
 
