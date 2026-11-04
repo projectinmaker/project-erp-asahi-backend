@@ -144,8 +144,10 @@ class SalesOrderCreate(SalesOrderBase):
     # penawaran boleh dipakai beberapa SO; kosong = SO manual. ===
     penawaran_id: UUID | None = None
     # === Update #031 — Pembayaran Termin (field di form SO setelah Diskon):
-    # baris-baris nominal saja (mis. 3x pembayaran). Total harus = grand_total
-    # (divalidasi service). Kosong = SO tanpa termin. ===
+    # baris-baris nominal saja (mis. 3x pembayaran). Kosong = SO tanpa termin.
+    # Update #035 — TERMIN BEBAS: nominal ditentukan user; total TIDAK
+    # diwajibkan sama dengan grand_total (kurang → sisa lewat Invoice;
+    # lebih → diperbolehkan; service hanya menolak nominal <= 0). ===
     pembayaran_termin: List[Decimal] = []
 
 

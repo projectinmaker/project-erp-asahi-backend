@@ -207,9 +207,14 @@ def create_sales_order(
         kosong  → "SO ASI/-/2026/001"
 
     Update #031 — pembayaran_termin: daftar nominal termin (tiap baris nominal
-    saja, urutan input). Total SELURUH termin harus sama dengan grand_total
-    (validasi di sini); termin kosong/tidak dikirim = SO tanpa termin (tetap
+    saja, urutan input); termin kosong/tidak dikirim = SO tanpa termin (tetap
     sah — pembayaran SO tidak tersedia, pakai alur invoice).
+
+    Update #035 — TERMIN BEBAS: total seluruh termin TIDAK lagi diwajibkan
+    sama dengan grand_total (nominal ditentukan bebas oleh user). Total <
+    grand_total → sisa mengikuti alur Invoice; total > grand_total →
+    diperbolehkan (mis. uang muka melebihi pesanan — form menampilkan
+    catatan, keputusan di tangan user). Validasi nominal > 0 tetap.
 
     Update #032 — penawaran_id: link ke penawaran sumber (form SO "Pilih
     Penawaran"; repeat order — satu penawaran boleh dipakai banyak SO).
@@ -372,8 +377,9 @@ def create_sales_order(
         refresh_totals(so)
 
         # === Update #031 — Pembayaran Termin (baris nominal) ===
-        # Tiap baris nominal saja; total harus sama dengan grand_total
-        # (toleransi pembulatan 0.05). Urutan baris = urutan input user.
+        # Tiap baris nominal saja; urutan baris = urutan input user.
+        # Update #035 — TERMIN BEBAS: total TIDAK diwajibkan = grand_total
+        # (lihat _create_so_termins); nominal ditentukan user.
         if pembayaran_termin:
             _create_so_termins(db, so, pembayaran_termin)
 
@@ -409,9 +415,15 @@ def _create_so_termins(db: Session, so: SalesOrder, pembayaran_termin: list) -> 
     """Validasi + buat baris termin pembayaran SO (dipanggil create_sales_order).
 
     - Tiap baris nominal saja (angka > 0).
-    - Total seluruh termin HARUS sama dengan grand_total SO (toleransi 0.05
-      untuk pembulatan Decimal); kalau tidak → ValueError dengan pesan jelas.
     - Urutan baris mengikuti urutan input (urutan 1..n).
+
+    Update #035 — TERMIN BEBAS: total seluruh termin TIDAK lagi
+    diwajibkan sama dengan grand_total SO (dulu ValueError bila selisih
+    > 0,05 — kini nominal ditentukan bebas oleh user):
+    - total < grand_total → sisa pembayaran mengikuti alur Invoice;
+    - total > grand_total → diperbolehkan (mis. uang muka melebihi
+      nilai pesanan) — form menampilkan catatan, keputusan di user.
+    Validasi nominal > 0 TETAP (baris nol/tidak bermakna ditolak).
     """
 
     nominals: list[Decimal] = []
@@ -420,15 +432,6 @@ def _create_so_termins(db: Session, so: SalesOrder, pembayaran_termin: list) -> 
         if nilai <= 0:
             raise ValueError("Nominal termin pembayaran harus lebih dari 0")
         nominals.append(nilai)
-
-    total_termin = sum(nominals, Decimal("0"))
-    grand = so.grand_total or Decimal("0")
-    if abs(total_termin - grand) > Decimal("0.05"):
-        raise ValueError(
-            f"Total pembayaran termin ({total_termin:,.2f}) harus sama dengan "
-            f"Grand Total Sales Order ({grand:,.2f}). Kurangi/tambah baris atau "
-            "sesuaikan nominalnya."
-        )
 
     for urutan, nilai in enumerate(nominals, start=1):
         db.add(SalesOrderTermin(
