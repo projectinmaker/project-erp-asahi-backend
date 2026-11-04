@@ -1,9 +1,12 @@
+from decimal import Decimal
+
 from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.database import BaseModel
 from app.models.base import BaseMixin
+from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 
 
 class Penawaran(BaseModel, BaseMixin):
@@ -90,3 +93,38 @@ class Penawaran(BaseModel, BaseMixin):
     def digunakan_count(self) -> int:
         """Berapa kali penawaran ini dipakai membuat SO (repeat order)."""
         return len(self.sales_orders or [])
+
+    # === Update #039 — SISA PENAWARAN (alur DP bertahap: satu penawaran,
+    # banyak SO per tahap pembayaran; acuan tagihan tetap invoice). ===
+    # Sisa dihitung ON-THE-FLY dari link SO (tanpa kolom baru yang bisa basi):
+    #   sisa = grand_total penawaran − Σ grand_total SO AKTIF turunannya.
+    # SO DIBATALKAN tidak dihitung → nilainya otomatis kembali ke sisa begitu
+    # SO dibatalkan. Sisa bisa NEGATIF bila SO-SO turunan melebihi nilai
+    # penawaran (repeat order nambah scope) — UI menampilkan warning, bukan
+    # blok (keputusan user #039). ===
+    @property
+    def dipakai_so_total(self) -> Decimal:
+        """Σ grand_total SO AKTIF (non-DIBATALKAN) dari penawaran ini."""
+        return sum(
+            (
+                (so.grand_total or Decimal("0"))
+                for so in (self.sales_orders or [])
+                if so.status != StatusPenjualan.DIBATALKAN
+            ),
+            Decimal("0"),
+        )
+
+    @property
+    def sisa_penawaran(self) -> Decimal:
+        """Grand Total − dipakai_so_total (bisa negatif bila SO melebihi)."""
+        return (self.grand_total or Decimal("0")) - self.dipakai_so_total
+
+    @property
+    def so_list(self) -> list:
+        """SO turunan AKTIF (non-DIBATALKAN) urut tanggal — kartu sisa di UI."""
+        aktif = [
+            so
+            for so in (self.sales_orders or [])
+            if so.status != StatusPenjualan.DIBATALKAN
+        ]
+        return sorted(aktif, key=lambda so: (so.tanggal, so.created_at or so.tanggal))

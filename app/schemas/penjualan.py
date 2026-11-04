@@ -597,6 +597,20 @@ class PenawaranDetailResponse(PenawaranDetailBase):
     satuan: SatuanSimpleResponse | None = None
 
 
+class PenawaranSoRingkas(BaseSchema):
+    """SO turunan penawaran — baris daftar di kartu pemakaian/sisa (Update #039).
+
+    Dipakai form/detail penawaran untuk menampilkan SO-SO yang dibuat dari
+    penawaran yang sama (alur DP bertahap: 1 penawaran → SO DP → SO sisa).
+    Hanya SO AKTIF (non-DIBATALKAN) yang disertakan (model.so_list).
+    """
+    id: UUID
+    no_pesanan: str
+    tanggal: datetime
+    status: str
+    grand_total: Decimal = Decimal("0")
+
+
 class PenawaranBase(BaseSchema):
     tanggal: datetime
     berlaku_hingga: date | None = None
@@ -648,6 +662,14 @@ class PenawaranResponse(PenawaranBase):
     # pemakaian SO (repeat order; baris ini dihitung dari link SO). ===
     revisi_ke: int = 1
     digunakan_count: int = 0
+    # === Update #039 — SISA PENAWARAN (alur DP bertahap: satu penawaran,
+    # banyak SO per tahap pembayaran; acuan tagihan tetap invoice). ===
+    # dipakai_so_total = Σ grand_total SO AKTIF turunan; sisa_penawaran =
+    # grand_total − dipakai (bisa NEGATIF bila SO melebihi — warning UI,
+    # bukan blok); so_list = SO turunan aktif utk kartu pemakaian. ===
+    dipakai_so_total: Decimal = Decimal("0")
+    sisa_penawaran: Decimal = Decimal("0")
+    so_list: list[PenawaranSoRingkas] = []
     sub_total: Decimal
     total_diskon: Decimal
     total_ppn: Decimal
@@ -701,6 +723,10 @@ class PenawaranUntukSoItem(BaseSchema):
     pelanggan_nama: str | None = None
     grand_total: Decimal = Decimal("0")
     digunakan_count: int = 0
+    # === Update #039 — sisa penawaran (grand_total − Σ SO aktif) untuk
+    # subtitle dropdown "Pilih Penawaran" di form SO: user langsung lihat
+    # patokan sisa SEBELUM memilih penawaran. ===
+    sisa_penawaran: Decimal = Decimal("0")
     jumlah_item: int = 0
 
 

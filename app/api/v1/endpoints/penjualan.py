@@ -936,6 +936,9 @@ def get_penawaran_untuk_so(
             "pelanggan_nama": p.pelanggan.nama if p.pelanggan else None,
             "grand_total": p.grand_total or 0,
             "digunakan_count": p.digunakan_count,
+            # Update #039 — sisa penawaran utk subtitle dropdown (patokan
+            # nilai SO berikutnya: DP bertahap dari penawaran yang sama).
+            "sisa_penawaran": p.sisa_penawaran,
             "jumlah_item": len(p.details or []),
         }
         for p in penawaran_service.get_penawaran_untuk_so(db, search=search, limit=limit)
