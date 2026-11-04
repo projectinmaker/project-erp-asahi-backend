@@ -55,6 +55,11 @@ class SalesOrderSimpleResponse(BaseSchema):
     # Update #4 — ikut mengalir ke semua response memakai nested ini
     # (SalesInvoiceResponse.salesOrder, PengirimanBarangResponse.salesOrder, dll).
     customer_po_number: str | None = None
+    # === Update #040 — sumber penawaran ikut mengalir ke nested SO supaya
+    # form/detail/cetakan Invoice bisa menampilkan kotak SISA PEMBAYARAN
+    # penawaran (alur DP bertahap: invoice DP → sisa → SO baru dari penawaran
+    # sama). Auto-populate dari ORM (SalesOrder.penawaran_id); None = SO manual. ===
+    penawaran_id: UUID | None = None
 
 
 class SalesInvoiceSimpleResponse(BaseSchema):
