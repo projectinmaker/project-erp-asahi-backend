@@ -8,7 +8,8 @@ Menghapus SEMUA data transaksi hasil test per modul (jurnal, penjualan
 aset tetap, pelunasan, workflow, histori dokumen terhapus, dsb.) TANPA
 menyentuh:
 
-  - Akun Perkiraan (COA) + snapshot saldo awalnya
+  - Akun Perkiraan (COA) — struktur akun tetap utuh; snapshot saldo awal
+    piutang/hutang/kas-bank kini IKUT dinol-kan (update #42, lihat bawah)
   - Setting Akun + Setting Aplikasi global (app_setting, mis. metode
     valuasi)
   - Master data menu Pengaturan (Pelanggan, Supplier, Barang + konversi
@@ -38,6 +39,24 @@ AKUN SUBLEDGER OTOMATIS (update #14):
   dibiarkan); --clean-akun-yatim membersihkan akun yatim walau master
   Pelanggan/Supplier tidak direset.
 
+SALDO AWAL INPUT — PIUTANG / HUTANG / KAS & BANK (update #42):
+  Reset kini juga menghapus saldo awal yang pernah diinput user, apa pun
+  pintunya: saldo awal piutang per Pelanggan (jurnal tipe SALDO_AWAL_AR),
+  hutang per Supplier (SALDO_AWAL_AP), per akun dari daftar Akun
+  Perkiraan termasuk Kas & Bank (SALDO_AWAL_AKUN), dan set global
+  SA-INIT/SA-{tahun}. Jurnalnya memang SELALU ikut terhapus karena
+  seluruh tabel jurnal ikut dikosongkan; yang BARU sekarang: snapshot
+  saldo yang tertinggal juga dibersihkan —
+    - kas_bank_akun.saldo dinol-kan (halaman Kas & Bank bersih)
+    - akun_perkiraan.saldo + tanggal dinol-kan untuk akun kas/bank,
+      sub-akun 'Piutang - ...' dan 'Hutang - ...'
+  Sebelum update ini snapshot itu dibiarkan sehingga saldo awal lama masih
+  tampak di halaman Kas/Bank & Akun Perkiraan padahal jurnal pendukungnya
+  sudah tidak ada. Opsi --keep-saldo-awal mengembalikan perilaku lama
+  (snapshot dipertahankan); --reset-saldo-awal tetap tersedia untuk
+  menol-kan SEMUA snapshot COA (termasuk akun lain dari form Saldo Awal
+  global: persediaan, modal, dsb.).
+
 Semua penghapusan berjalan dalam SATU TRANSAKSI database. Jumlah baris
 semua tabel master yang dipertahankan dihitung sebelum & sesudah; kalau
 ada yang berubah (di luar akun subledger yang memang dihapus), seluruh
@@ -66,6 +85,11 @@ Usage:
     # Perilaku lama: reset master TANPA menyentuh akun COA subledger:
     python3 scripts/reset_transaksi.py --reset-master --keep-akun-subledger
 
+    # Perilaku lama (sebelum update #42): pertahankan snapshot saldo awal
+    # (kas_bank_akun.saldo + akun_perkiraan.saldo piutang/hutang/kas-bank);
+    # jurnal SALDO_AWAL tetap ikut terhapus karena tabel jurnal dikosongkan:
+    python3 scripts/reset_transaksi.py --keep-saldo-awal --yes
+
     # Hapus permanen TANPA backup JSON (pelanggan/supplier) — konfirmasi
     # interaktif meminta kata 'RESET MASTER PERMANEN':
     python3 scripts/reset_transaksi.py --reset-master --no-backup --yes
@@ -90,9 +114,23 @@ Opsi:
                           Catatan: link Sales Order di permintaan_barang
                           (kolom sales_order_id) otomatis di-NULL-kan karena
                           dokumen SO ikut dihapus.
-    --reset-saldo-awal    Selain menghapus jurnal saldo awal, snapshot
-                          akun_perkiraan.saldo juga dinol-kan.
-    --reset-kas-saldo     Nol-kan snapshot saldo kas/bank (kas_bank_akun.saldo).
+    --keep-saldo-awal     Pertahankan snapshot saldo awal (perilaku lama
+                          sebelum update #42): kas_bank_akun.saldo dan
+                          akun_perkiraan.saldo akun kas/bank/piutang/hutang
+                          tidak disentuh. Jurnal SALDO_AWAL tetap ikut
+                          terhapus karena tabel jurnal memang dikosongkan.
+                          Tidak bisa digabung dengan --reset-saldo-awal.
+    --reset-saldo-awal    Nol-kan SEMUA snapshot akun_perkiraan.saldo +
+                          tanggal saldo awalnya — termasuk akun DI LUAR
+                          piutang/hutang/kas-bank (mis. persediaan/modal
+                          dari form Saldo Awal global). Tanpa flag ini,
+                          snapshot piutang/hutang/kas-bank memang sudah
+                          dinol-kan otomatis (update #42).
+    --reset-kas-saldo     Nol-kan snapshot saldo kas/bank (kas_bank_akun.
+                          saldo). Kini perilaku DEFAULT (update #42); flag
+                          tetap diterima untuk kompatibilitas dan hanya
+                          berguna bersama --keep-saldo-awal (nol-kan kas/
+                          bank saja, snapshot COA lain dipertahankan).
     --reset-master [LIST] Kosongkan master data juga. Tanpa nilai / 'all' =
                           keenam master: pelanggan, supplier, gudang,
                           kategori (kategori_barang), satuan, karyawan.
@@ -146,7 +184,11 @@ Efek setelah reset (yang diharapkan):
       (TF-).
     - Semua periode kembali terbuka (penutupan_periode dihapus).
     - Halaman Saldo Awal tampak "belum di-set" karena jurnal SALDO_AWAL
-      ikut terhapus — input ulang kapan saja lewat menu.
+      ikut terhapus — input ulang kapan saja lewat menu. Saldo awal
+      piutang per Pelanggan, hutang per Supplier, dan saldo awal Kas &
+      Bank per akun juga bersih: snapshot kas_bank_akun.saldo serta
+      akun_perkiraan.saldo (akun piutang/hutang/kas-bank) dinol-kan
+      (update #42; --keep-saldo-awal untuk mempertahankan snapshot).
     - Idempotency-Key lama bisa dipakai ulang (cache idempotent_operation
       dikosongkan).
     - Login user / password / role tidak berubah sama sekali.
@@ -161,6 +203,22 @@ Efek setelah reset (yang diharapkan):
       (supplier-from-coa) — tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-11-05  + WIPE : penawaran_katalog_item (item katalog di Penawaran),
+                         sales_order_termin (termin pembayaran Sales Order).
+                         Keduanya anak dari dokumen transaksi; sebelumnya
+                         belum terklasifikasi sehingga script menolak jalan.
+    2026-11-04  + Saldo awal input ikut dihapus secara default (update #42):
+                 jurnal SALDO_AWAL semua varian (set global SA-INIT/SA-{tahun},
+                 piutang per Pelanggan SALDO_AWAL_AR, hutang per Supplier
+                 SALDO_AWAL_AP, per akun SALDO_AWAL_AKUN) memang sudah selalu
+                 terhapus via wipe jurnal; kini snapshot tersisa juga
+                 dibersihkan: kas_bank_akun.saldo dinol-kan, akun_perkiraan.
+                 saldo + tanggal dinol-kan untuk akun kas/bank dan sub-akun
+                 'Piutang - ...'/'Hutang - ...'. Opsi baru --keep-saldo-awal
+                 mempertahankan snapshot (perilaku lama); --reset-saldo-awal
+                 kini juga meng-NULL-kan tanggal dan tetap menol-kan SEMUA
+                 snapshot COA; --reset-kas-saldo jadi default (no-op kecuali
+                 digabung --keep-saldo-awal).
     2026-10-26  + Tabel yang terdaftar di model tapi tidak ada di database
                 (migrasi belum jalan / tabel sudah di-drop) kini dilewati
                 dengan peringatan, bukan membuat script gagal dengan
@@ -303,8 +361,10 @@ WIPE_TABLES = frozenset({
     # Penjualan (Penawaran & Tukar Faktur termasuk — update #3/#4)
     "penawaran",
     "penawaran_detail",
+    "penawaran_katalog_item",
     "sales_order",
     "sales_order_detail",
+    "sales_order_termin",
     "pengiriman_barang",
     "pengiriman_barang_detail",
     "sales_invoice",
@@ -352,8 +412,9 @@ WIPE_GROUPS = [
         "kas_identifikasi", "kas_identifikasi_rincian",
     ]),
     ("Penjualan", [
-        "penawaran", "penawaran_detail",
-        "sales_order", "sales_order_detail", "pengiriman_barang", "pengiriman_barang_detail",
+        "penawaran", "penawaran_detail", "penawaran_katalog_item",
+        "sales_order", "sales_order_detail", "sales_order_termin",
+        "pengiriman_barang", "pengiriman_barang_detail",
         "sales_invoice", "sales_invoice_detail", "sales_retur", "sales_retur_detail",
         "tukar_faktur", "tukar_faktur_detail",
     ]),
@@ -598,6 +659,7 @@ def parse_args() -> argparse.Namespace:
             "  python3 scripts/reset_transaksi.py --dry-run\n"
             "  python3 scripts/reset_transaksi.py --yes\n"
             "  python3 scripts/reset_transaksi.py --keep-stok --yes\n"
+            "  python3 scripts/reset_transaksi.py --keep-saldo-awal --yes\n"
             "  python3 scripts/reset_transaksi.py --reset-master --dry-run\n"
             "  python3 scripts/reset_transaksi.py --reset-master --yes\n"
             "  python3 scripts/reset_transaksi.py --reset-master=pelanggan,supplier --yes\n"
@@ -617,12 +679,32 @@ def parse_args() -> argparse.Namespace:
         help="Jangan sentuh modul persediaan (dokumen stok, mutasi, kartu stok, saldo gudang, barang.stok)",
     )
     parser.add_argument(
+        "--keep-saldo-awal", action="store_true",
+        help=(
+            "Pertahankan snapshot saldo awal (kas_bank_akun.saldo + "
+            "akun_perkiraan.saldo akun kas/bank/piutang/hutang) — perilaku "
+            "sebelum update #42. Jurnal SALDO_AWAL tetap ikut terhapus "
+            "karena tabel jurnal memang dikosongkan. Tidak bisa digabung "
+            "dengan --reset-saldo-awal."
+        ),
+    )
+    parser.add_argument(
         "--reset-saldo-awal", action="store_true",
-        help="Nol-kan snapshot akun_perkiraan.saldo (default: dipertahankan)",
+        help=(
+            "Nol-kan SEMUA snapshot akun_perkiraan.saldo + tanggal saldo "
+            "awalnya — termasuk akun di luar piutang/hutang/kas-bank (mis. "
+            "persediaan/modal dari form Saldo Awal global). Tanpa flag ini, "
+            "snapshot piutang/hutang/kas-bank sudah dinol-kan otomatis."
+        ),
     )
     parser.add_argument(
         "--reset-kas-saldo", action="store_true",
-        help="Nol-kan snapshot saldo kas/bank (kas_bank_akun.saldo)",
+        help=(
+            "Nol-kan snapshot saldo kas/bank (kas_bank_akun.saldo). Kini "
+            "perilaku DEFAULT (update #42); hanya berguna bersama "
+            "--keep-saldo-awal (nol-kan kas/bank saja, snapshot COA lain "
+            "dipertahankan)."
+        ),
     )
     parser.add_argument(
         "--reset-master", nargs="?", const="all", default=None, metavar="LIST",
@@ -753,6 +835,99 @@ def _sequences(conn, wipe: frozenset[str]) -> list[str]:
         {"tbls": sorted(wipe)},
     ).scalars().all()
     return sorted(rows)
+
+
+# ============================================================
+# SALDO AWAL INPUT — piutang / hutang / kas & bank (update #42)
+# ============================================================
+
+def _saldo_awal_coa_ids(conn) -> set[str]:
+    """Id akun perkiraan yang snapshot saldonya dinol-kan saat reset.
+
+    Cakupan saldo awal yang pernah diinput user (apa pun pintunya):
+      - akun kas & bank        : link kas_bank_akun.akun_perkiraan_id
+      - sub-akun piutang       : link pelanggan.akun_piutang_id + akun
+                                 bernama 'Piutang - ...' (termasuk yatim)
+      - sub-akun hutang        : link supplier.akun_hutang_id + akun
+                                 bernama 'Hutang - ...' (termasuk yatim)
+
+    Harus dipanggil SEBELUM tabel master/transaksi dihapus supaya link
+    pelanggan/supplier masih terbaca (--reset-master menghapus barisnya —
+    akun subledger yang ikut terhapus otomatis tidak match UPDATE lagi,
+    jadi aman).
+
+    Tuple (tabel-kolom-link, prefiks-nama-akun) untuk piutang/hutang sama
+    dengan SUBLEDGER_FAMILIES di atas.
+    """
+    from sqlalchemy import text
+    ids: set[str] = set()
+
+    def _add(rows) -> None:
+        for r in rows:
+            if r is not None:
+                ids.add(str(r))
+
+    # Akun kas & bank (master kas_bank_akun tidak pernah direset).
+    try:
+        _add(conn.execute(
+            text('SELECT DISTINCT CAST(akun_perkiraan_id AS TEXT) FROM "kas_bank_akun" '
+                 "WHERE akun_perkiraan_id IS NOT NULL")
+        ).scalars())
+    except Exception:
+        pass
+
+    # Sub-akun piutang/hutang: link master + pola nama (yatim ikut).
+    for fam in ("piutang", "hutang"):
+        info = SUBLEDGER_FAMILIES[fam]
+        try:
+            _add(conn.execute(
+                text(f'SELECT DISTINCT CAST("{info["master_fk"]}" AS TEXT) '
+                     f'FROM "{info["master_table"]}" WHERE "{info["master_fk"]}" IS NOT NULL')
+            ).scalars())
+        except Exception:
+            pass
+        try:
+            _add(conn.execute(
+                text('SELECT CAST(id AS TEXT) FROM "akun_perkiraan" WHERE LOWER(nama) LIKE :prefiks'),
+                {"prefiks": info["prefix"] + "%"},
+            ).scalars())
+        except Exception:
+            pass
+    return ids
+
+
+def _saldo_awal_plan(conn, coa_ids: set[str]) -> dict:
+    """Info tampilan rencana saldo awal input (update #42).
+
+    Return {"jurnal", "kas_rows", "coa_rows", "coa_ids"}:
+      - jurnal   : jumlah jurnal SALDO_AWAL (semua varian: global, piutang
+                   per pelanggan, hutang per supplier, per akun) yang ikut
+                   terhapus via wipe tabel jurnal.
+      - kas_rows : jumlah akun kas/bank yang saldonya masih != 0.
+      - coa_rows : jumlah akun piutang/hutang/kas-bank (target) yang
+                   snapshot saldonya masih != 0.
+    """
+    from sqlalchemy import bindparam, text
+
+    def _scalar(query, params=None):
+        try:
+            return conn.execute(query, params or {}).scalar_one()
+        except Exception:
+            return None
+
+    jurnal_n = int(_scalar(
+        text("SELECT COUNT(*) FROM jurnal_umum WHERE ref_module = 'SALDO_AWAL'")) or 0)
+    kas_rows = int(_scalar(
+        text("SELECT COUNT(*) FROM kas_bank_akun WHERE saldo <> 0")) or 0)
+    coa_rows = 0
+    if coa_ids:
+        stmt = (
+            text('SELECT COUNT(*) FROM "akun_perkiraan" '
+                 "WHERE CAST(id AS TEXT) IN :ids AND saldo <> 0")
+            .bindparams(bindparam("ids", expanding=True))
+        )
+        coa_rows = int(_scalar(stmt, {"ids": sorted(coa_ids)}) or 0)
+    return {"jurnal": jurnal_n, "kas_rows": kas_rows, "coa_rows": coa_rows, "coa_ids": coa_ids}
 
 
 # ============================================================
@@ -1031,6 +1206,7 @@ def _print_plan(
     master_tables: frozenset[str] = frozenset(),
     master_auto: list[str] | None = None,
     subledger: dict | None = None,
+    saldo_awal: dict | None = None,
 ) -> None:
     master_auto = master_auto or []
     _print_header(
@@ -1096,14 +1272,22 @@ def _print_plan(
         print("    - barang.stok DIPERTAHANKAN (--keep-stok)")
     if sequences:
         print(f"    - {len(sequences)} sequence ID transaksi restart dari 1")
+
+    # Saldo awal input — piutang / hutang / kas & bank (update #42)
+    sa = saldo_awal or {"jurnal": 0, "kas_rows": 0, "coa_rows": 0}
+    if args.keep_saldo_awal:
+        print(f"    - jurnal saldo awal ikut terhapus ({sa['jurnal']} jurnal — tabel jurnal memang dikosongkan)")
+        if args.reset_kas_saldo:
+            print("    - kas_bank_akun.saldo dinol-kan (--reset-kas-saldo; snapshot COA dipertahankan)")
+        else:
+            print("    - snapshot saldo awal DIPERTAHANKAN (--keep-saldo-awal)")
+    else:
+        print(f"    - SALDO AWAL INPUT ikut dihapus (update #42): {sa['jurnal']} jurnal SALDO_AWAL")
+        print("      (piutang per Pelanggan, hutang per Supplier, Kas & Bank per akun, set global)")
+        print(f"      kas_bank_akun.saldo dinol-kan ({sa['kas_rows']} akun masih berisi saldo)")
+        print(f"      akun_perkiraan.saldo+tanggal dinol-kan ({sa['coa_rows']} akun piutang/hutang/kas-bank berisi saldo)")
     if args.reset_saldo_awal:
-        print("    - akun_perkiraan.saldo dinol-kan (--reset-saldo-awal)")
-    else:
-        print("    - snapshot saldo awal COA dipertahankan (jurnal SALDO_AWAL ikut terhapus)")
-    if args.reset_kas_saldo:
-        print("    - kas_bank_akun.saldo dinol-kan (--reset-kas-saldo)")
-    else:
-        print("    - snapshot saldo kas/bank dipertahankan")
+        print("    - SEMUA akun_perkiraan.saldo + tanggal dinol-kan (--reset-saldo-awal; termasuk akun lain)")
 
     # Akun subledger otomatis (update #14)
     if subledger and subledger.get("families"):
@@ -1161,6 +1345,17 @@ def main() -> int:
         print("        membersihkannya. Pilih salah satu.")
         return 2
 
+    # ---------- Validasi kombinasi flag (update #42) ----------
+    if args.keep_saldo_awal and args.reset_saldo_awal:
+        print("[ERROR] --keep-saldo-awal dan --reset-saldo-awal bertentangan:")
+        print("        yang pertama mempertahankan snapshot saldo awal, yang kedua")
+        print("        menol-kan SEMUA snapshot COA. Pilih salah satu.")
+        return 2
+
+    # Update #42 — saldo awal input (piutang/hutang/kas-bank) ikut dibersihkan
+    # secara default; --keep-saldo-awal mengembalikan perilaku lama.
+    zero_saldo_awal = not args.keep_saldo_awal
+
     # Override env SEBELUM import app.* (config di-cache dengan lru_cache)
     if args.db:
         os.environ["DATABASE_URL"] = args.db
@@ -1172,7 +1367,7 @@ def main() -> int:
     import importlib
     import pkgutil
 
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import bindparam, create_engine, text
     from app.config import get_settings
     from app.database import BaseModel
     import app.models as models_pkg  # noqa: F401
@@ -1283,6 +1478,14 @@ def main() -> int:
         print("    dipertahankan. Baris akun yang dihapus ikut masuk backup.")
         print(f"    {'--keep-akun-subledger':<34}pertahankan semua (perilaku lama)")
         print(f"    {'--clean-akun-yatim':<34}bersihkan akun yatim tanpa reset master")
+        print("\n  SALDO AWAL INPUT (update #42):")
+        print("    Reset kini juga menghapus saldo awal yang diinput — piutang")
+        print("    per Pelanggan, hutang per Supplier, Kas & Bank per akun, dan")
+        print("    set global: jurnal SALDO_AWAL selalu ikut terhapus (tabel")
+        print("    jurnal dikosongkan) + snapshot dinol-kan (kas_bank_akun.saldo")
+        print("    dan akun_perkiraan.saldo akun piutang/hutang/kas-bank).")
+        print(f"    {'--keep-saldo-awal':<34}pertahankan snapshot (perilaku lama)")
+        print(f"    {'--reset-saldo-awal':<34}nol-kan SEMUA snapshot COA + tanggal")
         return 0
 
     # ---------- Siapkan engine ----------
@@ -1324,6 +1527,12 @@ def main() -> int:
             # jurnal TIDAK dilakukan di sini — jurnal_detail pasti terhapus
             # di transaksi yang sama.
             subledger_plan = _subledger_plan(conn, metadata, keep, families)
+            # Rencana saldo awal input (update #42): piutang / hutang / kas &
+            # bank — jumlah jurnal SALDO_AWAL yang ikut terhapus + snapshot
+            # yang akan dinol-kan. Id akun dikumpulkan SEKARANG karena link
+            # pelanggan/supplier masih terbaca (sebelum --reset-master).
+            saldo_awal_ids = _saldo_awal_coa_ids(conn)
+            saldo_awal_plan = _saldo_awal_plan(conn, saldo_awal_ids)
     except Exception as exc:
         print(f"[ERROR] Tidak bisa connect ke database: {exc}")
         print(f"        Target: {masked_url}")
@@ -1334,7 +1543,8 @@ def main() -> int:
 
     _print_plan(args, masked_url, wipe, keep, wipe_counts, keep_counts, null_fks, sequences, delete_order,
                 master_tables=master_tables, master_auto=master_auto,
-                subledger=subledger_plan if families else None)
+                subledger=subledger_plan if families else None,
+                saldo_awal=saldo_awal_plan)
 
     if backup_targets and do_backup:
         nama_file = f"master-backup-{'-'.join(sorted(backup_targets))}-<waktu>.json"
@@ -1382,11 +1592,20 @@ def main() -> int:
     # ---------- Fase 2: eksekusi dalam SATU transaksi ----------
     subledger_deleted = 0
     subledger_kept_n = len(subledger_plan["keep"]) if families else 0
+    kas_saldo_n = 0
+    coa_saldo_n = 0
     try:
         with engine.connect() as conn:
             with conn.begin():
                 # Hitung ulang di dalam transaksi (nilai otoritatif)
                 keep_before = {t: _count(conn, t) for t in keep}
+
+                # 0. SALDO AWAL (update #42) — kumpulkan id akun target
+                #    SEBELUM penghapusan: link pelanggan/supplier di tabel
+                #    master hilang saat --reset-master menghapus barisnya.
+                #    Akun subledger yang ikut terhapus otomatis tidak akan
+                #    match UPDATE di langkah 4.5 (aman).
+                tx_saldo_ids = _saldo_awal_coa_ids(conn) if zero_saldo_awal else set()
 
                 # 1. NULL-kan FK dari tabel keep -> wipe (mode --keep-stok)
                 for t, c in null_fks:
@@ -1427,10 +1646,27 @@ def main() -> int:
                 # 4. Snapshot master hasil transaksi
                 if not args.keep_stok:
                     conn.execute(text("UPDATE barang SET stok = 0"))
+
+                # 4.5 SALDO AWAL INPUT (update #42) — piutang / hutang /
+                #     kas & bank. Jurnal SALDO_AWAL-nya sudah terhapus di
+                #     langkah 2 (tabel jurnal dikosongkan); bersihkan snapshot
+                #     yang tertinggal supaya halaman Kas/Bank & Akun Perkiraan
+                #     tidak menampilkan saldo awal lama tanpa jurnal pendukung.
+                if zero_saldo_awal or args.reset_kas_saldo:
+                    res = conn.execute(text("UPDATE kas_bank_akun SET saldo = 0 WHERE saldo <> 0"))
+                    kas_saldo_n = int(res.rowcount or 0)
+                if zero_saldo_awal and tx_saldo_ids:
+                    stmt = (
+                        text(
+                            'UPDATE "akun_perkiraan" SET saldo = 0, tanggal = NULL '
+                            "WHERE CAST(id AS TEXT) IN :ids AND (saldo <> 0 OR tanggal IS NOT NULL)"
+                        )
+                        .bindparams(bindparam("ids", expanding=True))
+                    )
+                    res = conn.execute(stmt, {"ids": sorted(tx_saldo_ids)})
+                    coa_saldo_n = int(res.rowcount or 0)
                 if args.reset_saldo_awal:
-                    conn.execute(text("UPDATE akun_perkiraan SET saldo = 0"))
-                if args.reset_kas_saldo:
-                    conn.execute(text("UPDATE kas_bank_akun SET saldo = 0"))
+                    conn.execute(text("UPDATE akun_perkiraan SET saldo = 0, tanggal = NULL"))
 
                 # 5. Verifikasi: tabel master TIDAK BOLEH berubah jumlah baris
                 #    (kecuali akun_perkiraan yang memang berkurang sebanyak
@@ -1478,6 +1714,16 @@ def main() -> int:
         print(f"  [OK] {subledger_deleted} akun subledger otomatis ('Piutang - '/'Hutang - ') dihapus")
         if subledger_kept_n:
             print(f"       {subledger_kept_n} akun kandidat dipertahankan (dipakai pihak lain / punya sub-akun)")
+
+    # Saldo awal input (update #42)
+    if zero_saldo_awal:
+        print(f"  [OK] Saldo awal input dihapus: {saldo_awal_plan['jurnal']} jurnal SALDO_AWAL + snapshot dinol-kan")
+        print(f"       kas_bank_akun.saldo: {kas_saldo_n} akun; akun_perkiraan.saldo piutang/hutang/kas-bank: {coa_saldo_n} akun")
+    elif args.keep_saldo_awal:
+        print(f"  [OK] Snapshot saldo awal DIPERTAHANKAN (--keep-saldo-awal);"
+              f" jurnal saldo awal terhapus: {saldo_awal_plan['jurnal']}")
+    if args.reset_saldo_awal:
+        print("  [OK] SEMUA akun_perkiraan.saldo + tanggal dinol-kan (--reset-saldo-awal)")
     if backup_path is not None:
         print(f"  [OK] Backup master pelanggan/supplier : {backup_path}")
         print("       Pulihkan kapan saja:")
@@ -1494,6 +1740,8 @@ def main() -> int:
     print("   - Login tetap pakai user & password yang sama (tidak berubah).")
     print("   - Nomor dokumen otomatis mulai dari -001 lagi.")
     print("   - Halaman Saldo Awal akan tampak 'belum di-set' — input ulang kapan saja.")
+    print("     Saldo awal piutang per Pelanggan, hutang per Supplier, dan saldo")
+    print("     awal Kas & Bank juga bersih (snapshot dinol-kan — update #42).")
     if master_tables:
         print("   - Master yang direset kini kosong — input ulang lewat menu Pengaturan")
         print("     (Kas/Bank Akun, Kategori Aset, Syarat Bayar, Biaya Tambahan tetap ada).")
