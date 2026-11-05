@@ -6,6 +6,31 @@ from functools import wraps
 from inspect import signature
 
 
+def _extract_primary_model(result):
+    """Ambil instance model ORM pertama dari hasil service (fix #042).
+
+    atomic_accounting_write sebelumnya mengasumsikan service selalu
+    mengembalikan SATU model (result.__tablename__) — padahal beberapa service
+    mengembalikan tuple, mis. create_po_draft_from_rop_items → (po, info).
+    Akses result.__tablename__ pada tuple memicu AttributeError → 500 pada
+    POST /pembelian/rop-item/po-draft. Helper ini berjalan rekursif untuk
+    tuple/list bersarang dan mengembalikan elemen model ORM pertama yang
+    punya id; bila hasil bukan model (None/dict/dll) → None (disimpan sebagai
+    '__none__' seperti sebelumnya).
+    """
+    if result is None:
+        return None
+    if isinstance(result, (tuple, list)):
+        for item in result:
+            found = _extract_primary_model(item)
+            if found is not None:
+                return found
+        return None
+    if hasattr(type(result), "__tablename__") and getattr(result, "id", None) is not None:
+        return result
+    return None
+
+
 def accounting_lock(db):
     """Serialize accounting writes with period closing, until outer commit."""
     if db.get_bind().dialect.name == 'postgresql':
@@ -113,9 +138,14 @@ def atomic_accounting_write(function):
                                  actor.id if actor else bound.arguments.get('user_id') or item.created_by)
             if idem:
                 from uuid import uuid4
+                # Fix #042: hasil service bisa berupa tuple/list (mis. PO draft
+                # dari ROP → (po, info)); ekstrak model utamanya sebelum disimpan
+                # ke IdempotentOperation — akses langsung result.__tablename__
+                # pada tuple memicu AttributeError → HTTP 500.
+                primary = _extract_primary_model(result)
                 db.add(IdempotentOperation(actor_id=idem[0], request_key=idem[1], fingerprint=idem[2],
-                                           result_type=result.__tablename__ if result is not None else '__none__',
-                                           result_id=result.id if result is not None else uuid4()))
+                                           result_type=type(primary).__tablename__ if primary is not None else '__none__',
+                                           result_id=primary.id if primary is not None else uuid4()))
             db.flush()
             original_commit()
             return result

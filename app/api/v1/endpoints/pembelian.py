@@ -188,7 +188,7 @@ def create_rop_item_po_draft(
       supaya bisa dikoreksi dulu di menu Pesanan — finalisasi lewat alur biasa.
     """
     try:
-        po, info = svc.create_po_draft_from_rop_items(
+        res = svc.create_po_draft_from_rop_items(
             db,
             item_ids=data_in.item_ids,
             supplier_id=data_in.supplier_id,
@@ -197,6 +197,13 @@ def create_rop_item_po_draft(
             created_by=current_user.id,
             keterangan=data_in.keterangan,
         )
+        # Fix #042: hasil service = tuple (po, info); replay Idempotency-Key
+        # (retry request gagal kirim) hanya mengembalikan model PO utama —
+        # unpack toleran supaya replay tetap valid tanpa 500.
+        if isinstance(res, tuple):
+            po, info = res
+        else:
+            po, info = res, {}
         return {
             "purchase_order": po,
             "skipped": info.get("skipped", []),

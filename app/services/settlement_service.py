@@ -293,7 +293,17 @@ def _normalize_bukti_potong(data: dict) -> tuple[Optional[str], Optional[str]]:
     return no_bukti, masa
 
 
-def prepare(db, jenis, pihak_id, tanggal, allocation_data):
+def prepare(db, jenis, pihak_id, tanggal, allocation_data, ar_lock_sisa: bool = True):
+    """Bangun baris alokasi invoice dari input user (guard nilai vs sisa).
+
+    === Update #042 — nominal penerimaan PELUNASAN PIUTANG TERKUNCI = sisa
+    tagihan (H): khusus jenis 'piutang' dengan ``ar_lock_sisa=True`` (jalur
+    pelunasan UI), nilai alokasi WAJIB sama dengan sisa_tagihan invoice
+    (toleransi 0.005) — selain itu ValueError dengan nominal sisa.
+    ``ar_lock_sisa=False`` dipakai validasi ulang penerimaan TERMIN SO
+    (#031/#036 — pembayaran termin boleh parsial, alur tidak diubah).
+    Jenis 'hutang'/pembayaran TIDAK diubah (tetap cukup ≤ sisa). ===
+    """
     model = invoice_model(jenis)
     party = db.get(Pelanggan if jenis == 'piutang' else Supplier, pihak_id)
     if party is None or party.status != 'AKTIF':
@@ -322,7 +332,17 @@ def prepare(db, jenis, pihak_id, tanggal, allocation_data):
         if local_day(tanggal) < local_day(obj.tanggal):
             raise ValueError('Tanggal pembayaran tidak boleh sebelum tanggal invoice')
         nilai = positive_money(data['nilai'])
-        if nilai > current[obj.id]['sisa_tagihan']:
+        sisa_now = current[obj.id]['sisa_tagihan']
+        if jenis == 'piutang' and ar_lock_sisa:
+            # === Update #042 — penerimaan pelunasan piutang nominal TERKUNCI:
+            # harus PERSIS sisa tagihan invoice (toleransi 0.005). ===
+            if abs(nilai - sisa_now) > Decimal('0.005'):
+                raise ValueError(
+                    f'Nominal penerimaan pelunasan piutang harus sama dengan sisa '
+                    f'tagihan {current[obj.id]["no_dokumen"]} sebesar {sisa_now} '
+                    f'(nominal dikirim {nilai})'
+                )
+        elif nilai > sisa_now:
             raise ValueError(f'Alokasi melebihi sisa tagihan {current[obj.id]["no_dokumen"]}')
         # Update cetak "Bayar Pemasok" — diskon pelunasan (hanya hutang/pembayaran)
         diskon = normalize_diskon(data.get('diskon'))
@@ -454,11 +474,19 @@ def validate_payment(db, payment):
         return  # Legacy/general cash documents remain supported, without invoice settlement.
     jenis = 'piutang' if isinstance(payment, PenerimaanKas) else 'hutang'
     party = payment.pelanggan_id if jenis == 'piutang' else payment.supplier_id
+    # === Update #042 — validasi ulang saat posting: nominal TERKUNCI = sisa
+    # tagihan HANYA untuk penerimaan pelunasan piutang biasa. Penerimaan
+    # TERMIN SO (#031/#036) boleh parsial (min(nominal termin, sisa piutang)
+    # — alokasi invoice-nya memang sebagian) → ar_lock_sisa=False supaya
+    # alur termin SO tidak berubah. ===
+    jenis_transaksi = (getattr(payment, 'jenis_transaksi', None) or '').upper()
+    ar_lock = jenis == 'piutang' and jenis_transaksi != 'TERMIN_SO'
     rows, expected = prepare(db, jenis, party, payment.tanggal,
                              [{'invoice_id': r.invoice_id, 'nilai': r.nilai, 'diskon': getattr(r, 'diskon', None),
                                'pph23': getattr(r, 'pph23', None),
                                'no_bukti_potong': getattr(r, 'no_bukti_potong', None),
-                               'masa_pajak': getattr(r, 'masa_pajak', None)} for r in payment.alokasi])
+                               'masa_pajak': getattr(r, 'masa_pajak', None)} for r in payment.alokasi],
+                             ar_lock_sisa=ar_lock)
     # Update #5 — rincian boleh berisi grup akun alokasi + 1 baris akun penalti;
     # total rincian harus = Σ alokasi + penalti = total_nilai.
     penalti = normalize_penalti(getattr(payment, 'penalti', None))

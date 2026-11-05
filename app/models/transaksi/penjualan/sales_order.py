@@ -37,10 +37,11 @@ class SalesOrder(BaseModel, BaseMixin):
     pelanggan_id = Column(UUID(as_uuid=True), ForeignKey("pelanggan.id"), nullable=False)
     alamat_pengiriman = Column(Text, nullable=True)
     diskon_global = Column(Numeric(5, 2), default=0, nullable=True)
-    ppn = Column(Numeric(5, 2), default=11, nullable=False)
+    # === Update #042 — PPN dihapus dari SO: pajak hanya dihitung/diterapkan di
+    #     INVOICE. Kolom `ppn` & `total_ppn` di-drop (grand total SO kini =
+    #     subtotal − diskon + biaya, tanpa PPN; migrasi cp0000000030). ===
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
     total_diskon = Column(Numeric(18, 2), default=0, nullable=False)
-    total_ppn = Column(Numeric(18, 2), default=0, nullable=False)
     total_biaya_tambahan = Column(Numeric(18, 2), default=0, nullable=False)
     grand_total = Column(Numeric(18, 2), default=0, nullable=False)
 

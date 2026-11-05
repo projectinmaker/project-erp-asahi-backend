@@ -135,7 +135,7 @@ def get_qty_invoiced_for_so_detail(
     sales_order_detail_id: UUID,
     exclude_invoice_detail_id: UUID | None = None,
 ) -> int:
-    """Hitung total qty yang sudah di-invoice untuk SalesOrderDetail tertentu.
+    """Hitung total QTY EFEKTIF yang sudah di-invoice untuk SalesOrderDetail.
 
     Dipakai endpoint sisa SO (tarik data). Menggabungkan DUA jalur link
     SalesInvoiceDetail → SO detail (konsisten dengan arsitektur source-line
@@ -146,7 +146,16 @@ def get_qty_invoiced_for_so_detail(
 
     Satu baris invoice yang punya kedua link hanya dihitung SEKALI (kondisi OR).
     Filter: hanya invoice berstatus DIPROSES / SELESAI.
+
+    === Update #042 — QTY EFEKTIF (I): invoice DP/Pelunasan parsial TIDAK
+    menghabiskan sisa qty baris. Nilai yang terfaktur dikonversi kembali
+    menjadi qty: tiap baris dihitung sebagai (sub_total / harga) bila
+    harga > 0 (distribusi DP membuat sub_total = porsi nilai, bukan gross);
+    fallback qty apa adanya bila harga = 0. Hasil dibulatkan ke bawah (int)
+    supaya sisa faktur tetap konservatif (tidak over-invoice). ===
     """
+    from decimal import Decimal
+
     delivery_detail_ids = [
         row.id
         for row in db.query(PengirimanBarangDetail.id).filter(
@@ -154,7 +163,7 @@ def get_qty_invoiced_for_so_detail(
         )
     ]
     query = (
-        db.query(func.coalesce(func.sum(SalesInvoiceDetail.qty), 0))
+        db.query(SalesInvoiceDetail.sub_total, SalesInvoiceDetail.harga, SalesInvoiceDetail.qty)
         .join(SalesInvoice, SalesInvoice.id == SalesInvoiceDetail.sales_invoice_id)
         .filter(
             or_(
@@ -166,7 +175,14 @@ def get_qty_invoiced_for_so_detail(
     )
     if exclude_invoice_detail_id is not None:
         query = query.filter(SalesInvoiceDetail.id != exclude_invoice_detail_id)
-    return int(query.scalar() or 0)
+    total = Decimal("0")
+    for sub_total, harga, qty in query.all():
+        harga_dec = Decimal(harga or 0)
+        if harga_dec > 0:
+            total += Decimal(sub_total or 0) / harga_dec
+        else:
+            total += Decimal(qty or 0)
+    return int(total)
 
 
 def get_qty_returned_so_far(

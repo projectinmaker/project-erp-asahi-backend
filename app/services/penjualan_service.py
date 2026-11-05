@@ -185,7 +185,6 @@ def create_sales_order(
     tanggal_pengiriman: Optional[datetime] = None,
     alamat_pengiriman: Optional[str] = None,
     diskon_global: Optional[Decimal] = Decimal("0"),
-    ppn: Decimal = Decimal("11"),
     keterangan: Optional[str] = None,
     auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
@@ -200,7 +199,9 @@ def create_sales_order(
 ) -> SalesOrder:
     """Buat SalesOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis
-    - Hitung sub_total, total_diskon, ppn, grand_total dari detail
+    - Hitung sub_total, total_diskon, grand_total dari detail
+      (Update #042: TANPA PPN — pajak hanya di invoice; grand total =
+      subtotal − diskon + biaya)
     - Order tidak melakukan posting jurnal; pencatatan dilakukan pada invoice.
 
     Update ASAHI (revisi SO): field ekspedisi/penjual dihapus; `customer_code`
@@ -289,24 +290,18 @@ def create_sales_order(
             harga = safe_decimal(d.get("harga"))
             qty = safe_int(d.get("qty"))
             diskon = safe_decimal(d.get("diskon"))
-            # === Update #041 — DP per baris: normalisasi (None/<=0 → None).
-            # Saat terisi, sub_total baris = dp — harga satuan & qty tetap
-            # utuh; refresh_totals (dipanggil di bawah) menghitung header
-            # mengikuti Σ dp. ===
-            dp_raw = d.get("dp")
-            dp_val = safe_decimal(dp_raw) if dp_raw is not None else None
-            d["dp"] = dp_val if (dp_val is not None and dp_val > 0) else None
             line_total = harga * qty
             diskon_nilai = line_total * diskon / Decimal("100")
             sub_total += line_total
             total_diskon += diskon_nilai
-            d["sub_total"] = d["dp"] if d["dp"] is not None else (line_total - diskon_nilai)  # Update sub_total per line
+            d["sub_total"] = line_total - diskon_nilai  # Update sub_total per line
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        # Sales Order belum mendukung pilihan PPh23 (default PPN aktif).
-        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
-            sub_total, total_diskon, ppn, total_biaya_tambahan
-        )
+        # === Update #042 — SO TANPA PPN: pajak hanya dihitung/diterapkan di
+        # INVOICE. Grand total SO = subtotal − diskon + biaya (tanpa PPN).
+        # Nilai awal ini hanya placeholder — refresh_totals (dibawah)
+        # menghitung ulang dengan diskon global. ===
+        grand_total = sub_total - total_diskon + total_biaya_tambahan
 
         # Generate nomor pesanan
         # Update ASAHI: format baru "SO ASI/YYYY/NNN" — reset tahunan,
@@ -333,10 +328,8 @@ def create_sales_order(
             tanggal_pengiriman=tanggal_pengiriman,
             alamat_pengiriman=alamat_pengiriman,
             diskon_global=diskon_global,
-            ppn=ppn,
             sub_total=sub_total,
             total_diskon=total_diskon,
-            total_ppn=total_ppn,
             total_biaya_tambahan=total_biaya_tambahan,
             grand_total=grand_total,
             auto_post_jurnal=False,
@@ -365,8 +358,6 @@ def create_sales_order(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
-                # Update #041 — DP per baris (sub_total = dp saat terisi).
-                dp=d.get("dp"),
                 # Update #7 (B-05): persist satuan per baris (schema Phase B sudah
                 # punya field; sebelumnya diabaikan → kolom DB selalu NULL dan FE
                 # menampilkan dialog warning "satuan belum tersimpan").
@@ -379,8 +370,9 @@ def create_sales_order(
 
         # Fix diskon global (temuan minor): total SO sebelumnya mengabaikan
         # diskon_global — field hanya tersimpan tanpa memengaruhi total.
-        # refresh_totals menghitung ulang sub_total/total_diskon/total_ppn/
-        # grand_total dengan diskon baris + diskon global (konsisten invoice).
+        # refresh_totals menghitung ulang sub_total/total_diskon/
+        # grand_total dengan diskon baris + diskon global (Update #042:
+        # TANPA PPN — pajak hanya di invoice).
         # flush dulu supaya relationship .details terisi dari pending inserts
         # (pola yang sama dengan create_sales_invoice).
         from app.services.document_totals import refresh_totals
@@ -856,7 +848,6 @@ def update_sales_order(
     tanggal_pengiriman: Optional[datetime] = None,
     alamat_pengiriman: Optional[str] = None,
     diskon_global: Optional[Decimal] = None,
-    ppn: Optional[Decimal] = None,
     keterangan: Optional[str] = None,
     auto_post_jurnal: Optional[bool] = None,
 ) -> SalesOrder:
@@ -864,10 +855,23 @@ def update_sales_order(
 
     Update ASAHI (revisi SO): ekspedisi/penjual dihapus; customer_code tidak
     dapat diubah — bagian dari nomor dokumen (immutable setelah create).
+
+    Update #042 — PPN dihapus dari SO (param ppn dihapus; kolom model di-drop);
+    SO TERKUNCI setelah ada invoice (guard bawah).
     """
     require_unposted(db_obj)
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Sales Order dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    # === Update #042 — SO TERKUNCI setelah ada invoice: revisi nilai pesanan
+    # tidak boleh dilakukan bila sudah dibuatkan invoice (status apapun,
+    # termasuk DIBATALKAN — jejak tagihan harus konsisten). Batalkan invoice
+    # (jalur cancel yang kini cascade) bila perlu revisi SO. ===
+    if db.query(SalesInvoice.id).filter(SalesInvoice.sales_order_id == db_obj.id).first() is not None:
+        raise ValueError(
+            "SO sudah memiliki invoice — terkunci (Update #042); "
+            "batalkan invoice bila perlu revisi"
+        )
 
     if tanggal is not None:
         db_obj.tanggal = tanggal
@@ -881,16 +885,14 @@ def update_sales_order(
         db_obj.alamat_pengiriman = alamat_pengiriman
     if diskon_global is not None:
         db_obj.diskon_global = diskon_global
-    if ppn is not None:
-        db_obj.ppn = ppn
     if keterangan is not None:
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
 
-    # Fix diskon global: hitung ulang total bila diskon_global/ppn diubah —
+    # Fix diskon global: hitung ulang total bila diskon_global diubah —
     # sebelumnya total lama (stale) tetap tersimpan meski persen berubah.
-    if diskon_global is not None or ppn is not None:
+    if diskon_global is not None:
         from app.services.document_totals import refresh_totals
         refresh_totals(db_obj)
 
@@ -918,6 +920,40 @@ def cancel_sales_order(db: Session, db_obj: SalesOrder, user_id: Optional[UUID] 
 # ==========================================
 # SALES INVOICE
 # ==========================================
+
+# === Update #042 — DP/Pelunasan & sisa tagihan NILAI SO ===
+def _invoice_billed(inv: SalesInvoice) -> Decimal:
+    """Nilai-tagih invoice terhadap SO (#042): dp_pelunasan bila > 0,
+    selain itu sub_total (kompatibilitas invoice lama tanpa dp_pelunasan,
+    termasuk invoice #041 yang sub_total-nya sudah Σ dp per baris)."""
+    dp = safe_decimal(getattr(inv, "dp_pelunasan", 0) or 0)
+    if dp > 0:
+        return dp
+    return safe_decimal(getattr(inv, "sub_total", 0) or 0)
+
+
+def _so_sisa_nilai(
+    db: Session, so_id: UUID, exclude_invoice_id: Optional[UUID] = None
+) -> Decimal:
+    """Sisa tagihan NILAI SO (#042) = max(0, SO.grand_total − Σ nilai-tagih
+    invoice non-DIBATALKAN milik SO).
+
+    Dipakai: guard create/update invoice (D — Σ nilai-tagih ≤ grand total SO),
+    default dp_pelunasan (C), keterangan otomatis (E), endpoint
+    /sales-order/{id}/sisa (J — field sisa_nilai), dan property ORM
+    SalesInvoice.so_sisa_nilai (response soSisaNilai).
+    """
+    so = db.get(SalesOrder, so_id)
+    grand_total = safe_decimal(getattr(so, "grand_total", 0) or 0) if so is not None else Decimal("0")
+    query = db.query(SalesInvoice).filter(
+        SalesInvoice.sales_order_id == so_id,
+        SalesInvoice.status != StatusPenjualan.DIBATALKAN,
+    )
+    if exclude_invoice_id is not None:
+        query = query.filter(SalesInvoice.id != exclude_invoice_id)
+    billed = sum((_invoice_billed(inv) for inv in query.all()), Decimal("0"))
+    return max(Decimal("0"), grand_total - billed)
+
 
 def get_sales_invoice_list(
     db: Session,
@@ -1000,9 +1036,24 @@ def create_sales_invoice(
     auto_post_jurnal: bool = False,
     created_by: Optional[UUID] = None,
     tanggal_jatuh_tempo=None,
+    # === Update #042 — DP/Pelunasan (field header): "nilai yang ditagih
+    # invoice ini". Ter-link SO: None = auto-isi sisa tagihan SO; WAJIB > 0
+    # dan ≤ sisa. Standalone: None/0 = perilaku lama; bila diisi harus
+    # 0 < x ≤ Σ gross baris (harga × qty). > 0 → refresh_totals
+    # mendistribusikan proporsional ke baris. ===
+    dp_pelunasan: Optional[Decimal] = None,
 ) -> SalesInvoice:
-    """Buat SalesInvoice baru beserta detail + biaya tambahan."""
+    """Buat SalesInvoice baru beserta detail + biaya tambahan.
+
+    Update #042 — DP/Pelunasan header (dp_pelunasan):
+    - Invoice ter-link SO: nilai yang ditagih = dp_pelunasan (default sisa
+      tagihan SO bila tidak dikirim); guard Σ nilai-tagih invoice SO ≤
+      grand_total SO (D); keterangan otomatis "DP atas SO …" / "Pelunasan
+      atas SO … — LUNAS" (E); baris didistribusikan proporsional (C).
+    - Standalone tanpa SO: dp_pelunasan 0/None → perilaku lama.
+    """
     try:
+        order = None
         if sales_order_id:
             order = db.get(SalesOrder, sales_order_id)
             if order is None or order.pelanggan_id != pelanggan_id:
@@ -1044,16 +1095,11 @@ def create_sales_invoice(
             harga = safe_decimal(d.get("harga"))
             qty = safe_int(d.get("qty"))
             diskon = safe_decimal(d.get("diskon"))
-            # === Update #041 — DP per baris invoice (tarikan baris SO ber-DP /
-            # isi manual): terisi → sub_total baris = dp. ===
-            dp_raw = d.get("dp")
-            dp_val = safe_decimal(dp_raw) if dp_raw is not None else None
-            d["dp"] = dp_val if (dp_val is not None and dp_val > 0) else None
             line_total = harga * qty
             diskon_nilai = line_total * diskon / Decimal("100")
             sub_total += line_total
             total_diskon += diskon_nilai
-            d["sub_total"] = d["dp"] if d["dp"] is not None else (line_total - diskon_nilai)
+            d["sub_total"] = line_total - diskon_nilai
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
         total_ppn, total_pph23, grand_total = _hitung_grand_total(
@@ -1062,6 +1108,53 @@ def create_sales_invoice(
             pph23_pct=pph23,
             pph23_applicable=pph23_applicable,
         )
+
+        # ==============================================================
+        # === Update #042 — resolusi & validasi dp_pelunasan (C)/(D)/(E) ===
+        # ==============================================================
+        dp_final = Decimal("0")
+        if order is not None:
+            # Invoice ter-link SO: WAJIB > 0 dan ≤ sisa tagihan SO; default
+            # (tidak dikirim / None) = sisa SO (auto-terisi). Guard (D):
+            # Σ nilai-tagih invoice SO tidak boleh melebihi grand_total SO.
+            sisa_sebelum = _so_sisa_nilai(db, order.id)
+            if dp_pelunasan is None or safe_decimal(dp_pelunasan) <= 0:
+                dp_final = sisa_sebelum
+            else:
+                dp_final = safe_decimal(dp_pelunasan)
+            if dp_final <= 0:
+                raise ValueError(
+                    "Nilai DP/Pelunasan invoice wajib lebih dari 0 — sisa tagihan "
+                    f"SO {order.no_pesanan} sudah habis (sisa {sisa_sebelum})"
+                )
+            if dp_final > sisa_sebelum + Decimal("0.005"):
+                raise ValueError(
+                    f"Nilai DP/Pelunasan ({dp_final}) melebihi sisa tagihan SO "
+                    f"{order.no_pesanan} (sisa {sisa_sebelum})"
+                )
+            # Keterangan otomatis (E): sisa_SO_sebelum − dp_pelunasan ≤ 0.005
+            # → "Pelunasan atas SO … — LUNAS"; selain itu → "DP atas SO …".
+            # Keterangan user (bila diisi) ditambahkan di belakang.
+            if (sisa_sebelum - dp_final) <= Decimal("0.005"):
+                auto_ket = f"Pelunasan atas SO {order.no_pesanan} — LUNAS"
+            else:
+                auto_ket = f"DP atas SO {order.no_pesanan}"
+            keterangan = (
+                f"{auto_ket} — {keterangan}" if (keterangan or "").strip() else auto_ket
+            )
+        elif dp_pelunasan is not None and safe_decimal(dp_pelunasan) > 0:
+            # Standalone (tanpa SO): boleh 0/None (perilaku lama); bila diisi
+            # harus 0 < x ≤ Σ gross baris (harga × qty).
+            dp_final = safe_decimal(dp_pelunasan)
+            gross_total = sum(
+                (safe_decimal(d.get("harga")) * safe_int(d.get("qty")) for d in details_data),
+                Decimal("0"),
+            )
+            if dp_final > gross_total + Decimal("0.005"):
+                raise ValueError(
+                    f"Nilai DP/Pelunasan ({dp_final}) melebihi total nilai baris "
+                    f"invoice ({gross_total})"
+                )
 
         # Generate nomor invoice
         # Update ASAHI: pola penomoran seragam "INV ASI/YYYY/NNN" (reset tahunan).
@@ -1096,6 +1189,9 @@ def create_sales_invoice(
             total_ppn=total_ppn,
             total_biaya_tambahan=total_biaya_tambahan,
             grand_total=grand_total,
+            # === Update #042 — DP/Pelunasan header: nilai yang ditagih
+            # invoice ini (0 = tagih penuh, perilaku lama). ===
+            dp_pelunasan=dp_final,
             auto_post_jurnal=auto_post_jurnal,
             status=StatusPenjualan.DRAFT,
             keterangan=keterangan,
@@ -1117,8 +1213,9 @@ def create_sales_invoice(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d["sub_total"])),
-                # Update #041 — DP per baris invoice (sub_total = dp saat terisi).
-                dp=d.get("dp"),
+                # === Update #042 — dp per-baris dihapus: porsi DP/Pelunasan
+                # baris dihitung refresh_totals (distribusi proporsional
+                # dp_pelunasan) setelah flush di bawah. ===
                 # === Phase 4 — source-line trace (Roadmap §14) ===
                 sales_order_detail_id=d.get("sales_order_detail_id"),
                 delivery_detail_id=d.get("delivery_detail_id"),
@@ -1171,11 +1268,53 @@ def update_sales_invoice(
     auto_post_jurnal: Optional[bool] = None,
     tanggal_jatuh_tempo=None,
     details: Optional[list] = None,
+    # === Update #042 — DP/Pelunasan opsional saat update: bila dikirim →
+    # divalidasi ulang terhadap sisa tagihan SO (invoice ini dikecualikan);
+    # None = pertahankan nilai tersimpan. ===
+    dp_pelunasan: Optional[Decimal] = None,
 ) -> SalesInvoice:
-    """Update data sales invoice (field header + opsional replace detail)."""
+    """Update data sales invoice (field header + opsional replace detail).
+
+    Update #042 — dp_pelunasan: bila dikirim, divalidasi ulang terhadap sisa
+    tagihan SO (invoice ini dikecualikan dari Σ nilai-tagih) / Σ gross baris
+    untuk invoice standalone.
+    """
     require_unposted(db_obj)
     if db_obj.status in (StatusPenjualan.SELESAI, StatusPenjualan.DIBATALKAN):
         raise ValueError(f"Sales Invoice dengan status {db_obj.status.value} tidak bisa diupdate")
+
+    # === Update #042 — validasi ulang dp_pelunasan bila dikirim ===
+    if dp_pelunasan is not None:
+        dp_val = safe_decimal(dp_pelunasan)
+        # SO efektif SETELAH request ini (sales_order_id bisa ikut diganti
+        # dalam payload yang sama).
+        so_id_eff = sales_order_id if sales_order_id is not None else db_obj.sales_order_id
+        if so_id_eff is not None:
+            sisa_lain = _so_sisa_nilai(db, so_id_eff, exclude_invoice_id=db_obj.id)
+            so_src = db.get(SalesOrder, so_id_eff)
+            if dp_val <= 0:
+                raise ValueError("Nilai DP/Pelunasan invoice wajib lebih dari 0")
+            if dp_val > sisa_lain + Decimal("0.005"):
+                no_so = getattr(so_src, "no_pesanan", "-")
+                raise ValueError(
+                    f"Nilai DP/Pelunasan ({dp_val}) melebihi sisa tagihan SO {no_so} "
+                    f"di luar invoice ini (sisa {sisa_lain})"
+                )
+        elif dp_val > 0:
+            # Standalone: bila diisi harus 0 < x ≤ Σ gross baris (detail baru
+            # bila replace, selain itu detail tersimpan).
+            rows = details if details is not None else [
+                {"harga": d.harga, "qty": d.qty} for d in (db_obj.details or [])
+            ]
+            gross_total = sum(
+                (safe_decimal(r.get("harga")) * safe_int(r.get("qty")) for r in rows),
+                Decimal("0"),
+            )
+            if dp_val > gross_total + Decimal("0.005"):
+                raise ValueError(
+                    f"Nilai DP/Pelunasan ({dp_val}) melebihi total nilai baris "
+                    f"invoice ({gross_total})"
+                )
 
     if tanggal is not None:
         db_obj.tanggal = tanggal
@@ -1208,6 +1347,10 @@ def update_sales_invoice(
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
         db_obj.auto_post_jurnal = auto_post_jurnal
+    # === Update #042 — simpan dp_pelunasan (None = pertahankan nilai
+    # tersimpan; sudah tervalidasi ulang di atas). ===
+    if dp_pelunasan is not None:
+        db_obj.dp_pelunasan = safe_decimal(dp_pelunasan)
 
     # Update #3 — penggantian baris detail (persist link source-line
     # sales_order_detail_id / delivery_detail_id) saat invoice masih draft.
@@ -1235,12 +1378,9 @@ def update_sales_invoice(
                 qty=int(d["qty"]),
                 diskon=safe_decimal(d.get("diskon")),
                 sub_total=Decimal(str(d.get("sub_total", 0))),
-                # Update #041 — DP per baris invoice (round-trip saat edit draft).
-                dp=(
-                    safe_decimal(d.get("dp"))
-                    if d.get("dp") is not None and safe_decimal(d.get("dp")) > 0
-                    else None
-                ),
+                # === Update #042 — dp per-baris DIHAPUS; porsi DP/Pelunasan
+                # dihitung ulang refresh_totals di bawah (distribusi
+                # proporsional dp_pelunasan header). ===
                 sales_order_detail_id=d.get("sales_order_detail_id"),
                 delivery_detail_id=d.get("delivery_detail_id"),
             ))
@@ -1998,16 +2138,17 @@ def post_sales_invoice(db: Session, inv, created_by):
     default_rev_id = get_akun_id_or_raise(db, KEY_PENDAPATAN_PENJUALAN, context=no_invoice)
     revenue_by_akun: dict = {}
     line_discount_total = Decimal("0")
+    # === Update #042 — mode DP/Pelunasan (dp_pelunasan > 0): selisih gross vs
+    # sub_total baris adalah porsi DP (nilai yang BELUM ditagih tahap ini —
+    # BUKAN diskon) → tidak menyumbang line_discount_total. Mode ini
+    # total_diskon = 0 (diskon baris/global diabaikan) sehingga global_diskon
+    # tetap 0 dan pendapatan K = Σ sub_total baris = dp_pelunasan (jurnal
+    # balance: D Piutang = grand_total = dp + PPN + biaya − PPh23). ===
+    dp_mode = safe_decimal(getattr(inv, "dp_pelunasan", 0) or 0) > 0
     for d in inv.details:
         gross = safe_decimal(d.harga) * safe_int(d.qty)
         d_net = safe_decimal(d.sub_total)
-        # === Update #041 — baris DP: selisih gross vs sub_total adalah DP
-        # (nilai yang belum ditagih tahap ini — BUKAN diskon). Hanya baris
-        # biasa yang menyumbang line_discount_total, supaya global_diskon
-        # (= total_diskon − diskon baris) tetap akurat dan jurnal balance:
-        # pendapatan K = Σ sub_total baris − diskon global = dasar pajak. ===
-        dp_val = d.dp if getattr(d, "dp", None) is not None else None
-        if not (dp_val is not None and safe_decimal(dp_val) > 0):
+        if not dp_mode:
             line_discount_total += (gross - d_net)
         akun_rev = None
         if d.barang is not None:

@@ -158,6 +158,112 @@ def _reverse_stock(db: Session, obj, user_id: UUID, reason: str, mutasi_list: li
         )
 
 
+# ==========================================
+# === Update #042 — CASCADE pembatalan invoice → SO sumber + sibling (G) ===
+# ==========================================
+def _cascade_cancel_sales_invoice_so(
+    db: Session,
+    invoice_id: UUID,
+    invoice_number: str,
+    so_id: UUID,
+    user,
+    reason: Optional[str],
+):
+    """Cascade pembatalan invoice: SO sumber ikut DIBATALKAN + invoice lain
+    milik SO yang BELUM BAYAR ikut dibatalkan.
+
+    Dipanggil dari _cancel_document_tx SETELAH dokumen utama (invoice) selesai
+    dibatalkan/dihapus:
+    1. SO sumber dibatalkan DULU (urutan penting — lihat bawah) + workflow
+       event 'cancel' + baris audit DocumentCancellation mode REVERSAL
+       (reversal list kosong: SO memang tidak pernah posting jurnal).
+    2. Invoice lain (sibling) milik SO yang belum bayar — tanpa
+       PaymentAllocation dan tanpa retur — dibatalkan satu per satu dengan
+       mengulangi proses pembatalan (reversal jurnal masing-masing); yang
+       sudah bayar/ber-retur DIBIARKAN; yang sudah DIBATALKAN dilewati.
+
+    Idempotent & anti-loop: SO yang sudah DIBATALKAN → cascade dihentikan
+    (invoice dibatalkan dari SO yang sudah batal tidak memicu apa pun);
+    SO di-set DIBATALKAN DULU sebelum sibling diproses supaya cascade dari
+    jalur sibling tidak memicu ulang (guard pertama langsung return).
+    Panggilan rekursif _cancel_document_tx aman karena depth-guard dekorator
+    atomic_accounting_write (db.info['accounting_depth']) — fungsi mentah
+    dijalankan tanpa commit di tengah transaksi.
+    """
+    so = db.get(SalesOrder, so_id)
+    if so is None:
+        return None
+    if _status_value(so) in ('BATAL', 'DIBATALKAN'):
+        # Guard idempotent/anti-loop: cascade hanya berjalan bila SO belum
+        # dibatalkan (cascade sibling tidak memicu ulang jalur ini).
+        return None
+
+    cascade_reason = f'Cascade pembatalan invoice {invoice_number}'
+    if reason and str(reason).strip():
+        cascade_reason += f': {reason}'
+
+    # 1. SO sumber → DIBATALKAN + workflow event + audit row.
+    batal = _status_batal_value(so)
+    so.status = batal
+    wf = find_workflow(db, so)
+    if wf is None:
+        wf = DocumentWorkflow(
+            document_type='sales_order', document_id=so.id,
+            state='CANCELLED', version=0,
+        )
+        db.add(wf)
+        db.flush()
+    append_event(db, wf, 'cancel', 'CANCELLED', user.id, cascade_reason)
+    db.add(DocumentCancellation(
+        document_type='sales_order',
+        document_id=so.id,
+        document_number=document_number(so),
+        document_date=so.tanggal,
+        document_status=str(getattr(batal, 'value', batal)),
+        total_amount=_total_amount(so),
+        reason=cascade_reason,
+        mode='REVERSAL',
+        # SO tidak pernah posting jurnal → daftar jurnal pembalik kosong.
+        reversal_jurnal_ids=[],
+        cancelled_by=user.id,
+        cancelled_at=datetime.now(timezone.utc),
+    ))
+    db.flush()
+
+    # 2. Sibling invoice milik SO yang BELUM BAYAR (tanpa PaymentAllocation &
+    #    tanpa retur — retur apapun statusnya dihitung, konsisten dengan
+    #    _guard_cancel/_apply_guards, supaya pembatalan sibling tidak
+    #    menabrak guard dan menggugurkan transaksi utama).
+    siblings = db.query(SalesInvoice).filter(
+        SalesInvoice.sales_order_id == so_id,
+        SalesInvoice.id != invoice_id,
+    ).all()
+    dibatalkan: list[str] = []
+    for sibling in siblings:
+        if _status_value(sibling) in ('BATAL', 'DIBATALKAN'):
+            continue
+        if db.query(PaymentAllocation.id).filter(
+            PaymentAllocation.sales_invoice_id == sibling.id
+        ).first():
+            continue  # sudah (pernah) dibayar → dibiarkan
+        if db.query(SalesRetur.id).filter(
+            SalesRetur.sales_invoice_id == sibling.id
+        ).first():
+            continue  # ber-retur → dibiarkan
+        # Ulangi proses pembatalan utk masing-masing sibling (guard +
+        # reversal jurnal + workflow event + audit row). SO sudah
+        # DIBATALKAN → cascade dari sibling langsung return (anti-loop).
+        _cancel_document_tx(db=db, db_obj=sibling, user=user, reason=cascade_reason)
+        dibatalkan.append(document_number(sibling))
+
+    logger.info(
+        f"Cascade pembatalan invoice {invoice_number}: SO {document_number(so)} "
+        f"dibatalkan + {len(dibatalkan)} sibling invoice dibatalkan "
+        f"({', '.join(dibatalkan) if dibatalkan else '-'})"
+    )
+    return so
+
+
 @atomic_accounting_write
 def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
     """Satu transaksi atomik: guards → cleanup → reversal → status BATAL.
@@ -173,6 +279,12 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
         raise ValueError('Dokumen sudah dibatalkan sebelumnya')
 
     _guard_cancel(db, document_type, db_obj)
+
+    # === Update #042 — data cascade invoice di-capture SEBELUM branch
+    # (objek invoice bisa ter-hard-delete di branch bawah; cascade SO
+    # dijalankan setelah dokumen utama selesai dibatalkan). ===
+    cascade_so_id = getattr(db_obj, 'sales_order_id', None) if document_type == 'sales_invoice' else None
+    cascade_inv_no = document_number(db_obj) if cascade_so_id is not None else None
 
     journals = _collect_journals(db, db_obj)
     mutasi = _collect_mutasi(db, db_obj) if document_type in _STOCK_KINDS else []
@@ -199,6 +311,13 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
         )
         db.add(row)
         db.flush()
+        # === Update #042 — cascade (G): SO sumber + sibling invoice belum
+        # bayar ikut dibatalkan (draft invoice dihapus → SO terkunci karena
+        # invoice-nya pun ikut dibatalkan supaya bisa dibuat ulang). ===
+        if cascade_so_id is not None:
+            _cascade_cancel_sales_invoice_so(
+                db, db_obj.id, cascade_inv_no, cascade_so_id, user, reason
+            )
         return row
 
     # === Branch REVERSAL (dokumen POSTED / sudah menggerakkan stok) ===
@@ -271,6 +390,14 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
         f"oleh {user.id}: {len(journals)} jurnal dibalik, {len(mutasi)} mutasi stok dibalik, "
         f"status → {getattr(batal, 'value', batal)}"
     )
+    # === Update #042 — cascade (G): SO sumber ikut DIBATALKAN + invoice lain
+    # milik SO yang belum bayar ikut dibatalkan (reversal jurnal masing2).
+    # Dijalankan SETELAH dokumen utama selesai dibatalkan; urutan internal
+    # (SO batal dulu → sibling) menjaga idempotensi & anti-loop. ===
+    if cascade_so_id is not None:
+        _cascade_cancel_sales_invoice_so(
+            db, db_obj.id, cascade_inv_no, cascade_so_id, user, reason
+        )
     return db_obj
 
 
@@ -288,7 +415,20 @@ def cancel_document(db: Session, document_type: str, document_id: UUID,
         raise HTTPException(404, 'Dokumen tidak ditemukan')
 
     number = document_number(obj)
+    # === Update #042 — capture SO sumber invoice SEBELUM transaksi (objek
+    # bisa ter-hard-delete) utk keterangan cascade di respons. ===
+    so_id_for_note = getattr(obj, 'sales_order_id', None) if document_type == 'sales_invoice' else None
     result = _cancel_document_tx(db=db, db_obj=obj, user=user, reason=reason)
+
+    # === Update #042 — keterangan cascade pembatalan invoice → SO (#G) ===
+    cascade_note = ''
+    if so_id_for_note is not None:
+        so_after = db.get(SalesOrder, so_id_for_note)
+        if so_after is not None and _status_value(so_after) in ('BATAL', 'DIBATALKAN'):
+            cascade_note = (
+                ' SO sumber ikut dibatalkan beserta invoice lain milik SO '
+                'yang belum dibayar (Update #042).'
+            )
 
     if isinstance(result, DocumentCancellation):
         # HARD DELETE — dokumen + jurnal (jika ada) terhapus permanen;
@@ -306,6 +446,7 @@ def cancel_document(db: Session, document_type: str, document_id: UUID,
             'message': (
                 f'Dokumen {number} dihapus permanen (tidak memiliki jurnal/stok). '
                 f'Histori snapshot tersimpan di log dokumen terhapus.'
+                f'{cascade_note}'
             ),
         }
 
@@ -330,6 +471,7 @@ def cancel_document(db: Session, document_type: str, document_id: UUID,
         'message': (
             f'Dokumen {number} dibatalkan — jurnal pembalik dibuat, status menjadi '
             f'{getattr(batal, "value", batal)}. Dokumen & jurnal asli tetap tersimpan (audit trail utuh).'
+            f'{cascade_note}'
         ),
     }
 

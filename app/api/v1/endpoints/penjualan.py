@@ -139,13 +139,14 @@ def create_sales_order(
             tanggal_pengiriman=data_in.tanggal_pengiriman,
             alamat_pengiriman=data_in.alamat_pengiriman,
             diskon_global=data_in.diskon_global,
-            ppn=data_in.ppn,
             keterangan=data_in.keterangan,
             auto_post_jurnal=False,
             created_by=current_user.id,
             customer_po_number=data_in.customer_po_number,
             customer_po_date=data_in.customer_po_date,
             currency=data_in.currency,
+            # === Update #042 — PPN dihapus dari SO (resolve/pass ppn dihapus;
+            # pajak hanya dihitung di INVOICE). ===
             # === Update #031 — Pembayaran Termin (baris nominal) ===
             pembayaran_termin=list(data_in.pembayaran_termin or []),
             # === Update #032 — link penawaran sumber ("Pilih Penawaran" di
@@ -184,14 +185,19 @@ def get_sales_order_sisa(
 
     - qtyTerkirim = SUM qty pengiriman berstatus DIPROSES/SELESAI untuk baris
       SO tersebut (mirror sales_validation.get_qty_delivered_so_far).
-    - qtyTerfaktur = SUM qty invoice berstatus DIPROSES/SELESAI lewat dua
+    - qtyTerfaktur = QTY EFEKTIF invoice berstatus DIPROSES/SELESAI lewat dua
       jalur link: sales_order_detail_id langsung ATAU delivery_detail_id dari
-      pengiriman baris SO tersebut.
+      pengiriman baris SO tersebut (Update #042 — Σ sub_total/harga bila
+      harga > 0, supaya invoice DP parsial tidak menghabiskan sisa qty).
     - sisaKirim = qtyPesanan - qtyTerkirim (min 0);
       sisaFaktur = qtyPesanan - qtyTerfaktur (min 0).
     - Update #032: baris ITEM BEBAS (barang_id None) ikut keluar dengan
       is_bebas=True — tidak bisa dikirim (UI pengiriman menyembunyikan)
       tapi bisa difakturkan (sisaFaktur dihitung normal via link detail).
+    - Update #042: sisaNilai = sisa tagihan NILAI SO = max(0, grand_total −
+      Σ nilai-tagih invoice non-DIBATALKAN; nilai-tagih = dp_pelunasan bila
+      > 0 selain itu sub_total) — patokan DP/Pelunasan invoice berikutnya.
+      Field dp per baris dihapus (DP/Pelunasan kini header invoice).
     """
     so = svc.get_sales_order_by_id(db, so_id)
     if not so:
@@ -219,10 +225,11 @@ def get_sales_order_sisa(
             "sisa_faktur": max(d.qty - qty_terfaktur, 0),
             "harga": float(d.harga or 0),
             "diskon": float(d.diskon or 0),
-            # === Update #041 — DP baris SO (ikut ditarik form invoice: baris
-            # invoice dp = dp baris SO ini, sub_total = dp). ===
-            "dp": float(d.dp) if d.dp is not None else None,
         })
+
+    # === Update #042 — sisa tagihan NILAI SO (J): default dp_pelunasan
+    # invoice berikutnya & guard Σ nilai-tagih ≤ grand_total SO. ===
+    sisa_nilai = svc._so_sisa_nilai(db, so_id)
 
     return {
         "sales_order_id": so.id,
@@ -230,6 +237,7 @@ def get_sales_order_sisa(
         "syarat_bayar_id": so.syarat_bayar_id,
         "no_pesanan": so.no_pesanan,
         "alamat_pengiriman": so.alamat_pengiriman,
+        "sisa_nilai": float(sisa_nilai),
         "details": details,
     }
 
@@ -413,6 +421,9 @@ def create_sales_invoice(
             keterangan=data_in.keterangan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
+            # === Update #042 — DP/Pelunasan header: nilai yang ditagih
+            # invoice ini (None = auto-isi sisa tagihan SO bila ter-link). ===
+            dp_pelunasan=data_in.dp_pelunasan,
         )
         # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
         workflow_service.direct_complete(db, current_user, 'sales_invoice', obj.id)
@@ -682,8 +693,7 @@ def get_pengiriman_sisa(
             "delivery_detail_id": d.id,
             "sales_order_detail_id": d.sales_order_detail_id,
             # === Update #041 — barang_id bisa None (baris DO ITEM BEBAS — SO
-            # manufaktur/jasa/custom); nama/satuan fallback ke item bebas.
-            # dp ditarik dari line SO asal bila ada. ===
+            # manufaktur/jasa/custom); nama/satuan fallback ke item bebas. ===
             "barang_id": d.barang_id,
             "item_nama": d.item_nama,
             "item_satuan": d.item_satuan,
@@ -696,7 +706,8 @@ def get_pengiriman_sisa(
             "sisa_faktur": max(d.qty - qty_terfaktur, 0),
             "harga": float(so_line.harga or 0) if so_line is not None else 0.0,
             "diskon": float(so_line.diskon or 0) if so_line is not None else 0.0,
-            "dp": float(so_line.dp) if (so_line is not None and so_line.dp is not None) else None,
+            # === Update #042 — dp baris SO dihapus (nilai tagih kini header
+            # dpPelunasan invoice; distribusi proporsional otomatis). ===
         })
 
     return {
@@ -999,7 +1010,8 @@ def create_penawaran(
             customer_code=data_in.customer_code,
             mata_uang=data_in.mata_uang,
             diskon_global=data_in.diskon_global,
-            ppn=data_in.ppn,
+            # === Update #042 — PPN dihapus dari Penawaran (resolve/pass ppn
+            # dihapus; pajak hanya dihitung di INVOICE). ===
             berlaku_hingga=data_in.berlaku_hingga,
             created_by=current_user.id,
             # === Update #031 — No Quotation: user hanya input bulan & tahun ===

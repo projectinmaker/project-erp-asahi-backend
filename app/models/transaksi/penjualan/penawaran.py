@@ -33,8 +33,8 @@ class Penawaran(BaseModel, BaseMixin):
     di daftar & cetakan); dokumen asal berubah jadi DIREVISI. Revisi dari
     revisi (Rev 2 SELESAI → Rev 3) berlanjut pada rantai yang sama.
 
-    Total (sub_total/total_diskon/total_ppn/total_biaya_tambahan/grand_total)
-    dihitung dengan pola yang sama dengan SalesOrder:
+    Total (sub_total/total_diskon/total_biaya_tambahan/grand_total) dihitung
+    dengan pola yang sama dengan SalesOrder (TANPA PPN sejak Update #042):
     lihat app.services.document_totals.refresh_totals (order_docs).
     `diskon_global` bersifat PERSEN (mirror SalesOrder.diskon_global).
     """
@@ -61,10 +61,11 @@ class Penawaran(BaseModel, BaseMixin):
     customer_code = Column(String(20), nullable=True)
     mata_uang = Column(String(10), nullable=False, default="IDR")
     diskon_global = Column(Numeric(18, 2), default=0, nullable=False)
-    ppn = Column(Numeric(5, 2), default=11, nullable=False)
+    # === Update #042 — PPN dihapus dari Penawaran (mirror SalesOrder): pajak
+    #     hanya dihitung/diterapkan di INVOICE. Kolom `ppn` & `total_ppn`
+    #     di-drop; grand total = subtotal − diskon + biaya (tanpa PPN). ===
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
     total_diskon = Column(Numeric(18, 2), default=0, nullable=False)
-    total_ppn = Column(Numeric(18, 2), default=0, nullable=False)
     total_biaya_tambahan = Column(Numeric(18, 2), default=0, nullable=False)
     grand_total = Column(Numeric(18, 2), default=0, nullable=False)
     status = Column(String(20), nullable=False, default="DRAFT")

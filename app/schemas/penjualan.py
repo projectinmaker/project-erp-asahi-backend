@@ -101,10 +101,9 @@ class SalesOrderDetailBase(BaseSchema):
     qty: int = 0
     diskon: Optional[Decimal] = Decimal("0")
     sub_total: Decimal = Decimal("0")
-    # === Update #041 — DP per baris: nominal uang muka yang ditagih untuk
-    # baris ini. Terisi (> 0) → sub_total baris = dp (harga & qty utuh).
-    # None/0 = baris biasa. ===
-    dp: Optional[Decimal] = None
+    # === Update #042 — field `dp` per-baris DIHAPUS: DP/Pelunasan kini satu
+    # nilai header invoice (dpPelunasan) yang didistribusikan proporsional
+    # otomatis oleh backend (baris SO selalu nilai penuh harga × qty). ===
     # Phase B — UOM on detail
     satuan_id: Optional[UUID] = None
 
@@ -134,9 +133,9 @@ class SalesOrderBase(BaseSchema):
     tanggal_pengiriman: Optional[datetime] = None  # label UI/cetak: "Target Pengiriman"
     alamat_pengiriman: Optional[str] = None
     diskon_global: Optional[Decimal] = Decimal("0")
-    # AUD-10: None = pakai tarif global (RATE_PPN), di-resolve endpoint
-    ppn: Optional[Decimal] = None
     keterangan: Optional[str] = None
+    # === Update #042 — PPN dihapus dari SO (pajak hanya di INVOICE): field
+    # ppn/total_ppn dihapus dari schema create/update/response. ===
     # Phase B — deprecated, SO tidak boleh posting jurnal
     auto_post_jurnal: bool = False
     # Phase B — new fields
@@ -169,8 +168,8 @@ class SalesOrderUpdate(BaseSchema):
     tanggal_pengiriman: Optional[datetime] = None
     alamat_pengiriman: Optional[str] = None
     diskon_global: Optional[Decimal] = None
-    ppn: Optional[Decimal] = None
     keterangan: Optional[str] = None
+    # === Update #042 — ppn dihapus dari update SO (kolom model di-drop). ===
     # Phase B — new fields
     customer_po_number: Optional[str] = None
     customer_po_date: Optional[date] = None
@@ -188,7 +187,9 @@ class SalesOrderResponse(SalesOrderBase):
     penawaran_revisi: Optional[int] = None
     sub_total: Decimal
     total_diskon: Decimal
-    total_ppn: Decimal
+    # === Update #042 — total_ppn dihapus: SO tidak lagi ber-PPN (PPN hanya
+    # di INVOICE); dasar_pajak (DPP) ikut dihapus karena tak bermakna tanpa
+    # PPN. Grand total = subtotal − diskon + biaya. ===
     total_biaya_tambahan: Decimal
     grand_total: Decimal
     status: str
@@ -208,12 +209,6 @@ class SalesOrderResponse(SalesOrderBase):
     details: List[SalesOrderDetailResponse] = []
     biaya_tambahan: List[TransaksiBiayaResponse] = []
 
-    @computed_field  # type: ignore[misc]
-    @property
-    def dasar_pajak(self) -> Decimal:
-        """DPP (Dasar Pengenaan Pajak) = sub_total - total_diskon."""
-        return self.sub_total - self.total_diskon
-
 
 # ==========================================
 # SALES INVOICE DETAIL
@@ -229,9 +224,9 @@ class SalesInvoiceDetailBase(BaseSchema):
     qty: int = 0
     diskon: Optional[Decimal] = Decimal("0")
     sub_total: Decimal = Decimal("0")
-    # === Update #041 — DP per baris invoice (tarikan baris SO ber-DP /
-    # isi manual). Terisi (> 0) → sub_total baris = dp. ===
-    dp: Optional[Decimal] = None
+    # === Update #042 — field `dp` per-baris invoice DIHAPUS: nilai yang
+    # ditagih dikendalikan header dpPelunasan (distribusi proporsional
+    # otomatis; sub_total baris = porsi dpPelunasan saat > 0). ===
     # === Phase 4 — Source-line trace (Roadmap §14) ===
     # Link baris invoice ke baris SO dan/atau baris pengiriman sumber
     # (dipakai fitur tarik-data + hitung sisa faktur per SO line).
@@ -274,6 +269,12 @@ class SalesInvoiceBase(BaseSchema):
     pph23: Optional[Decimal] = None
     keterangan: Optional[str] = None
     auto_post_jurnal: bool = False
+    # === Update #042 — DP/Pelunasan (field header): "nilai yang ditagih
+    # invoice ini". Invoice ter-link SO: None = auto-isi sisa tagihan SO
+    # (guard 0 < x ≤ sisa). Standalone: None/0 = perilaku lama; bila diisi
+    # harus 0 < x ≤ Σ gross baris (harga × qty). Saat > 0 baris invoice
+    # otomatis didistribusikan proporsional (sub_total baris = porsi). ===
+    dp_pelunasan: Optional[Decimal] = None
 
 
 class SalesInvoiceCreate(SalesInvoiceBase):
@@ -299,6 +300,10 @@ class SalesInvoiceUpdate(BaseSchema):
     pph23: Optional[Decimal] = None
     keterangan: Optional[str] = None
     auto_post_jurnal: Optional[bool] = None
+    # === Update #042 — DP/Pelunasan opsional saat update: bila dikirim
+    # → divalidasi ulang terhadap sisa tagihan SO (invoice ini dikecualikan);
+    # None = pertahankan nilai tersimpan. ===
+    dp_pelunasan: Optional[Decimal] = None
     # Update #3 — penggantian baris detail (termasuk link source-line
     # sales_order_detail_id / delivery_detail_id) saat invoice masih draft.
     details: list[SalesInvoiceDetailCreate] | None = None
@@ -329,6 +334,13 @@ class SalesInvoiceResponse(SalesInvoiceBase):
     # (dibaca dari @property SalesInvoice.no_surat_jalan; None bila invoice
     # dibuat langsung dari SO tanpa pengiriman).
     no_surat_jalan: str | None = None
+    # === Update #042 — DP/Pelunasan: nilai yang ditagih invoice ini
+    # (0 = invoice lama / tagih penuh). soSisaNilai = sisa tagihan NILAI SO
+    # SETELAH invoice ini (None bila standalone tanpa SO) — dihitung ORM
+    # property SalesInvoice.so_sisa_nilai (object_session; grand_total SO −
+    # Σ nilai-tagih invoice non-DIBATALKAN milik SO). ===
+    dp_pelunasan: Decimal = Decimal("0")
+    so_sisa_nilai: Optional[Decimal] = None
 
     @computed_field  # type: ignore[misc]
     @property
@@ -532,8 +544,8 @@ class SalesOrderSisaDetailResponse(BaseSchema):
     sisa_faktur: int
     harga: float
     diskon: float
-    # === Update #041 — DP baris SO (ikut ditarik form invoice). ===
-    dp: float | None = None
+    # === Update #042 — field `dp` per-baris DIHAPUS (DP/Pelunasan kini
+    # header invoice dpPelunasan; baris SO selalu nilai penuh). ===
 
 
 class SalesOrderSisaResponse(BaseSchema):
@@ -542,6 +554,11 @@ class SalesOrderSisaResponse(BaseSchema):
     syarat_bayar_id: UUID | None = None
     no_pesanan: str
     alamat_pengiriman: str | None = None
+    # === Update #042 — sisa tagihan NILAI SO = max(0, grand_total −
+    # Σ nilai-tagih invoice non-DIBATALKAN milik SO; nilai-tagih invoice =
+    # dp_pelunasan bila > 0, selain itu sub_total). Patokan DP/Pelunasan
+    # invoice berikutnya atas SO ini. ===
+    sisa_nilai: float = 0.0
     details: list[SalesOrderSisaDetailResponse] = []
 
 
@@ -562,7 +579,7 @@ class PengirimanSisaDetailResponse(BaseSchema):
     delivery_detail_id: UUID
     sales_order_detail_id: UUID | None = None
     # === Update #041 — barang_id OPSIONAL (baris DO item bebas — SO
-    # manufaktur/custom). dp ditarik dari line SO asal bila ada. ===
+    # manufaktur/custom). ===
     barang_id: UUID | None = None
     item_nama: str | None = None
     item_satuan: str | None = None
@@ -575,7 +592,8 @@ class PengirimanSisaDetailResponse(BaseSchema):
     sisa_faktur: int
     harga: float = 0
     diskon: float = 0
-    dp: float | None = None
+    # === Update #042 — field `dp` DIHAPUS (baris SO tidak lagi ber-DP;
+    # nilai tagih dikendalikan dpPelunasan header invoice). ===
 
 
 class PengirimanSisaResponse(BaseSchema):
@@ -649,8 +667,9 @@ class PenawaranBase(BaseSchema):
     customer_code: str | None = None
     mata_uang: str = "IDR"
     diskon_global: Decimal | None = Decimal("0")
-    # AUD-10: None = pakai tarif global (RATE_PPN), di-resolve endpoint
-    ppn: Optional[Decimal] = None
+    # === Update #042 — PPN dihapus dari Penawaran (mirror SO): field
+    # ppn/total_ppn dihapus dari schema create/update/response; pajak
+    # hanya dihitung di INVOICE. ===
 
 
 class PenawaranCreate(PenawaranBase):
@@ -674,7 +693,7 @@ class PenawaranUpdate(BaseSchema):
     customer_code: str | None = None
     mata_uang: str | None = None
     diskon_global: Decimal | None = None
-    ppn: Decimal | None = None
+    # === Update #042 — ppn dihapus dari update Penawaran (kolom di-drop). ===
     details: list[PenawaranDetailCreate] | None = None
     biaya_tambahan: list[TransaksiBiayaCreate] | None = None
 
@@ -696,7 +715,9 @@ class PenawaranResponse(PenawaranBase):
     so_list: list[PenawaranSoRingkas] = []
     sub_total: Decimal
     total_diskon: Decimal
-    total_ppn: Decimal
+    # === Update #042 — total_ppn dihapus: penawaran tidak lagi ber-PPN
+    # (mirror SO; PPN hanya di INVOICE). Grand total = subtotal − diskon +
+    # biaya. ===
     total_biaya_tambahan: Decimal
     grand_total: Decimal
     status: str

@@ -21,10 +21,11 @@ class SalesInvoiceDetail(BaseModel, BaseMixin):
     qty = Column(Integer, default=0, nullable=False)
     diskon = Column(Numeric(5, 2), default=0, nullable=True)
     sub_total = Column(Numeric(18, 2), default=0, nullable=False)
-    # === Update #041 — DP per baris invoice (tarikan dari baris SO ber-DP;
-    # bisa juga diisi manual). Saat terisi (> 0), sub_total baris = dp —
-    # qty & harga tetap nilai penuh, nilai yang ditagih = dp. ===
-    dp = Column(Numeric(18, 2), nullable=True)
+    # === Update #042 — kolom `dp` per-baris DI-DROP: nilai yang ditagih
+    #     invoice kini satu field header (sales_invoice.dp_pelunasan) yang
+    #     didistribusikan proporsional ke baris oleh refresh_totals; sub_total
+    #     baris = porsi dp_pelunasan proporsional thd gross baris. Migrasi
+    #     cp0000000030. ===
 
     # === NEW Phase 4 — Source-line trace (Roadmap §14: "Sales Invoice: sales_order_detail_id, delivery_detail_id") ===
     sales_order_detail_id = Column(

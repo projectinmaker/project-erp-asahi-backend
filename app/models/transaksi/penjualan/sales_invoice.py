@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from sqlalchemy import Date, Column, String, Text, Numeric, ForeignKey, Enum as SQLEnum, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -38,6 +40,16 @@ class SalesInvoice(BaseModel, BaseMixin):
     pph23 = Column(Numeric(5, 2), default=2, nullable=False, server_default="2")
     total_pph23 = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
 
+    # === Update #042 — DP/Pelunasan (field header, SATU nilai per invoice) ===
+    # "Nilai yang ditagih invoice ini": DP bertahap maupun pelunasan atas SO.
+    # > 0 → mode distribusi: baris sub_total = porsi dp_pelunasan proporsional
+    #   thd gross baris (harga × qty), Σ baris = dp_pelunasan persis; PPN/PPh23
+    #   dihitung atas base = dp_pelunasan; grand total = dp + PPN + biaya − PPh23.
+    # 0/NULL (invoice lama / standalone tanpa field) → perilaku LAMA (tagih
+    #   penuh subtotal per baris, tanpa distribusi). Invoice ter-link SO:
+    #   WAJIB > 0 dan ≤ sisa tagihan SO (guard create/update; default = sisa).
+    dp_pelunasan = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+
     # === Update #036 — DP termin SO yang diterapkan ke invoice ini ===
     # Diisi saat invoice diposting: total pembayaran termin SO sumber (aktif)
     # yang diaplikasikan ke Piutang invoice (jurnal: D akun lawan termin
@@ -75,3 +87,20 @@ class SalesInvoice(BaseModel, BaseMixin):
             if no and no not in seen:
                 seen.append(no)
         return ", ".join(seen) if seen else None
+
+    # === Update #042 — sisa tagihan NILAI SO SETELAH invoice ini (untuk
+    # SalesInvoiceResponse.soSisaNilai; None bila invoice standalone tanpa SO).
+    # Dihitung on-the-fly via penjualan_service._so_sisa_nilai (grand_total SO −
+    # Σ nilai-tagih invoice non-DIBATALKAN milik SO; nilai-tagih = dp_pelunasan
+    # bila > 0, selain itu sub_total). Akses Session lewat object_session(self)
+    # — pola computed ORM (schema computed_field tidak bisa memegang session). ===
+    @property
+    def so_sisa_nilai(self) -> Decimal | None:
+        if self.sales_order_id is None:
+            return None
+        from sqlalchemy.orm import object_session
+        db = object_session(self)
+        if db is None:
+            return None
+        from app.services.penjualan_service import _so_sisa_nilai
+        return _so_sisa_nilai(db, self.sales_order_id)

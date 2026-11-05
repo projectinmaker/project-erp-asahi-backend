@@ -309,7 +309,8 @@ def create_penawaran(
     keterangan: str | None = None,
     mata_uang: str = "IDR",
     diskon_global: Decimal | None = Decimal("0"),
-    ppn: Decimal = Decimal("11"),
+    # === Update #042 — PPN dihapus dari Penawaran (mirror SO): param ppn
+    # dihapus; grand total = subtotal − diskon + biaya (tanpa PPN). ===
     berlaku_hingga: date | None = None,
     customer_po_number: str | None = None,
     customer_code: str | None = None,
@@ -369,7 +370,6 @@ def create_penawaran(
             customer_code=customer_code,
             mata_uang=mata_uang,
             diskon_global=diskon_global,
-            ppn=ppn,
             status="DRAFT",
             created_by=created_by,
         )
@@ -446,7 +446,7 @@ def update_penawaran(
     customer_code: str | None = None,
     mata_uang: str | None = None,
     diskon_global: Decimal | None = None,
-    ppn: Decimal | None = None,
+    # === Update #042 — ppn dihapus (kolom model di-drop). ===
     details: list | None = None,
     biaya_tambahan: list | None = None,
 ) -> Penawaran:
@@ -492,8 +492,6 @@ def update_penawaran(
         db_obj.mata_uang = mata_uang
     if diskon_global is not None:
         db_obj.diskon_global = diskon_global
-    if ppn is not None:
-        db_obj.ppn = ppn
 
     # Replace detail (bila dikirim) — master / bebas + upsert katalog
     if details is not None:
@@ -556,7 +554,9 @@ def convert_to_so(db: Session, penawaran_id: UUID, user):
       final tanpa langkah approval untuk SEMUA user — bukan hanya admin).
     - Copy: tanggal = now, pelanggan, syarat_bayar, alamat_pengiriman,
       keterangan = "Dari Penawaran {no}" (+ keterangan lama), diskon_global,
-      ppn, details (harga/qty/diskon/satuan), biaya_tambahan.
+      details (harga/qty/diskon/satuan), biaya_tambahan.
+      Update #042 — PPN tidak lagi dibawa (SO & penawaran tanpa PPN; pajak
+      dihitung di invoice).
     - Update #032 — item BEBAS diteruskan ke SO SEBAGAI ITEM BEBAS
       (barang_id=None + item_nama/item_satuan — TIDAK dibuatkan di master
       barang; tidak menyentuh gudang. Bisa difakturkan, tidak bisa dikirim).
@@ -627,7 +627,6 @@ def convert_to_so(db: Session, penawaran_id: UUID, user):
         alamat_pengiriman=penawaran.alamat_pengiriman,
         keterangan=keterangan,
         diskon_global=penawaran.diskon_global,
-        ppn=penawaran.ppn,
         # Update ASAHI #003 — No. PO customer + singkatan dibawa ke SO
         # (Update #031: singkatan tetap snapshot master saat penawaran dibuat;
         # form penawaran tidak lagi punya field No. PO — nilai umumnya kosong).
@@ -709,10 +708,8 @@ def create_revisi(db: Session, penawaran_id: UUID, user) -> Penawaran:
         customer_code=penawaran.customer_code,
         mata_uang=penawaran.mata_uang,
         diskon_global=penawaran.diskon_global,
-        ppn=penawaran.ppn,
         sub_total=penawaran.sub_total,
         total_diskon=penawaran.total_diskon,
-        total_ppn=penawaran.total_ppn,
         total_biaya_tambahan=penawaran.total_biaya_tambahan,
         grand_total=penawaran.grand_total,
         status="DRAFT",
