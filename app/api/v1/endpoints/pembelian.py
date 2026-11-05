@@ -23,6 +23,9 @@ from app.schemas.pembelian import (
     LppbCreate, LppbUpdate, LppbResponse, LppbListResponse,
     # === Update #037 — Detail ROP (kolam belanja PIC Pembelian) ===
     RopItemBelanjaResponse, RopItemPoDraftCreate, RopPoDraftResponse,
+    # === Update #043 — Part Stok Menipis (restock PO draft) ===
+    PartStokMenipisItemResponse, PartStokMenipisPoDraftCreate,
+    PartStokMenipisPoDraftResponse,
 )
 from app.services import pembelian_service as svc
 from app.services import lppb_service as lppb_svc
@@ -110,8 +113,9 @@ def create_purchase_order(
             pic_gudang=data_in.pic_gudang,
             pic_gudang_telepon=data_in.pic_gudang_telepon,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -213,6 +217,85 @@ def create_rop_item_po_draft(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+# ==========================================
+# === Update #043 — PART STOK MENIPIS (restock) ===
+# Nama fungsi memuat 'part_stok_menipis' → prefix RBAC purchase.purchase_order
+# (view untuk GET, create untuk POST) — mirror pemetaan ROP #037 di
+# access_registry._ROUTER_PREFIXES, tanpa kode permission baru.
+# ==========================================
+
+@router.get("/part-stok-menipis", response_model=list[PartStokMenipisItemResponse])
+def get_part_stok_menipis_list(
+    need_purchase: bool = Query(False, description="True = hanya part dengan sisa kekurangan > 0"),
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar part master dengan stok di bawah minimum — menu Pembelian →
+    Part Stok Menipis (restock, Update #043).
+
+    Satu baris = satu barang master (AKTIF, stok_minimum > 0, stok <
+    stok_minimum). Per baris disertakan: stok, stok minimum, kekurangan,
+    sudah dibeli (Σ qty PO DRAFT/DIPROSES yang menaut barang — belum
+    diterima), sisa, status BELUM/SEBAGIAN/LENGKAP/STOK_CUKUP, serta nomor
+    PO aktif penyumbang (draftPoNos).
+    """
+    return svc.get_part_stok_menipis_list(
+        db,
+        need_purchase=need_purchase,
+        limit=limit,
+    )
+
+
+@router.post("/part-stok-menipis/po-draft", response_model=PartStokMenipisPoDraftResponse, status_code=status.HTTP_201_CREATED)
+def create_part_stok_menipis_po_draft(
+    data_in: PartStokMenipisPoDraftCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buat PO DRAFT restock dari seleksi part stok menipis (alur Part Stok
+    Menipis, Update #043).
+
+    - Part digelondongkan ke supplier yang dipilih; gudang tujuan
+      (master alamat pengiriman) OPSIONAL — kosong → kolom alamat pengiriman
+      PO dibiarkan kosong.
+    - Qty per baris otomatis dikunci ke sisa kekurangan saat ini (stok
+      minimum − stok − yang sudah masuk PO aktif lain) bila qty diminta
+      lebih besar; harga = harga pokok master (boleh 0, dilengkapi di draft).
+    - PO disimpan berstatus DRAFT (TIDAK auto-final) supaya bisa dikoreksi
+      dulu di menu Pesanan — finalisasi saat PO draft diedit & disimpan.
+    """
+    try:
+        res = svc.create_po_draft_from_stok_menipis(
+            db,
+            supplier_id=data_in.supplier_id,
+            gudang_id=data_in.gudang_id,
+            tanggal=data_in.tanggal,
+            catatan=data_in.catatan,
+            items=[i.model_dump() for i in data_in.items],
+            created_by=current_user.id,
+        )
+        # Fix #042 (mirror ROP): hasil service = tuple (po, info); replay
+        # Idempotency-Key hanya mengembalikan model PO utama — unpack toleran
+        # supaya replay tetap valid tanpa 500.
+        if isinstance(res, tuple):
+            po, info = res
+        else:
+            po, info = res, {}
+        skipped = info.get("skipped", []) or []
+        jumlah_item = int(info.get("jumlah_item") or 0)
+        pesan = (
+            f"{jumlah_item} part restock dibuat sebagai PO DRAFT "
+            f"— koreksi harga/detail di menu Pesanan sebelum finalisasi"
+        )
+        if skipped:
+            alasan = ", ".join(sorted({str(s.get("alasan") or "tidak perlu dibeli") for s in skipped}))
+            pesan += f"; {len(skipped)} item dilewati ({alasan})"
+        return {"po": po, "info": pesan}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
 @router.get("/purchase-order/{po_id}/sisa", response_model=PurchaseOrderSisaResponse)
 def get_purchase_order_sisa(
     po_id: UUID,
@@ -278,6 +361,13 @@ def update_purchase_order(
     baris barang termasuk relasi SO per baris & jenis pembelian — hanya
     untuk PO DRAFT yang belum ditaut penerimaan/invoice/retur; total
     dihitung ulang server setelah replace.
+
+    Update #043 — SETELAH update tersimpan, PO difinalisasi (force=True)
+    untuk SEMUA user: PO draft hasil ROP/restock "tetap DRAFT sampai diedit
+    & disimpan baru final" (keputusan user); PO terminal berhenti di
+    APPROVED seperti perilaku create (direct_complete idempotent terhadap
+    dokumen yang sudah bergerak). Gagal finalisasi → 400 dengan pesan
+    errornya — hasil update TIDAK ditelan, dokumen tetap tersimpan DRAFT.
     """
     item = svc.get_purchase_order_by_id(db, po_id)
     if not item:
@@ -285,7 +375,12 @@ def update_purchase_order(
 
     update_data = _service_kwargs(svc.update_purchase_order, data_in.model_dump(exclude_unset=True))
     try:
-        return svc.update_purchase_order(db, db_obj=item, **update_data)
+        obj = svc.update_purchase_order(db, db_obj=item, **update_data)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id, force=True)
+        db.refresh(obj)
+        return obj
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -365,8 +460,9 @@ def create_purchase_invoice(
             # ini diabaikan sehingga purchase_invoice.purchase_order_id selalu NULL.
             purchase_order_id=data_in.purchase_order_id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'purchase_invoice', obj.id)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'purchase_invoice', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -480,8 +576,9 @@ def create_purchase_retur(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'purchase_retur', obj.id)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'purchase_retur', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -591,8 +688,9 @@ def create_penerimaan(
             created_by=current_user.id,
             purchase_invoice_id=data_in.purchase_invoice_id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'penerimaan_barang', obj.id)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'penerimaan_barang', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:

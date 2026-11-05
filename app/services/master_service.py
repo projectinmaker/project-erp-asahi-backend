@@ -6,8 +6,23 @@ from sqlalchemy import or_, UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError
 
 from app.schemas.base import BaseSchema
+from app.utils.nomor_dokumen import generate_singkatan
 
 T = TypeVar('T', bound=object)
+
+
+def _auto_fill_singkatan(data: dict, table) -> None:
+    """Update #043 — auto-singkatan master Pelanggan/Supplier saat create.
+
+    Bila tabel punya kolom ``singkatan`` dan payload mengirim nilai kosong
+    (None / string kosong), isi otomatis dari nama (generate_singkatan).
+    Isian user selalu dipertahankan; model tanpa kolom singkatan diabaikan.
+    """
+    if "singkatan" not in table.c:
+        return
+    if data.get("singkatan") and str(data["singkatan"]).strip():
+        return
+    data["singkatan"] = generate_singkatan(data.get("nama") or "") or None
 
 def get_master_list(
     db: Session,
@@ -74,6 +89,8 @@ def create_master(
     """Create baru atau aktifkan kembali master NONAKTIF dengan kode/NIK sama."""
     data = schema_in.model_dump()
     table = Model.__table__
+    # Update #043 — singkatan kosong → auto-generate dari nama (pelanggan/supplier).
+    _auto_fill_singkatan(data, table)
     key = next((field for field in ("kode", "nik") if field in table.c and field in data), None)
     if table.name == 'barang' and 'stok' in table.c:
         from app.services.accounting_control import accounting_lock
@@ -142,6 +159,12 @@ def update_master(db: Session, db_obj: Any, schema_in: BaseSchema) -> Any:
     transaksi, akan reject dengan pesan jelas.
     """
     update_data = schema_in.model_dump(exclude_unset=True)
+    # Update #043 — singkatan dikirim tapi kosong → auto-generate dari nama final
+    # (nama baru di payload, fallback nama lama). Tidak dikirim → biarkan; diisi → pertahankan.
+    if "singkatan" in db_obj.__table__.c and "singkatan" in update_data \
+            and not (update_data["singkatan"] or "").strip():
+        nama_final = update_data.get("nama") or db_obj.nama or ""
+        update_data["singkatan"] = generate_singkatan(nama_final) or None
     # === Phase 2: Immutable code check ===
     if 'kode' in update_data and update_data['kode'] != db_obj.kode:
         from app.services.master_validation import validate_immutable_code

@@ -966,6 +966,7 @@ def create_pelanggan_from_coa(
     baru. TIDAK membuat COA baru — pakai coa_id yang dikirim frontend langsung.
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+    from app.utils.nomor_dokumen import generate_singkatan
 
     coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.coa_id).first()
     if not coa:
@@ -989,6 +990,8 @@ def create_pelanggan_from_coa(
     pelanggan = Pelanggan(
         kode=data_in.kode,
         nama=data_in.nama,
+        # Update #043 — singkatan kosong → auto dari nama (mirror create_master)
+        singkatan=generate_singkatan(data_in.nama) or None,
         alamat=data_in.alamat,
         telepon=data_in.telepon,
         email=data_in.email,
@@ -1575,6 +1578,7 @@ def create_supplier_from_coa(
     baru. TIDAK membuat COA baru — pakai coa_id yang dikirim frontend langsung.
     """
     from app.models.akun_perkiraan import AkunPerkiraan, TingkatAkun
+    from app.utils.nomor_dokumen import generate_singkatan
 
     coa = db.query(AkunPerkiraan).filter(AkunPerkiraan.id == data_in.coa_id).first()
     if not coa:
@@ -1598,6 +1602,8 @@ def create_supplier_from_coa(
     supplier = Supplier(
         kode=data_in.kode,
         nama=data_in.nama,
+        # Update #043 — singkatan kosong → auto dari nama (mirror create_master)
+        singkatan=generate_singkatan(data_in.nama) or None,
         alamat=data_in.alamat,
         telepon=data_in.telepon,
         email=data_in.email,

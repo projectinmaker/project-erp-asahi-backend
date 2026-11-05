@@ -304,6 +304,54 @@ class RopPoDraftResponse(BaseSchema):
 
 
 # ==========================================
+# === Update #043 — PART STOK MENIPIS (restock part di bawah stok minimum) ===
+# Daftar part master (AKTIF, stok_minimum > 0) dengan stok < stok_minimum.
+# "Sudah dibeli" = Σ qty baris PO aktif DRAFT/DIPROSES (belum diterima).
+# ==========================================
+class PartStokMenipisItemResponse(BaseSchema):
+    """Baris daftar menu Pembelian → Part Stok Menipis (restock)."""
+    barang_id: UUID
+    kode: Optional[str] = None
+    nama: str
+    satuan: Optional[str] = None
+    stok: int = 0
+    stok_minimum: int = 0
+    kekurangan: int = 0
+    sudah_dibeli: int = 0
+    sisa: int = 0
+    # BELUM / SEBAGIAN / LENGKAP / STOK_CUKUP (enum konsisten Detail ROP)
+    status: str
+    # Nomor PO aktif (DRAFT/DIPROSES) yang menaut barang ini
+    draft_po_nos: List[str] = []
+    in_draft_po: bool = False
+
+
+class PartStokMenipisPoDraftItem(BaseSchema):
+    """Satu part yang diminta untuk direstock (qty ≥ 1; server kunci ke sisa)."""
+    barang_id: UUID
+    qty: int = Field(ge=1)
+
+
+class PartStokMenipisPoDraftCreate(BaseSchema):
+    """Payload POST /pembelian/part-stok-menipis/po-draft — seleksi part →
+    supplier → PO DRAFT (bisa dikoreksi lagi di menu Pesanan)."""
+    supplier_id: UUID
+    # Gudang tujuan = id master ALAMAT_PENGIRIMAN (FE picker "Gudang" memuat
+    # /master/alamat-pengiriman). OPSIONAL — None → kolom alamat pengiriman
+    # PO dibiarkan kosong (berbeda dari form PO biasa yang mewajibkan).
+    gudang_id: Optional[UUID] = None
+    tanggal: Optional[datetime] = None
+    catatan: Optional[str] = None
+    items: List[PartStokMenipisPoDraftItem] = Field(min_length=1)
+
+
+class PartStokMenipisPoDraftResponse(BaseSchema):
+    """Hasil spawn PO draft restock dari seleksi part stok menipis."""
+    po: PurchaseOrderResponse
+    info: Optional[str] = None
+
+
+# ==========================================
 # PURCHASE INVOICE DETAIL
 # ==========================================
 class PurchaseInvoiceDetailBase(BaseSchema):

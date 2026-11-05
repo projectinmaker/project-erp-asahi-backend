@@ -18,6 +18,7 @@ diubah, nomor yang dihasilkan IDENTIK dengan perilaku lama.
 """
 
 from datetime import date
+import re
 
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,44 @@ def roman_month(bulan: int) -> str:
     if not isinstance(bulan, int) or bulan < 1 or bulan > 12:
         raise ValueError("Bulan harus angka 1-12")
     return ROMAN_MONTHS[bulan - 1]
+
+
+# === Update #043 — token generik yang dibuang saat membentuk singkatan ===
+# nama perusahaan otomatis (dipakai generate_singkatan). Token dibandingkan
+# dalam UPPERCASE setelah tokenisasi (titik/koma sudah dibuang splitter).
+SINGKATAN_TOKEN_GENERIK = {
+    "PT", "CV", "UD", "PMA", "PMDN", "TBK", "PJ", "PK", "CP", "FA", "CO",
+    "LTD", "INC", "TBK.", "PERUSAHAAN", "KOPERASI", "&", "AND", "DAN",
+}
+
+
+def generate_singkatan(nama: str) -> str:
+    """Singkatan nama perusahaan otomatis (Update #043 — auto-fill master
+    Pelanggan/Supplier saat field ``singkatan`` kosong).
+
+    - Tokenisasi nama (split whitespace/titik/koma, UPPERCASE), buang token
+      generik (PT, CV, UD, TBK, &, DAN, dll.).
+    - Ambil huruf pertama tiap token sisanya:
+      "PT. TOYOTA BOSHOKU INDONESIA" → "TBI"; "PT TOYOTA BOSHOKU" → "TB".
+    - Bila hanya ada SATU token non-generik → 3 karakter pertama token itu
+      ("TOYOTA" → "TOY").
+    - Bila hasil kosong (semua token generik) → 3 karakter pertama nama
+      bersih (alfanumerik).
+    - Kap panjang hasil maksimal 20 karakter (mirror kolom singkatan
+      String(20)); nama kosong → string kosong.
+    """
+    bersih = (nama or "").strip().upper()
+    tokens = [t for t in re.split(r"[\s.,]+", bersih) if t]
+    inti = [t for t in tokens if t not in SINGKATAN_TOKEN_GENERIK]
+    if inti:
+        if len(inti) == 1:
+            hasil = inti[0][:3]
+        else:
+            hasil = "".join(t[0] for t in inti)
+    else:
+        # Semua token generik (mis. "PT. CV") → potongan nama bersih.
+        hasil = re.sub(r"[^A-Z0-9]", "", bersih)[:3]
+    return (hasil or "")[:20]
 
 
 # Mapping doc_type ke prefix default — referensi tunggal (Update ASAHI #019:

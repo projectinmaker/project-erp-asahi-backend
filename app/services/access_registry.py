@@ -516,6 +516,10 @@ _ROUTER_PREFIXES = {
         # Tanpa kode permission baru — role yang sudah bisa membuka/membuat PO
         # otomatis bisa memakai alur ROP → PO.
         ('rop_item', 'purchase.purchase_order'),
+        # Update #043 — Part Stok Menipis (restock): GET /part-stok-menipis →
+        # purchase.purchase_order.view; POST /part-stok-menipis/po-draft →
+        # .create. Mirror pemetaan ROP — tanpa kode permission baru.
+        ('part_stok_menipis', 'purchase.purchase_order'),
     ],
     'kas_bank': [
         ('pembayaran', 'finance.cash_payment'),

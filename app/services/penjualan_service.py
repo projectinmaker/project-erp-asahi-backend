@@ -16,6 +16,7 @@ from datetime import datetime, date
 from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
+import re
 
 from loguru import logger
 from sqlalchemy import func
@@ -955,6 +956,53 @@ def _so_sisa_nilai(
     return max(Decimal("0"), grand_total - billed)
 
 
+# === Update #043 — pola keterangan otomatis invoice ter-link SO (lama & baru) ===
+# Bentuk lama (#042, dobel "SO"): "DP atas SO SO ASI/…" / "Pelunasan atas SO SO ASI/… — LUNAS".
+# Bentuk baru (#043):      "DP atas SO ASI/…" / "Pelunasan atas SO ASI/… — LUNAS".
+# Dipakai untuk MENGUPAS segmen otomatis dari nilai keterangan tersimpan saat
+# invoice diedit (update_sales_invoice) supaya teks user tidak ikut tergandakan.
+_AUTO_KET_INVOICE_RE = re.compile(
+    r"^(?:DP|Pelunasan)\s+atas\s+(?:SO\s+)?(?:(?!—).)*(?:\s*—\s*LUNAS)?"
+)
+
+
+def _auto_keterangan_invoice(no_pesanan: str, sisa_sebelum: Decimal, dp_final: Decimal) -> str:
+    """Keterangan otomatis invoice ter-link SO (#042 → #043).
+
+    - sisa_SO_sebelum − dp_pelunasan ≤ 0.005 → "Pelunasan atas {no_pesanan} — LUNAS"
+    - selain itu                          → "DP atas {no_pesanan}"
+
+    Update #043 — fix dobel "SO": ``no_pesanan`` sudah berprefix "SO"
+    (format "SO ASI/KODE/2026/001"), jadi string tidak lagi menambahkan kata
+    "SO" sendiri (dulu menghasilkan "DP atas SO SO ASI/…").
+    """
+    if (sisa_sebelum - dp_final) <= Decimal("0.005"):
+        return f"Pelunasan atas {no_pesanan} — LUNAS"
+    return f"DP atas {no_pesanan}"
+
+
+def _strip_auto_keterangan_invoice(keterangan: Optional[str]) -> str:
+    """Buang segmen keterangan otomatis invoice ter-link SO dari sebuah teks;
+    kembalikan sisa teks user setelah pemisah " — " (kosong bila tidak ada).
+
+    Mengenali BENTUK LAMA #042 ("DP atas SO SO ASI/…", "Pelunasan atas SO SO
+    ASI/… — LUNAS") maupun bentuk baru #043 ("DP atas SO ASI/…", "Pelunasan
+    atas SO ASI/… — LUNAS") — nomor SO dianggap segmen tanpa pemisah "—",
+    suffix "— LUNAS" ikut dibuang. Dipakai update_sales_invoice sebelum
+    menggabung ulang teks user di belakang auto_ket baru (#043).
+    """
+    s = (keterangan or "").strip()
+    if not s:
+        return ""
+    m = _AUTO_KET_INVOICE_RE.match(s)
+    if not m:
+        return s
+    sisa = s[m.end():].strip()
+    if sisa.startswith("—"):
+        sisa = sisa.lstrip("—").strip()
+    return sisa
+
+
 def get_sales_invoice_list(
     db: Session,
     skip: int = 0,
@@ -1133,12 +1181,11 @@ def create_sales_invoice(
                     f"{order.no_pesanan} (sisa {sisa_sebelum})"
                 )
             # Keterangan otomatis (E): sisa_SO_sebelum − dp_pelunasan ≤ 0.005
-            # → "Pelunasan atas SO … — LUNAS"; selain itu → "DP atas SO …".
+            # → "Pelunasan atas {no_pesanan} — LUNAS"; selain itu → "DP atas
+            # {no_pesanan}". Update #043 — no_pesanan sudah berprefix "SO",
+            # helper tidak lagi menambahkan kata "SO" (dulu dobel "SO SO").
             # Keterangan user (bila diisi) ditambahkan di belakang.
-            if (sisa_sebelum - dp_final) <= Decimal("0.005"):
-                auto_ket = f"Pelunasan atas SO {order.no_pesanan} — LUNAS"
-            else:
-                auto_ket = f"DP atas SO {order.no_pesanan}"
+            auto_ket = _auto_keterangan_invoice(order.no_pesanan, sisa_sebelum, dp_final)
             keterangan = (
                 f"{auto_ket} — {keterangan}" if (keterangan or "").strip() else auto_ket
             )
@@ -1351,6 +1398,26 @@ def update_sales_invoice(
     # tersimpan; sudah tervalidasi ulang di atas). ===
     if dp_pelunasan is not None:
         db_obj.dp_pelunasan = safe_decimal(dp_pelunasan)
+
+    # === Update #043 — REGENERASI keterangan otomatis invoice ter-link SO
+    # (E): prefix DP/Pelunasan dihitung ulang dari sisa tagihan SO terkini
+    # (invoice ini dikecualikan) sehingga label "— LUNAS" ikut benar saat
+    # dp_pelunasan / link SO diedit. Teks user dipertahankan: segmen otomatis
+    # lama (termasuk bentuk dobel "SO SO" hasil #042) diupas dari nilai
+    # keterangan (tersimpan/baru saja diset), sisanya digabung ulang di
+    # belakang auto_ket baru. ===
+    so_id_ket = sales_order_id if sales_order_id is not None else db_obj.sales_order_id
+    if so_id_ket is not None:
+        so_src = db.get(SalesOrder, so_id_ket)
+        dp_eff = dp_pelunasan if dp_pelunasan is not None else safe_decimal(
+            getattr(db_obj, "dp_pelunasan", 0) or 0
+        )
+        sisa_sebelum = _so_sisa_nilai(db, so_id_ket, exclude_invoice_id=db_obj.id)
+        sisa_user = _strip_auto_keterangan_invoice(db_obj.keterangan)
+        auto_ket = _auto_keterangan_invoice(
+            (so_src.no_pesanan if so_src else "-"), sisa_sebelum, dp_eff
+        )
+        db_obj.keterangan = f"{auto_ket} — {sisa_user}" if sisa_user else auto_ket
 
     # Update #3 — penggantian baris detail (persist link source-line
     # sales_order_detail_id / delivery_detail_id) saat invoice masih draft.

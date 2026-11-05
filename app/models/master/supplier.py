@@ -31,6 +31,12 @@ class Supplier(BaseModel, BaseMixin):
     status = Column(String(20), default="AKTIF", nullable=False)  # ACTIVE / INACTIVE
     akun_hutang_id = Column(UUID(as_uuid=True), ForeignKey("akun_perkiraan.id"), nullable=True)  # AP Control mapping
 
+    # === Update #043 — singkatan nama perusahaan (mirror pelanggan) ===
+    # Auto-terisi dari nama saat singkatan kosong (generate_singkatan); murni
+    # data master — TIDAK dipakai segmen nomor dokumen mana pun (format
+    # penomoran existing tidak berubah).
+    singkatan = Column(String(20), nullable=True)
+
     # === Optional fields (all nullable) ===
     # Legal/Tax
     npwp = Column(String(50), nullable=True)

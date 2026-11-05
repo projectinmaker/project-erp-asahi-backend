@@ -1006,6 +1006,327 @@ def create_po_draft_from_rop_items(
 
 
 # ==========================================
+# === Update #043 — PART STOK MENIPIS (restock) ===
+# Daftar part master dengan stok < stok_minimum (menu Pembelian → Part Stok
+# Menipis) → tombol "Buat PO Draft" → PO DRAFT restock ke supplier pilihan.
+# Berbeda dari Detail ROP (kolam belanja part produksi berbasis item ROP),
+# sumber data adalah MASTER BARANG langsung: stok, stok_minimum, kekurangan
+# = stok_minimum − stok. "Sudah dibeli" dihitung dari baris PO yang masih
+# berstatus DRAFT/DIPROSES (sudah dipesan tapi BELUM diterima — PO SELESAI
+# sudah menambah stok sehingga tidak dihitung ganda; DIBATALKAN bebas).
+# ==========================================
+
+def _inflight_po_per_barang(db: Session, barang_ids: List[UUID]) -> Dict[UUID, Dict[str, Any]]:
+    """Agregat belanja "dalam penerbangan" per barang (#043 — Part Stok
+    Menipis): Σ qty + daftar nomor PO penyumbang (urut asc) dari baris PO
+    aktif DRAFT/DIPROSES. Satu query JOIN (hindari N+1), derived — tanpa
+    kolom status tersimpan."""
+    if not barang_ids:
+        return {}
+    rows = (
+        db.query(PurchaseOrderDetail.barang_id, PurchaseOrder.no_pesanan, PurchaseOrderDetail.qty)
+        .join(PurchaseOrder, PurchaseOrderDetail.purchase_order_id == PurchaseOrder.id)
+        .filter(
+            PurchaseOrderDetail.barang_id.in_(barang_ids),
+            PurchaseOrder.status.in_((StatusPenjualan.DRAFT, StatusPenjualan.DIPROSES)),
+        )
+        .order_by(PurchaseOrder.no_pesanan)
+        .all()
+    )
+    result: Dict[UUID, Dict[str, Any]] = {}
+    for barang_id, no_pesanan, qty in rows:
+        agg = result.setdefault(barang_id, {"qty": 0, "po_nos": []})
+        agg["qty"] += int(qty or 0)
+        if no_pesanan and no_pesanan not in agg["po_nos"]:
+            agg["po_nos"].append(no_pesanan)
+    return result
+
+
+def get_part_stok_menipis_list(
+    db: Session,
+    need_purchase: bool = False,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Daftar part master dengan stok di bawah minimum — menu Pembelian →
+    Part Stok Menipis (restock, Update #043).
+
+    - Hanya barang AKTIF dengan stok_minimum > 0 dan stok < stok_minimum,
+      urut kode (mirror pola query & filter get_rop_item_belanja_list).
+    - sudah_dibeli = Σ qty baris PO DRAFT/DIPROSES yang menaut barang
+      (belum diterima); draft_po_nos = nomor PO penyumbang.
+    - kekurangan = max(0, stok_minimum − stok); sisa = max(0, kekurangan −
+      sudah_dibeli); status BELUM/SEBAGIAN/LENGKAP/STOK_CUKUP (enum konsisten
+      Detail ROP — untuk daftar ini semua baris memang menipis, STOK_CUKUP
+      disiapkan bila kekurangan ≤ 0).
+    - Filter ``need_purchase=True`` → hanya baris dengan sisa > 0.
+    """
+    rows = (
+        db.query(Barang)
+        .options(joinedload(Barang.satuan))
+        .filter(
+            Barang.status == "AKTIF",
+            Barang.stok_minimum > 0,
+            Barang.stok < Barang.stok_minimum,
+        )
+        .order_by(Barang.kode)
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return []
+
+    inflight = _inflight_po_per_barang(db, [r.id for r in rows])
+
+    result = []
+    for barang in rows:
+        stok = int(barang.stok or 0)
+        stok_min = int(barang.stok_minimum or 0)
+        kekurangan = stok_min - stok
+        if kekurangan < 0:
+            kekurangan = 0
+        agg = inflight.get(barang.id) or {}
+        sudah = int(agg.get("qty") or 0)
+        po_nos = list(agg.get("po_nos") or [])
+        sisa = kekurangan - sudah
+        if sisa < 0:
+            sisa = 0
+        if kekurangan <= 0:
+            status = ROP_BELANJA_STOK_CUKUP
+        elif sisa <= 0:
+            status = ROP_BELANJA_LENGKAP
+        elif sudah > 0:
+            status = ROP_BELANJA_SEBAGIAN
+        else:
+            status = ROP_BELANJA_BELUM
+        if need_purchase and sisa <= 0:
+            continue
+        result.append(
+            {
+                "barang_id": barang.id,
+                "kode": barang.kode,
+                "nama": barang.nama,
+                "satuan": (barang.satuan.nama if barang.satuan else None),
+                "stok": stok,
+                "stok_minimum": stok_min,
+                "kekurangan": kekurangan,
+                "sudah_dibeli": sudah,
+                "sisa": sisa,
+                "status": status,
+                "draft_po_nos": po_nos,
+                "in_draft_po": bool(po_nos),
+            }
+        )
+    return result
+
+
+@atomic_accounting_write
+def create_po_draft_from_stok_menipis(
+    db: Session,
+    supplier_id: UUID,
+    gudang_id: Optional[UUID],
+    tanggal: Optional[datetime] = None,
+    catatan: Optional[str] = None,
+    items: Optional[List[Dict[str, Any]]] = None,
+    created_by: Optional[UUID] = None,
+) -> Tuple[PurchaseOrder, Dict[str, Any]]:
+    """Buat PO DRAFT restock dari seleksi part stok menipis (tombol "Buat PO
+    Draft" di menu Pembelian → Part Stok Menipis, Update #043).
+
+    - Mirror create_po_draft_from_rop_items: supplier wajib ada; nomor PO
+      pakai helper penomoran tahunan yang sama (PO ASI/YYYY/NNN); harga per
+      baris = harga_pokok master (boleh 0 — PIC melengkapi di PO draft);
+      PO disimpan DRAFT — TIDAK memanggil workflow direct_complete supaya
+      bisa dikoreksi dulu di menu Pesanan (finalisasi saat diedit & disimpan).
+    - gudang_id = id master ALAMAT_PENGIRIMAN, OPSIONAL: terisi → snapshot
+      alamat + PIC gudang + telepon (mirror create_purchase_order); None →
+      kolom alamat pengiriman PO dibiarkan kosong.
+    - Qty final per baris = min(qty diminta, sisa kekurangan saat ini);
+      qty ≤ 0 / barang tidak ada di master → masuk daftar "skipped".
+    - jenis_pembelian baris = "PROJECT" (nilai valid existing — tidak ada
+      opsi "MATERIAL" di JENIS_PEMBELIAN_VALUES; ROP flow juga memakai
+      PROJECT) — baris PO tidak punya kolom keterangan sehingga rincian
+      per baris "Stok menipis: {kode} {nama}" dituangkan ke keterangan
+      header (gabung catatan user + "Restock part stok menipis (N item)").
+    """
+    if not items:
+        raise ValueError("Pilih minimal satu part")
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise ValueError(f"Supplier dengan ID {supplier_id} tidak ditemukan")
+
+    # Gudang tujuan (master AlamatPengiriman) — OPSIONAL, None → kosong.
+    alamat_kirim = None
+    if gudang_id is not None:
+        from app.models.master.alamat_pengiriman import AlamatPengiriman
+
+        alamat_kirim = db.query(AlamatPengiriman).filter(AlamatPengiriman.id == gudang_id).first()
+        if not alamat_kirim:
+            raise ValueError("Gudang (alamat pengiriman) tidak ditemukan")
+    alamat_pengiriman_snapshot = f"{alamat_kirim.prefix}\n{alamat_kirim.nama}" if alamat_kirim else None
+    pic_gudang = ((alamat_kirim.pic_nama or "").strip() or None) if alamat_kirim else None
+    pic_gudang_telepon = ((alamat_kirim.pic_telepon or "").strip() or None) if alamat_kirim else None
+
+    # Validasi mata uang default (mirror create_purchase_order).
+    from app.models.master.mata_uang import MataUang
+
+    if db.query(MataUang).filter(MataUang.kode == "IDR").first() is None:
+        raise ValueError("Mata uang IDR tidak dikenal — tambahkan dulu di Pengaturan → Profil Perusahaan")
+
+    # Agregasi qty per barang (guard payload duplikat baris — FE normalnya
+    # satu baris per part; qty duplikat digabung dulu sebelum dikunci ke sisa).
+    qty_per_barang: Dict[UUID, int] = {}
+    for it in items:
+        bid = it.get("barang_id")
+        if bid is None:
+            continue
+        qty_per_barang[bid] = qty_per_barang.get(bid, 0) + int(it.get("qty") or 0)
+    barang_ids = list(qty_per_barang.keys())
+    barangs = {
+        b.id: b
+        for b in db.query(Barang).filter(Barang.id.in_(barang_ids)).all()
+    } if barang_ids else {}
+    inflight = _inflight_po_per_barang(db, barang_ids)
+
+    skipped: list = []
+    details_data: list = []
+    baris_kets: list = []
+
+    for bid, qty_diminta in qty_per_barang.items():
+        barang = barangs.get(bid)
+        if barang is None:
+            skipped.append({"kode": None, "nama": None, "alasan": "barang tidak ditemukan di master"})
+            continue
+        stok = int(barang.stok or 0)
+        stok_min = int(barang.stok_minimum or 0)
+        kekurangan = stok_min - stok
+        if kekurangan < 0:
+            kekurangan = 0
+        sudah = int((inflight.get(bid) or {}).get("qty") or 0)
+        sisa = kekurangan - sudah
+        if sisa < 0:
+            sisa = 0
+        qty_final = min(qty_diminta, sisa)
+        if qty_final <= 0:
+            skipped.append(
+                {
+                    "kode": barang.kode,
+                    "nama": barang.nama,
+                    "alasan": "stok sudah cukup / kekurangan sudah masuk PO lain",
+                }
+            )
+            continue
+        harga = safe_decimal(getattr(barang, "harga_pokok", 0)) or Decimal("0")
+        details_data.append(
+            {
+                "barang_id": barang.id,
+                "harga": harga,
+                "qty": qty_final,
+                "diskon": Decimal("0"),
+                "sub_total": harga * qty_final,
+                "satuan_id": getattr(barang, "satuan_id", None),
+                # Nilai valid existing (JENIS_PEMBELIAN_VALUES: CONSUMABLE /
+                # PROJECT / ASSET / ATK) — mirror pilihan ROP flow.
+                "jenis_pembelian": "PROJECT",
+            }
+        )
+        baris_kets.append(f"Stok menipis: {barang.kode} {barang.nama}")
+
+    if not details_data:
+        raise ValueError("Semua part terpilih tidak perlu direstock (stok sudah cukup atau kekurangan sudah masuk PO lain)")
+
+    _validate_po_detail_refs(db, details_data)
+
+    # Keterangan header: catatan user + label restock + rincian per baris
+    # (tabel detail PO tidak punya kolom keterangan — mirror gaya ROP
+    # "Dari ROP: ..." yang menaut konteks sumber di header).
+    ket_parts = []
+    catatan_bersih = (catatan or "").strip()
+    if catatan_bersih:
+        ket_parts.append(catatan_bersih)
+    ket_parts.append(f"Restock part stok menipis ({len(details_data)} item)")
+    ket = " — ".join(ket_parts) + ": " + ", ".join(baris_kets)
+    if skipped:
+        ket += f" — {len(skipped)} item terpilih dilewati (stok sudah cukup/sudah dibeli)"
+
+    tanggal_final = tanggal or datetime.now(timezone.utc)
+    sub_total, total_diskon = _hitung_total_detail_with_diskon(details_data)
+    total_ppn, total_pph23, grand_total = _hitung_grand_total(
+        sub_total, total_diskon, Decimal("11"), Decimal("0"),
+        ppn_applicable=True,
+        pph23_pct=Decimal("2"),
+        pph23_applicable=False,
+    )
+
+    no_pesanan = get_nomor_dokumen_tahunan(
+        db, PurchaseOrder, prefix="PO",
+        no_column="no_pesanan", tanggal=tanggal_final.date(),
+        doc_type="PURCHASE_ORDER",
+    )
+
+    # Bangun PO manual (mirror create_purchase_order) karena alamat pengiriman
+    # OPSIONAL di sini — create_purchase_order mewajibkannya (Update ASAHI #3).
+    po = PurchaseOrder(
+        no_pesanan=no_pesanan,
+        tanggal=tanggal_final,
+        supplier_id=supplier_id,
+        tanggal_kirim=None,
+        alamat=None,
+        diskon_global=Decimal("0"),
+        ppn=Decimal("11"),
+        ppn_applicable=True,
+        pph23_applicable=False,
+        pph23=Decimal("2"),
+        total_pph23=total_pph23,
+        sub_total=sub_total,
+        total_diskon=total_diskon,
+        total_ppn=total_ppn,
+        total_biaya_tambahan=Decimal("0"),
+        grand_total=grand_total,
+        auto_post_jurnal=False,
+        status=StatusPenjualan.DRAFT,
+        keterangan=ket,
+        created_by=created_by,
+        currency="IDR",
+        alamat_pengiriman_id=(alamat_kirim.id if alamat_kirim else None),
+        alamat_pengiriman=alamat_pengiriman_snapshot,
+        ppic=False,
+        pic_gudang=pic_gudang,
+        pic_gudang_telepon=pic_gudang_telepon,
+    )
+    db.add(po)
+    db.flush()
+
+    for d in details_data:
+        db.add(
+            PurchaseOrderDetail(
+                purchase_order_id=po.id,
+                barang_id=d["barang_id"],
+                harga=Decimal(str(d["harga"])),
+                qty=int(d["qty"]),
+                diskon=safe_decimal(d.get("diskon")),
+                sub_total=safe_decimal(d.get("sub_total")),
+                satuan_id=d.get("satuan_id"),
+                jenis_pembelian=(d.get("jenis_pembelian") or "").strip() or None,
+            )
+        )
+
+    # Hitung ulang total (diskon baris + diskon global) — pola create_purchase_order.
+    from app.services.document_totals import refresh_totals
+
+    db.flush()
+    refresh_totals(po)
+
+    db.commit()
+    db.refresh(po)
+    info = {"skipped": skipped, "jumlah_item": len(details_data)}
+    logger.info(
+        f"PO draft restock stok menipis: {po.no_pesanan} | {len(details_data)} baris "
+        f"| supplier {supplier_id} | dilewati: {len(skipped)}"
+    )
+    return po, info
+
+
+# ==========================================
 # PURCHASE INVOICE
 # ==========================================
 

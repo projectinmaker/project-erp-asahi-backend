@@ -141,6 +141,9 @@ class PelangganCoaResponse(BaseSchema):
 class SupplierBase(BaseSchema):
     kode: str
     nama: str
+    # === Update #043 — singkatan nama perusahaan (mirror pelanggan): kosong
+    # → diisi otomatis dari nama di service (tidak menimpa isian user). ===
+    singkatan: Optional[str] = None
     alamat: Optional[str] = None
     telepon: Optional[str] = None
     email: Optional[str] = None
@@ -173,6 +176,7 @@ class SupplierCreate(SupplierBase):
 class SupplierUpdate(BaseSchema):
     kode: Optional[str] = None  # immutable setelah dipakai transaksi
     nama: Optional[str] = None
+    singkatan: Optional[str] = None  # Update #043 — kosong → auto dari nama
     alamat: Optional[str] = None
     telepon: Optional[str] = None
     email: Optional[str] = None

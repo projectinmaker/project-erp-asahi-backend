@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # ==========================================
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120  # Update #043 — 2 hours (sebelumnya 1440 / 24 jam)
 
     # ==========================================
     # CORS Settings

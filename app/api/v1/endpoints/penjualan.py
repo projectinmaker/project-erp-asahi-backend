@@ -425,8 +425,9 @@ def create_sales_invoice(
             # invoice ini (None = auto-isi sisa tagihan SO bila ter-link). ===
             dp_pelunasan=data_in.dp_pelunasan,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'sales_invoice', obj.id)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'sales_invoice', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -536,8 +537,9 @@ def create_sales_retur(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'sales_retur', obj.id)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'sales_retur', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -643,8 +645,9 @@ def create_pengiriman(
             keterangan=data_in.keterangan,
             created_by=current_user.id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
-        workflow_service.direct_complete(db, current_user, 'pengiriman_barang', obj.id)
+        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
+        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
+        workflow_service.direct_complete(db, current_user, 'pengiriman_barang', obj.id, force=True)
         db.refresh(obj)
         return obj
     except ValueError as e:
