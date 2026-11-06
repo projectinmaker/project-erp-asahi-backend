@@ -19,9 +19,14 @@ from app.schemas.kas_bank import (
     TransferBankCreate, TransferBankUpdate, TransferBankResponse,
     NomorPreviewResponse,  # Update #16 — preview nomor dokumen di form
 )
+# === Update #044 — Voucher Memorial (Gagal Tagih / penghapusan piutang) ===
+from app.schemas.voucher_memorial import (
+    VoucherMemorialCreate, VoucherMemorialResponse, VoucherMemorialSummaryResponse,
+)
 from app.schemas.workflow import HardDeleteRequest
 from app.services import kas_bank_service as svc
 from app.services import workflow_service
+from app.services import voucher_memorial_service as vm_svc  # Update #044 — Gagal Tagih
 from app.services.cancel_document_service import cancel_document
 
 router = APIRouter()
@@ -467,5 +472,131 @@ def reverse_transfer(
             reason=reason or "Reversal transfer"
         )
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
+# === Update #044 — VOUCHER MEMORIAL (GAGAL TAGIH / PENGHAPUSAN PIUTANG) ===
+# ==========================================
+# Cabang "Gagal Tagih" alur Penerimaan Piutang (revisi pemilik, poin 5):
+# Penerimaan Penuh / Sebagian → Voucher Penerimaan Bank/Kas (PenerimaanKas);
+# Gagal Tagih → Voucher Memorial (Adjustment) — dokumen non-kas ini.
+# Jurnal sistem: Dr Beban Penghapusan Piutang, Cr Piutang Usaha (kontrol).
+
+def _voucher_response(item):
+    """Bangun response + no_invoice per baris rincian (relasi sales_invoice
+    di-eager-load get_voucher_by_id / get_voucher_list)."""
+    resp = VoucherMemorialResponse.model_validate(item)
+    for r, d in zip(item.rincian, resp.rincian):
+        inv = r.sales_invoice
+        if inv is not None:
+            d.no_invoice = inv.no_invoice
+    return resp
+
+
+@router.get("/voucher-memorial", response_model=PaginatedResponse[VoucherMemorialResponse])
+def get_voucher_memorial_list(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    search: Optional[str] = Query(None, description="Cari berdasarkan no bukti / catatan"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter status"),
+    pelanggan_id: Optional[UUID] = Query(None, description="Filter pelanggan"),
+    tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
+    tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar Voucher Memorial (Gagal Tagih) dengan filter & pagination."""
+    data, total = vm_svc.get_voucher_list(
+        db, skip=skip, limit=limit, search=search,
+        status=status_filter, pelanggan_id=pelanggan_id,
+        tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+    )
+    return {"data": [_voucher_response(i) for i in data], "total": total, "skip": skip, "limit": limit}
+
+
+@router.get("/voucher-memorial/next-nomor", response_model=NomorPreviewResponse)
+def get_voucher_memorial_next_nomor(
+    tanggal: Optional[date] = Query(
+        None, description="Tanggal dokumen (YYYY-MM-DD) — menentukan tahun sequence"),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Preview nomor Voucher Memorial BERIKUTNYA (indikatif, tanpa create).
+
+    Dipakai form Gagal Tagih untuk menampilkan "VM ASI/YYYY/NNN" sebelum submit.
+    """
+    return {"nomor": vm_svc.peek_nomor_voucher_memorial(db, tanggal=tanggal)}
+
+
+@router.post("/voucher-memorial", response_model=VoucherMemorialSummaryResponse, status_code=status.HTTP_201_CREATED)
+def create_voucher_memorial(
+    data_in: VoucherMemorialCreate,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Buat Voucher Memorial (Gagal Tagih) — penghapusan piutang non-kas.
+
+    Administrator (revisi tim akuntansi): langsung final tanpa langkah approval
+    (submit → approve → posting jurnal Dr Beban / Cr Piutang dalam satu transaksi).
+    Role lain: dokumen DRAFT menunggu workflow maker-checker.
+    """
+    try:
+        obj = vm_svc.create_gagal_tagih(
+            db=db,
+            pihak_id=data_in.pelanggan_id,
+            tanggal=data_in.tanggal,
+            allocation_data=[r.model_dump() for r in data_in.alokasi],
+            created_by=current_user.id,
+            catatan=data_in.catatan,
+            akun_beban_id=data_in.akun_beban_id,
+        )
+        # Administrator: langsung final (mirror create_penerimaan / settlement).
+        workflow_service.direct_complete(db, current_user, 'voucher_memorial', obj.id)
+        db.refresh(obj)
+        return {
+            'id': obj.id, 'no_bukti': obj.no_bukti, 'tanggal': obj.tanggal,
+            'total_nilai': obj.total_nilai,
+            'status': getattr(obj.status, 'value', obj.status),
+            'jurnal_umum_id': obj.jurnal_umum_id, 'pelanggan_id': obj.pelanggan_id,
+            'akun_beban_id': obj.akun_beban_id,
+            'alokasi': [{'invoice_id': r.sales_invoice_id, 'nilai': r.nilai} for r in obj.rincian],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/voucher-memorial/{voucher_id}", response_model=VoucherMemorialResponse)
+def get_voucher_memorial_detail(
+    voucher_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Ambil detail 1 Voucher Memorial (dipakai tab Cetak Voucher Memorial)."""
+    item = vm_svc.get_voucher_by_id(db, voucher_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Voucher Memorial tidak ditemukan")
+    return _voucher_response(item)
+
+
+@router.post("/voucher-memorial/{voucher_id}/cancel")
+def cancel_voucher_memorial(
+    voucher_id: UUID,
+    payload: Optional[HardDeleteRequest] = Body(None),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Batalkan/hapus Voucher Memorial (mirror cancel penerimaan).
+
+    - DRAFT (belum ber-jurnal) → hard delete + snapshot ke log dokumen terhapus.
+    - Sudah diposting → jurnal pembalik (Dr Piutang, Cr Beban) + status BATAL,
+      sisa tagihan invoice otomatis kembali (balances menghormati pembalik).
+    """
+    try:
+        return cancel_document(
+            db, 'voucher_memorial', voucher_id, current_user,
+            reason=payload.reason if payload else None,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -17,6 +17,7 @@ from app.models import (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
     AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
     PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran, TukarFaktur,
+    VoucherMemorial,  # === Update #044 — Voucher Memorial (Gagal Tagih) ===
 )
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent
 from app.services.accounting_control import atomic_accounting_write
@@ -30,6 +31,7 @@ MODELS = {m.__tablename__: m for m in (
     SalesInvoice, PurchaseInvoice, SalesRetur, PurchaseRetur, PembayaranKas, PenerimaanKas,
     AssetEvent, TransferBank, SalesOrder, PurchaseOrder, PengirimanBarang, PenerimaanBarang,
     PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran, TukarFaktur,
+    VoucherMemorial,  # === Update #044 — Gagal Tagih (posting jurnal penghapusan) ===
 )}
 SALES = {'sales_order', 'sales_invoice', 'sales_retur'}
 STOCK = {'pengiriman_barang', 'penerimaan_barang', 'penyesuaian_stok', 'pemindahan_barang', 'permintaan_barang'}
@@ -42,6 +44,7 @@ FINANCIAL = set(MODELS) - STOCK - ORDERS
 POSTABLE = {
     'sales_invoice', 'sales_retur', 'purchase_invoice', 'purchase_retur',
     'pembayaran_kas', 'penerimaan_kas', 'transfer_bank', 'jurnal_umum', 'asset_event',
+    'voucher_memorial',  # === Update #044 — Voucher Memorial (Gagal Tagih) ===
 }
 EXECUTABLE = {
     'pengiriman_barang', 'penerimaan_barang', 'penyesuaian_stok', 'pemindahan_barang',
@@ -339,10 +342,13 @@ def post_existing(db, obj, actor_id):
         raise ValueError('Pilih purchaseInvoiceId sebelum posting retur pembelian agar hutang invoice dapat diperbarui')
     validate_order_approval(db, obj)
     from app.services import penjualan_service as sales, pembelian_service as purchase, kas_bank_service as cash
+    from app.services import voucher_memorial_service as voucher_memorial
     methods = {
         'sales_invoice': sales.post_sales_invoice, 'sales_retur': sales.post_sales_retur,
         'purchase_invoice': purchase.post_purchase_invoice, 'purchase_retur': purchase.post_purchase_retur,
         'pembayaran_kas': cash.post_pembayaran, 'penerimaan_kas': cash.post_penerimaan, 'transfer_bank': cash.post_transfer,
+        # === Update #044 — Voucher Memorial: Dr beban penghapusan, Cr piutang ===
+        'voucher_memorial': voucher_memorial.post_voucher_memorial,
     }
     if obj.__tablename__ == 'jurnal_umum':
         from loguru import logger

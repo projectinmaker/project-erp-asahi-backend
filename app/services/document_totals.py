@@ -170,6 +170,12 @@ def refresh_totals(obj):
         obj.biaya_transfer = money(amount(obj.biaya_transfer))
         if obj.nilai_transfer <= 0:
             raise ValueError('Nilai transfer harus positif')
+    elif name == 'voucher_memorial':
+        # === Update #044 — Voucher Memorial (Gagal Tagih): total = Σ rincian
+        # penghapusan per invoice (tanpa komponen kas — dokumen non-kas). ===
+        if not obj.rincian or any(amount(r.nilai) <= 0 for r in obj.rincian):
+            raise ValueError('Rincian penghapusan piutang wajib diisi dengan nilai positif')
+        obj.total_nilai = sum((money(amount(r.nilai)) for r in obj.rincian), ZERO)
 
 
 def validate_postable(db, obj):

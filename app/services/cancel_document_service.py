@@ -69,6 +69,9 @@ CANCEL_STATUS = {
     'pembayaran_kas': 'BATAL',
     'transfer_bank': 'BATAL',
     'asset_event': 'BATAL',
+    # === Update #044 — Voucher Memorial (Gagal Tagih): jurnal pembalik
+    # mengembalikan penghapusan piutang (Dr Piutang, Cr Beban). ===
+    'voucher_memorial': 'BATAL',
 }
 
 CANCELLED_STATES = {'BATAL', 'DIBATALKAN'}

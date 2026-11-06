@@ -92,6 +92,13 @@ KEY_POTONGAN_HUTANG = "POTONGAN_HUTANG"
 # (Sisi piutang memakai KEY_PPH23_DIBAYAR_DIMUKA yang sudah ada.)
 KEY_HUTANG_PPH23 = "HUTANG_PPH23"
 
+# === Update #044 — akun beban penghapusan piutang (Gagal Tagih) ===
+# Dipakai Voucher Memorial saat menghapusbukukan sisa tagihan invoice yang
+# gagal ditagih: jurnal sistem Dr akun ini, Cr Piutang Usaha (kontrol).
+# Bisa dioverride per transaksi (field akun beban di form Gagal Tagih);
+# default ini dikonfigurasi lewat Pengaturan → Setting Akun.
+KEY_BEBAN_PENGHAPUSAN_PIUTANG = "BEBAN_PENGHAPUSAN_PIUTANG"
+
 # === Update ASAHI #019 — Preferensi: Akun Default & Pembayaran Pesanan ===
 # Akun-akun tambahan yang dikelola lewat halaman Preferensi (halaman
 # "Akun Default" & picker "Biaya Pesanan"). Baris setting dibuat otomatis
@@ -149,6 +156,8 @@ KNOWN_SETTING_LABELS = {
     KEY_BIAYA_PESANAN: "Biaya Pesanan",
     # === Update #031 — penerimaan Termin SO ===
     KEY_UANG_MUKA_PENJUALAN: "Uang Muka Penjualan (Termin SO)",
+    # === Update #044 — Gagal Tagih → Voucher Memorial (penghapusan piutang) ===
+    KEY_BEBAN_PENGHAPUSAN_PIUTANG: "Beban Penghapusan Piutang (Gagal Tagih)",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)
@@ -231,6 +240,24 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
         "kode": ["116005"],
         "nama_exact": ["PPN Masukan", "PPN Masukan (Input Tax)"],
         "nama_like": ["%ppn masukan%", "%input tax%"],
+    },
+    # === Update #044 — Beban Penghapusan Piutang (Gagal Tagih → Voucher
+    # Memorial). Dicocokkan longgar terhadap COA beban umum; user bisa
+    # meng-override lewat Setting Akun bila kandidat tidak cocok. ===
+    KEY_BEBAN_PENGHAPUSAN_PIUTANG: {
+        "kode": ["520104", "5201", "521000", "5200004"],
+        "nama_exact": [
+            "Beban Penghapusan Piutang",
+            "Beban Piutang Tak Tertagih",
+            "Beban Kerugian Piutang",
+            "Beban Penghapusan Piutang Tak Tertagih",
+        ],
+        "nama_like": [
+            "%penghapusan piutang%",
+            "%piutang tak tertagih%",
+            "%kerugian piutang%",
+            "%bad debt%",
+        ],
     },
 }
 

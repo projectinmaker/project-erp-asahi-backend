@@ -122,6 +122,14 @@ def _active_payment_ids(db: Session, ar: bool):
     return settlement.active_documents(db, payment_model).scalar_subquery()
 
 
+def _active_documents_subquery(db: Session, model):
+    """=== Update #044 — subquery ID dokumen ber-jurnal aktif generik
+    (dipakai guard penghapusan piutang: Voucher Memorial aktif per invoice;
+    definisi aktif sama dengan settlement_service.active_documents). ==="""
+    from app.services import settlement_service as settlement
+    return settlement.active_documents(db, model).scalar_subquery()
+
+
 def _apply_guards(db: Session, document_type: str, obj):
     status = _status_value(obj)
 
@@ -147,6 +155,19 @@ def _apply_guards(db: Session, document_type: str, obj):
         if db.query(SalesRetur.id).filter(SalesRetur.sales_invoice_id == obj.id).first():
             raise ValueError(
                 'Invoice masih direferensikan retur penjualan. Hapus retur tersebut terlebih dahulu.'
+            )
+        # === Update #044 — Gagal Tagih: invoice dengan penghapusan piutang
+        # aktif (Voucher Memorial) terkunci — batalkan/hapus voucher sumber
+        # terlebih dahulu agar sisa tagihan & jurnal tetap konsisten. ===
+        from app.models.transaksi.kas_bank.voucher_memorial import VoucherMemorial, VoucherMemorialDetail
+        if db.query(VoucherMemorialDetail.id).filter(
+            VoucherMemorialDetail.sales_invoice_id == obj.id,
+            VoucherMemorialDetail.voucher_id.in_(
+                _active_documents_subquery(db, VoucherMemorial)),
+        ).first():
+            raise ValueError(
+                'Invoice masih memiliki penghapusan piutang (Gagal Tagih) aktif. '
+                'Batalkan Voucher Memorial yang menghapuskannya terlebih dahulu.'
             )
     if document_type == 'purchase_invoice':
         if db.query(PaymentAllocation.id).filter(

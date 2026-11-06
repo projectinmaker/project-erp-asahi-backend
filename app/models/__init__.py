@@ -34,6 +34,10 @@ from app.models.transaksi.kas_bank.pembayaran import (
 )
 from app.models.transaksi.kas_bank.penerimaan import PenerimaanKas
 from app.models.transaksi.kas_bank.transfer_bank import TransferBank
+# === Update #044 — Voucher Memorial (penghapusan piutang / Gagal Tagih) ===
+from app.models.transaksi.kas_bank.voucher_memorial import (
+    VoucherMemorial, VoucherMemorialDetail,
+)
 
 # Transaksi - Penjualan
 from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
@@ -117,6 +121,9 @@ __all__ = [
     "PenerimaanKas",
     "JENIS_TRANSAKSI_KAS",
     "TransferBank",
+    # === Update #044 — Voucher Memorial (penghapusan piutang / Gagal Tagih) ===
+    "VoucherMemorial",
+    "VoucherMemorialDetail",
     # Transaksi - Penjualan
     "SalesOrder",
     "PengirimanBarang",

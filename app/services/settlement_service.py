@@ -78,6 +78,18 @@ def balances(db, invoices, as_of=None):
     credit = dict(db.query(return_fk, func.sum(return_model.grand_total)).filter(
         return_fk.in_(ids), return_model.id.in_(active_documents(db, return_model, as_of).scalar_subquery())
     ).group_by(return_fk).all())
+    # === Update #044 — Gagal Tagih: total penghapusan piutang aktif per
+    # invoice (Voucher Memorial). Sisa tagihan berkurang sebesar nilai
+    # penghapusan sehingga invoice yang dihapusbukukan penuh berstatus LUNAS
+    # (hanya sisi piutang; hutang tidak punya Voucher Memorial). ===
+    written_off = {}
+    if ar:
+        from app.models.transaksi.kas_bank.voucher_memorial import VoucherMemorial, VoucherMemorialDetail
+        writeoff_fk = VoucherMemorialDetail.sales_invoice_id
+        written_off = dict(db.query(writeoff_fk, func.sum(VoucherMemorialDetail.nilai)).filter(
+            writeoff_fk.in_(ids),
+            VoucherMemorialDetail.voucher_id.in_(active_documents(db, VoucherMemorial, as_of).scalar_subquery())
+        ).group_by(writeoff_fk).all())
     active = {row[0] for row in active_documents(db, model, as_of).filter(model.id.in_(ids)).all()}
     result = {}
     for obj in invoices:
@@ -89,7 +101,10 @@ def balances(db, invoices, as_of=None):
         # ditagih bagian yang benar-benar belum dibayar, bukan dua kali DP).
         # Invoice lama / tanpa termin / PI (hutang) → 0 (perilaku lama).
         uang_muka = Decimal(getattr(obj, 'dp_teraplikasi', 0) or 0)
-        saldo = obj.grand_total - bayar - retur - uang_muka
+        # === Update #044 — sisa tagihan juga dipotong penghapusan gagal
+        # tagih aktif (paritas total_retur; kolom total_gagal_tagih). ===
+        gagal_tagih = Decimal(written_off.get(obj.id, 0)) if ar else ZERO
+        saldo = obj.grand_total - bayar - retur - uang_muka - gagal_tagih
         is_active = obj.id in active
         if not is_active:
             state = 'DIBATALKAN' if getattr(obj.status, 'value', obj.status) in ('BATAL', 'DIBATALKAN') or obj.jurnal_umum_id else 'BELUM_DIPOSTING'
@@ -99,7 +114,7 @@ def balances(db, invoices, as_of=None):
             state = 'LEBIH_BAYAR'
         elif saldo == 0:
             state = 'LUNAS'
-        elif bayar + retur + uang_muka > 0:
+        elif bayar + retur + uang_muka + gagal_tagih > 0:
             state = 'PARSIAL'
         else:
             state = 'BELUM_DIBAYAR'
@@ -108,6 +123,8 @@ def balances(db, invoices, as_of=None):
             'tanggal': local_day(obj.tanggal), 'jatuh_tempo': due_date(obj),
             'nilai_tagihan': obj.grand_total, 'total_bayar': bayar, 'total_retur': retur,
             'uang_muka': uang_muka,
+            # Update #044 — total penghapusan piutang aktif (Gagal Tagih).
+            'total_gagal_tagih': gagal_tagih,
             'sisa_tagihan': max(ZERO, saldo) if is_active else ZERO,
             'kelebihan': max(ZERO, -saldo) if is_active else ZERO,
             'status_pembayaran': state, 'aktif': is_active}
@@ -293,16 +310,16 @@ def _normalize_bukti_potong(data: dict) -> tuple[Optional[str], Optional[str]]:
     return no_bukti, masa
 
 
-def prepare(db, jenis, pihak_id, tanggal, allocation_data, ar_lock_sisa: bool = True):
+def prepare(db, jenis, pihak_id, tanggal, allocation_data, ar_lock_sisa: bool = False):
     """Bangun baris alokasi invoice dari input user (guard nilai vs sisa).
 
-    === Update #042 — nominal penerimaan PELUNASAN PIUTANG TERKUNCI = sisa
-    tagihan (H): khusus jenis 'piutang' dengan ``ar_lock_sisa=True`` (jalur
-    pelunasan UI), nilai alokasi WAJIB sama dengan sisa_tagihan invoice
-    (toleransi 0.005) — selain itu ValueError dengan nominal sisa.
-    ``ar_lock_sisa=False`` dipakai validasi ulang penerimaan TERMIN SO
-    (#031/#036 — pembayaran termin boleh parsial, alur tidak diubah).
-    Jenis 'hutang'/pembayaran TIDAK diubah (tetap cukup ≤ sisa). ===
+    === Update #044 — Penerimaan Sebagian (parsial) DIBUKA KEMBALI untuk
+    pelunasan piutang: nominal alokasi boleh 0 < nilai <= sisa_tagihan
+    (kebijakan kunci penuh #042 digantikan pilihan mode Penerimaan Penuh /
+    Sebagian di form — UI yang mem-prefill nominal). Pembayaran MELEBIHI
+    sisa tetap ditolak. Parameter ``ar_lock_sisa`` dipertahankan untuk
+    pemanggil lama yang ingin mengunci penuh (nilai == sisa). Jenis
+    'hutang'/pembayaran perilakunya tidak berubah (cukup <= sisa). ===
     """
     model = invoice_model(jenis)
     party = db.get(Pelanggan if jenis == 'piutang' else Supplier, pihak_id)
@@ -334,8 +351,8 @@ def prepare(db, jenis, pihak_id, tanggal, allocation_data, ar_lock_sisa: bool = 
         nilai = positive_money(data['nilai'])
         sisa_now = current[obj.id]['sisa_tagihan']
         if jenis == 'piutang' and ar_lock_sisa:
-            # === Update #042 — penerimaan pelunasan piutang nominal TERKUNCI:
-            # harus PERSIS sisa tagihan invoice (toleransi 0.005). ===
+            # === Update #042 — mode terkunci (nilai == sisa). Default #044:
+            # TIDAK terkunci (penerimaan penuh/sebagian diatur di UI). ===
             if abs(nilai - sisa_now) > Decimal('0.005'):
                 raise ValueError(
                     f'Nominal penerimaan pelunasan piutang harus sama dengan sisa '
@@ -474,19 +491,16 @@ def validate_payment(db, payment):
         return  # Legacy/general cash documents remain supported, without invoice settlement.
     jenis = 'piutang' if isinstance(payment, PenerimaanKas) else 'hutang'
     party = payment.pelanggan_id if jenis == 'piutang' else payment.supplier_id
-    # === Update #042 — validasi ulang saat posting: nominal TERKUNCI = sisa
-    # tagihan HANYA untuk penerimaan pelunasan piutang biasa. Penerimaan
-    # TERMIN SO (#031/#036) boleh parsial (min(nominal termin, sisa piutang)
-    # — alokasi invoice-nya memang sebagian) → ar_lock_sisa=False supaya
-    # alur termin SO tidak berubah. ===
-    jenis_transaksi = (getattr(payment, 'jenis_transaksi', None) or '').upper()
-    ar_lock = jenis == 'piutang' and jenis_transaksi != 'TERMIN_SO'
+    # === Update #044 — validasi ulang saat posting: penerimaan piutang
+    # boleh PENUH maupun SEBAGIAN (0 < nilai <= sisa — mode dipilih di UI
+    # Penerimaan Penuh/Sebagian). Kunci penuh #042 tidak lagi diterapkan
+    # di jalur validasi; overpayment tetap ditolak oleh prepare(). ===
     rows, expected = prepare(db, jenis, party, payment.tanggal,
                              [{'invoice_id': r.invoice_id, 'nilai': r.nilai, 'diskon': getattr(r, 'diskon', None),
                                'pph23': getattr(r, 'pph23', None),
                                'no_bukti_potong': getattr(r, 'no_bukti_potong', None),
                                'masa_pajak': getattr(r, 'masa_pajak', None)} for r in payment.alokasi],
-                             ar_lock_sisa=ar_lock)
+                             ar_lock_sisa=False)
     # Update #5 — rincian boleh berisi grup akun alokasi + 1 baris akun penalti;
     # total rincian harus = Σ alokasi + penalti = total_nilai.
     penalti = normalize_penalti(getattr(payment, 'penalti', None))
@@ -530,6 +544,10 @@ def require_no_settlements(db, invoice):
     state = balances(db, [invoice])[invoice.id]
     if state['total_bayar'] > 0 or state['total_retur'] > 0:
         raise ValueError('Invoice masih memiliki pembayaran/retur aktif. Batalkan sumber pelunasannya lebih dahulu')
+    # === Update #044 — Gagal Tagih: invoice dengan penghapusan piutang
+    # aktif juga terkunci (batalkan Voucher Memorial sumbernya dulu). ===
+    if Decimal(state.get('total_gagal_tagih', 0) or 0) > 0:
+        raise ValueError('Invoice masih memiliki penghapusan piutang (Gagal Tagih) aktif. Batalkan Voucher Memorial sumbernya lebih dahulu')
 
 
 def payment_summary(payment):

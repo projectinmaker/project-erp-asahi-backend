@@ -65,6 +65,8 @@ RESOURCE_NAMES = {
     # finance
     'cash_payment': 'Pembayaran Kas', 'cash_receipt': 'Penerimaan Kas',
     'bank_transfer': 'Transfer Bank', 'bank_reconciliation': 'Rekonsiliasi Bank',
+    # === Update #044 — Voucher Memorial (Gagal Tagih / penghapusan piutang) ===
+    'voucher_memorial': 'Voucher Memorial (Gagal Tagih)',
     # accounting
     'coa': 'Akun Perkiraan (COA)', 'opening_balance': 'Saldo Awal', 'journal': 'Jurnal Umum',
     'period': 'Periode Akuntansi',
@@ -155,6 +157,9 @@ REGISTRY: list = (
     + _res('finance', 'cash_receipt', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'export'])
     + _res('finance', 'bank_transfer', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'reverse', 'export'])
     + _res('finance', 'bank_reconciliation', ['view', 'create', 'edit', 'cancel', 'execute', 'export'])
+    # === Update #044 — Voucher Memorial: cabang Gagal Tagih alur Penerimaan
+    # Piutang (Dr Beban Penghapusan Piutang, Cr Piutang Usaha — non-kas). ===
+    + _res('finance', 'voucher_memorial', ['view', 'create', 'edit', 'cancel', 'submit', 'approve', 'post', 'export'])
     + _res('finance', 'tax_payment', ['view', 'export'])  # AUD-11 (update #04)
     # ── Accounting ────────────────────────────────────────────────────────
     + _res('accounting', 'coa', ['view', 'create', 'edit', 'delete', 'export'])
@@ -288,6 +293,11 @@ ROLE_TEMPLATES = {
             'finance.bank_reconciliation.view', 'finance.bank_reconciliation.create',
             'finance.bank_reconciliation.edit', 'finance.bank_reconciliation.cancel',
             'finance.bank_reconciliation.execute',
+            # === Update #044 — Voucher Memorial (Gagal Tagih): staf keuangan
+            # membuat draft penghapusan; approve/post tetap checker. ===
+            'finance.voucher_memorial.view', 'finance.voucher_memorial.create',
+            'finance.voucher_memorial.edit', 'finance.voucher_memorial.cancel',
+            'finance.voucher_memorial.submit', 'finance.voucher_memorial.export',
             'finance.tax_payment.view', 'finance.tax_payment.export',  # AUD-11
             'sales.ar_settlement.view', 'sales.ar_settlement.create', 'sales.ar_settlement.edit',
             'sales.ar_settlement.cancel', 'sales.ar_settlement.submit',
@@ -484,6 +494,8 @@ KIND_RESOURCE = {
     'pembayaran_kas': 'finance.cash_payment',
     'penerimaan_kas': 'finance.cash_receipt',
     'transfer_bank': 'finance.bank_transfer',
+    # === Update #044 — Voucher Memorial (Gagal Tagih) ===
+    'voucher_memorial': 'finance.voucher_memorial',
     'jurnal_umum': 'accounting.journal',
     'asset_event': 'asset.transaction',
 }
@@ -525,6 +537,9 @@ _ROUTER_PREFIXES = {
         ('pembayaran', 'finance.cash_payment'),
         ('penerimaan', 'finance.cash_receipt'),
         ('transfer', 'finance.bank_transfer'),
+        # === Update #044 — Voucher Memorial (Gagal Tagih): endpoint baru di
+        # router kas_bank (create/get/cancel_voucher_memorial*). ===
+        ('voucher_memorial', 'finance.voucher_memorial'),
     ],
     'rekonsiliasi_bank': [
         ('rekonsiliasi', 'finance.bank_reconciliation'),
