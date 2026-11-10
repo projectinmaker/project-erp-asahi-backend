@@ -130,6 +130,54 @@ def get_qty_invoiced_so_far(
     return int(query.scalar() or 0)
 
 
+def get_qty_invoiced_effective_for_do_detail(
+    db: Session,
+    delivery_detail_id: UUID,
+    exclude_invoice_detail_id: UUID | None = None,
+) -> int:
+    """Hitung total QTY EFEKTIF yang sudah di-invoice untuk baris DO tertentu.
+
+    === Update #046 — paritas perilaku dengan sisi SO (get_qty_invoiced_
+    for_so_detail, Update #042). ===
+
+    Invoice DP/Pelunasan (#042) membawa qty PENUH pada baris tetapi nilai
+    tagih parsial (sub_total = porsi DP, didistribusikan backend). Menghitung
+    RAW qty membuat baris DO langsung "habis terfaktur" walau nilainya baru
+    sebagian — akibatnya invoice kedua atas SO yang sama tidak bisa menarik
+    baris DO tersebut (item tidak keluar). Sisi SO sudah lama memakai
+    konversi efektif; fungsi ini menyamakan perilaku untuk sisi DO:
+
+        qty efektif per baris = sub_total / harga  (bila harga > 0)
+                                qty                (fallback harga = 0)
+
+    Hanya menghitung invoice ter-link via delivery_detail_id (jalur link
+    langsung baris DO) berstatus DIPROSES / SELESAI. Hasil dibulatkan ke
+    bawah supaya sisa tetap konservatif (tidak over-invoice).
+
+    Dipakai endpoint /pengiriman/{id}/sisa (tarik No DO di form Invoice).
+    """
+    from decimal import Decimal
+
+    query = (
+        db.query(SalesInvoiceDetail.sub_total, SalesInvoiceDetail.harga, SalesInvoiceDetail.qty)
+        .join(SalesInvoice, SalesInvoice.id == SalesInvoiceDetail.sales_invoice_id)
+        .filter(
+            SalesInvoiceDetail.delivery_detail_id == delivery_detail_id,
+            SalesInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+        )
+    )
+    if exclude_invoice_detail_id is not None:
+        query = query.filter(SalesInvoiceDetail.id != exclude_invoice_detail_id)
+    total = Decimal("0")
+    for sub_total, harga, qty in query.all():
+        harga_dec = Decimal(harga or 0)
+        if harga_dec > 0:
+            total += Decimal(sub_total or 0) / harga_dec
+        else:
+            total += Decimal(qty or 0)
+    return int(total)
+
+
 def get_qty_invoiced_for_so_detail(
     db: Session,
     sales_order_detail_id: UUID,

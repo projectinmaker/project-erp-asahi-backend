@@ -47,6 +47,7 @@ from app.services.sales_validation import (
     get_qty_delivered_so_far,
     get_qty_invoiced_for_so_detail,
     get_qty_invoiced_so_far,
+    get_qty_invoiced_effective_for_do_detail,
 )
 from app.schemas.workflow import HardDeleteRequest
 
@@ -677,8 +678,14 @@ def get_pengiriman_sisa(
 
     Dipakai form Invoice Penjualan saat user memilih No DO (mirror pola tarik
     No SO lewat /sales-order/{id}/sisa):
-    - qtyTerfaktur = SUM qty invoice detail berstatus DIPROSES/SELESAI yang
+    - qtyTerfaktur = QTY EFEKTIF invoice detail berstatus DIPROSES/SELESAI yang
       ter-link ke baris DO via delivery_detail_id.
+      === Update #046 — kini memakai qty EFEKTIF (sub_total / harga) paritas
+      dengan sisi SO (Update #042): invoice DP/Pelunasan parsial membawa qty
+      penuh di baris sehingga raw qty membuat DO langsung "habis terfaktur"
+      walau nilainya baru sebagian — invoice kedua atas SO tidak bisa menarik
+      baris DO (item tidak keluar). Dengan qty efektif, sisa DO mencerminkan
+      porsi nilai yang benar-benar belum ditagih. ===
     - sisaFaktur = qtyKirim - qtyTerfaktur (min 0); form hanya menarik baris
       dengan sisa > 0.
     - harga/diskon ditarik dari line SO asal bila baris DO ter-link
@@ -690,7 +697,7 @@ def get_pengiriman_sisa(
 
     details = []
     for d in pb.details:
-        qty_terfaktur = get_qty_invoiced_so_far(db, d.id)
+        qty_terfaktur = get_qty_invoiced_effective_for_do_detail(db, d.id)
         so_line = d.sales_order_detail
         details.append({
             "delivery_detail_id": d.id,

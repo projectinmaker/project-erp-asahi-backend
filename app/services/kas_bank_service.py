@@ -1133,6 +1133,20 @@ def post_penerimaan(db: Session, penerimaan, created_by, is_settlement: bool = F
     )
     penerimaan.jurnal_umum_id = jurnal.id
     penerimaan.status = StatusTransaksi.SELESAI
+    # === Update #046 — SO ikut SELESAI saat tagihannya terpelunasi penuh:
+    # penerimaan ini mengalokasikan pembayaran ke invoice-invoice atas SO —
+    # bila seluruh nilai SO sudah ditagih & semua invoice-nya LUNAS, kolom
+    # status SO dinaikkan DIPROSES → SELESAI (sinkronisasi dua arah; idempotent,
+    # tanpa commit — pemanggil/workflow yang memiliki transaksi). ===
+    so_ids = {
+        alloc.sales_invoice.sales_order_id
+        for alloc in (penerimaan.alokasi or [])
+        if getattr(alloc, "sales_invoice_id", None) is not None
+        and getattr(getattr(alloc, "sales_invoice", None), "sales_order_id", None) is not None
+    }
+    if so_ids:
+        from app.services.penjualan_service import sync_so_completion
+        sync_so_completion(db, so_ids)
     return penerimaan
 
 

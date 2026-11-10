@@ -286,6 +286,24 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
     cascade_so_id = getattr(db_obj, 'sales_order_id', None) if document_type == 'sales_invoice' else None
     cascade_inv_no = document_number(db_obj) if cascade_so_id is not None else None
 
+    # === Update #046 — SO terkait dokumen kas/invoice utk sinkronisasi
+    # status PASCA-pembatalan (revert SELESAI → DIPROSES bila tagihan tidak
+    # lagi lengkap). Di-capture SEBELUM alokasi pelunasan dihapus di branch
+    # REVERSAL supaya SO-nya tetap ketemu. ===
+    sync_so_ids = set()
+    if document_type == 'penerimaan_kas':
+        sync_so_ids = {
+            row[0] for row in db.query(SalesInvoice.sales_order_id)
+            .join(PaymentAllocation, PaymentAllocation.sales_invoice_id == SalesInvoice.id)
+            .filter(PaymentAllocation.penerimaan_id == db_obj.id,
+                    SalesInvoice.sales_order_id.isnot(None))
+            .all()
+        }
+    elif document_type == 'sales_invoice':
+        so_sid = getattr(db_obj, 'sales_order_id', None)
+        if so_sid is not None:
+            sync_so_ids = {so_sid}
+
     journals = _collect_journals(db, db_obj)
     mutasi = _collect_mutasi(db, db_obj) if document_type in _STOCK_KINDS else []
     has_accounting_trace = bool(journals) or bool(mutasi)
@@ -398,6 +416,19 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
         _cascade_cancel_sales_invoice_so(
             db, db_obj.id, cascade_inv_no, cascade_so_id, user, reason
         )
+    # === Update #046 — sinkronisasi status SO terkait (batal penerimaan
+    # pelunasan / batal invoice → SO yang SELESAI kembali DIPROSES bila
+    # tagihannya tidak lagi lengkap; SO yang ikut di-cascade DIBATALKAN
+    # otomatis dilewati oleh sync). Tanpa commit — dekorator yang commit. ===
+    if sync_so_ids:
+        try:
+            from app.services.penjualan_service import sync_so_completion
+            sync_so_completion(db, sync_so_ids)
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan pembatalan
+            logger.warning(
+                f"Sinkronisasi status SO pasca-pembatalan {document_number(db_obj)} "
+                f"dilewati: {sync_exc}"
+            )
     return db_obj
 
 

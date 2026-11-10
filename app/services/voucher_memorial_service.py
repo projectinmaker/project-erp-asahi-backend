@@ -321,6 +321,18 @@ def post_voucher_memorial(db: Session, voucher: VoucherMemorial, created_by: UUI
     )
     voucher.jurnal_umum_id = jurnal.id
     voucher.status = StatusTransaksi.SELESAI
+    # === Update #046 — SO ikut SELESAI saat tagihannya selesai lewat
+    # penghapusan piutang (Gagal Tagih): penghapusan penuh melunasi invoice
+    # (sisa tagihan berkurang) — sinkronkan status SO terkait (idempotent,
+    # tanpa commit; pemanggil/workflow yang memiliki transaksi). ===
+    so_ids = {
+        r.sales_invoice.sales_order_id
+        for r in (voucher.rincian or [])
+        if getattr(getattr(r, "sales_invoice", None), "sales_order_id", None) is not None
+    }
+    if so_ids:
+        from app.services.penjualan_service import sync_so_completion
+        sync_so_completion(db, so_ids)
     return voucher
 
 

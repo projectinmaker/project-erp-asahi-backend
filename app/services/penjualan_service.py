@@ -956,6 +956,69 @@ def _so_sisa_nilai(
     return max(Decimal("0"), grand_total - billed)
 
 
+def sync_so_completion(db: Session, so_ids) -> None:
+    """=== Update #046 — SO ikut SELESAI saat tagihannya selesai. ===
+
+    Dipanggil setelah titik-titik yang mengubah kelengkapan tagihan atas SO
+    (posting penerimaan pelunasan, posting Voucher Memorial gagal tagih,
+    pembatalan penerimaan/invoice). Aturan:
+
+    - SO DIPROSES dinaikkan ke SELESAI bila KEDUA syarat terpenuhi:
+      (1) seluruh nilai SO sudah ditagihkan — sisaNilai ≤ 0.005 dan ada
+          minimal satu invoice dengan nilai-tagih > 0; dan
+      (2) SEMUA invoice non-batal atas SO sudah terpelunasi penuh
+          (status pembayaran LUNAS / LEBIH_BAYAR — bayar + retur + DP
+          teraplikasi + gagal tagih ≥ grand total invoice).
+    - Sebaliknya, SO yang sudah SELESAI dikembalikan ke DIPROSES bila
+      tagihannya tidak lagi lengkap (mis. penerimaan pelunasan dibatalkan
+      atau invoice atas SO dibatalkan) — selama SO belum DIBATALKAN.
+
+    Idempotent; tidak melakukan commit (pemanggil memiliki transaksi —
+    dekorator atomic_accounting_write / alur workflow yang commit).
+    """
+    from app.services import settlement_service as settlement
+
+    for so_id in {s for s in so_ids if s}:
+        so = db.get(SalesOrder, so_id)
+        if so is None:
+            continue
+        current = getattr(so.status, "value", so.status)
+        if current == StatusPenjualan.DIBATALKAN.value:
+            continue
+        invoices = [
+            inv for inv in db.query(SalesInvoice)
+            .filter(SalesInvoice.sales_order_id == so_id,
+                    SalesInvoice.status != StatusPenjualan.DIBATALKAN)
+            .all()
+        ]
+        billed = sum((_invoice_billed(inv) for inv in invoices), Decimal("0"))
+        fully_billed = (
+            billed > 0
+            and safe_decimal(so.grand_total or 0) - billed <= Decimal("0.005")
+        )
+        all_settled = bool(invoices) and all(
+            b["status_pembayaran"] in ("LUNAS", "LEBIH_BAYAR")
+            for b in settlement.balances(db, invoices).values()
+        )
+        if fully_billed and all_settled:
+            # Hanya DIPROSES yang dinaikkan (DRAFT belum difinalisasi —
+            # tidak lompat ke SELESAI; SELESAI tetap).
+            if current == StatusPenjualan.DIPROSES.value:
+                so.status = StatusPenjualan.SELESAI
+                db.add(so)
+                logger.info(
+                    f"Update #046 — SO {so.no_pesanan} → SELESAI "
+                    f"(seluruh nilai sudah ditagih & terpelunasi)"
+                )
+        elif current == StatusPenjualan.SELESAI.value:
+            so.status = StatusPenjualan.DIPROSES
+            db.add(so)
+            logger.info(
+                f"Update #046 — SO {so.no_pesanan} SELESAI → DIPROSES "
+                f"(tagihan tidak lagi lengkap/terpelunasi)"
+            )
+
+
 # === Update #043 — pola keterangan otomatis invoice ter-link SO (lama & baru) ===
 # Bentuk lama (#042, dobel "SO"): "DP atas SO SO ASI/…" / "Pelunasan atas SO SO ASI/… — LUNAS".
 # Bentuk baru (#043):      "DP atas SO ASI/…" / "Pelunasan atas SO ASI/… — LUNAS".
