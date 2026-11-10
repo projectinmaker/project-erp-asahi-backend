@@ -48,6 +48,37 @@ def login(login_data: LoginRequest, db: Session = Depends(get_current_db)):
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_session(
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Update #051 — sesi geser (idle-timeout).
+
+    Tukar token lama (yang MASIH sah) dengan token baru berumur penuh
+    (ACCESS_TOKEN_EXPIRE_MINUTES = 2 jam, di app/config.py). Frontend
+    memanggil endpoint ini secara periodik HANYA saat user aktif — bukan
+    saat idle. Efeknya umur sesi "bergeser" mengikuti aktivitas:
+
+    - User terus aktif → token terus diperbarui → sesi tidak pernah berakhir.
+    - User diam ≥ 2 jam → token kadaluarsa, pemanggilan ini ditolak 401
+      (get_current_user) → frontend menampilkan "Sesi Berakhir".
+
+    Jadi sesi benar-benar berakhir HANYA karena tidak ada aktivitas —
+    bukan karena timer mati sejak login seperti sebelumnya (#043).
+    """
+    # Cek ulang status akun: admin bisa menonaktifkan user kapan pun.
+    if current_user.status != "AKTIF":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Akun dinonaktifkan, hubungi administrator",
+        )
+
+    # Data user dikirim segar (role/nama bisa saja diubah admin sejak login).
+    access_token = create_access_token(data={"sub": str(current_user.id), "role": current_user.role.value})
+    return {"access_token": access_token, "token_type": "bearer", "user": current_user}
+
+
 @router.get("/me/permissions")
 def get_my_permissions(db: Session = Depends(get_current_db),
                        user: Pengguna = Depends(get_current_user)):

@@ -59,8 +59,15 @@ def validate_link(db, invoice_id, supplier_id, tanggal):
     inv = db.get(PurchaseInvoice, invoice_id)
     if not inv:
         raise ValueError('Purchase invoice terkait tidak ditemukan')
-    if inv.jurnal_umum_id or str(getattr(inv.status, 'value', inv.status)) in ('SELESAI', 'DIBATALKAN'):
-        raise ValueError('Hubungkan penerimaan ke invoice yang belum diposting atau dibatalkan')
+    # === Update #051 — invoice yang sudah diposting kini BOLEH dihubungkan.
+    # Sejak #043 SEMUA invoice baru langsung diposting saat dibuat
+    # (direct_complete), sehingga larangan lama "belum diposting" praktis
+    # memblokir SEMUA invoice baru — termasuk alur GRNI inti (penerimaan
+    # final di-link ke invoice supplier). Link hanyalah relasi dokumen
+    # (metadata): jurnal & GRNI clearing invoice TIDAK dihitung ulang saat
+    # link diubah, jadi aman. Yang tetap ditolak: invoice DIBATALKAN. ===
+    if str(getattr(inv.status, 'value', inv.status)) == 'DIBATALKAN':
+        raise ValueError('Invoice yang sudah dibatalkan tidak bisa dihubungkan ke penerimaan')
     if inv.supplier_id != supplier_id:
         raise ValueError('Supplier penerimaan harus sama dengan invoice')
     if local_datetime(tanggal).date() > local_datetime(inv.tanggal).date():

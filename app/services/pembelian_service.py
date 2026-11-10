@@ -1979,7 +1979,43 @@ def update_penerimaan(
 
     Tahap 2: `purchase_invoice_id` bisa diisi untuk link ke invoice (clearing).
     Kirim `None` eksplisit untuk mengosongkan link.
+
+    === Update #051 — penerimaan FINAL (SELESAI / sudah berjurnal GRNI) tetap
+    boleh diubah TERBATAS: link invoice (purchase_invoice_id) + keterangan +
+    alamat. Ketiganya murni relasi/informasi — tidak menyentuh stok, jurnal,
+    maupun periode — sehingga aman diubah kapan pun setelah dokumen final.
+    Sebelumnya SEMUA perubahan ditolak dengan "Dokumen sudah diposting.
+    Batalkan dengan jurnal pembalik sebelum membuat koreksi." — pesan yang
+    menyesatkan: mengubah link invoice BUKAN koreksi jurnal. ===
     """
+    posted = bool(getattr(db_obj, "jurnal_umum_id", None)) or db_obj.status == StatusPenjualan.SELESAI
+    if posted:
+        if db_obj.status == StatusPenjualan.DIBATALKAN:
+            raise ValueError("Penerimaan yang sudah dibatalkan tidak bisa diubah.")
+        # Field terlindungi: nilai yang SAMA diabaikan (form edit mengirim body
+        # utuh dengan nilai readOnly), PERUBAHAN nilai ditolak dengan pesan jelas.
+        if tanggal is not None and (db_obj.tanggal is None or tanggal.date() != db_obj.tanggal.date()):
+            raise ValueError("Penerimaan sudah final (stok masuk & jurnal tercatat) — tanggal tidak bisa diubah.")
+        if purchase_order_id is not None and purchase_order_id != db_obj.purchase_order_id:
+            raise ValueError("Penerimaan sudah final (stok masuk & jurnal tercatat) — PO sumber tidak bisa diubah.")
+        if supplier_id is not None and supplier_id != db_obj.supplier_id:
+            raise ValueError("Penerimaan sudah final (stok masuk & jurnal tercatat) — supplier tidak bisa diubah.")
+        if gudang_id is not None and gudang_id != db_obj.gudang_id:
+            raise ValueError("Penerimaan sudah final (stok masuk & jurnal tercatat) — gudang tidak bisa diubah.")
+        # Perubahan yang diizinkan pada dokumen final:
+        if alamat is not None:
+            db_obj.alamat = alamat
+        if keterangan is not None:
+            db_obj.keterangan = keterangan
+        if purchase_invoice_id is not _RECEIPT_LINK_UNSET:
+            db_obj.purchase_invoice_id = purchase_invoice_id
+        receipt_control.validate_link(db, db_obj.purchase_invoice_id, db_obj.supplier_id, db_obj.tanggal)
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        logger.info(f"PenerimaanBarang (final) limited update: {db_obj.no_form}")
+        return db_obj
+
     require_unposted(db_obj)
     if gudang_id is not None:
         db_obj.gudang_id = gudang_id

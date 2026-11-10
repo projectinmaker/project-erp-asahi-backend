@@ -37,6 +37,20 @@ def accounting_lock(db):
         db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('asahi-accounting-write', 0))"))
 
 
+# === Update #051 — fungsi update_* yang menangani dokumen posted secara
+# EKSPLISIT dan aman sendiri (tidak memakai guard require_unposted bawaan
+# decorator). Di-key per (modul, nama) — BUKAN nama saja — karena nama fungsi
+# bisa sama antar service (mis. update_penerimaan juga ada di
+# kas_bank_service untuk Penerimaan KAS, yang tetap memakai guard lama).
+# Saat ini: pembelian_service.update_penerimaan — penerimaan barang final
+# (SELESAI / sudah berjurnal GRNI) boleh diubah TERBATAS (link invoice,
+# keterangan, alamat — murni relasi/informasi, tidak menyentuh
+# stok/jurnal/periode); service-nya sendiri yang memvalidasi field mana yang
+# boleh berubah dan menolak perubahan field berdampak stok/jurnal dengan
+# pesan yang jelas. ===
+_UPDATE_POSTED_SAFE = {('app.services.pembelian_service', 'update_penerimaan')}
+
+
 def atomic_accounting_write(function):
     """Rollback failed operations, lock existing documents, check their period."""
     parameters = signature(function)
@@ -109,22 +123,36 @@ def atomic_accounting_write(function):
                 if not item.jurnal_umum_id:
                     raise ValueError('Retur harus disetujui dan diposting sebelum finalisasi stok')
             if item is not None and function.__name__.startswith('update_'):
-                require_unposted(item)
+                # === Update #051 — fungsi safe-list memvalidasi sendiri
+                # dokumen posted-nya (lihat _UPDATE_POSTED_SAFE); guard
+                # require_unposted bawaan decorator dilewati HANYA untuk
+                # fungsi tersebut. ===
+                if (function.__module__, function.__name__) not in _UPDATE_POSTED_SAFE:
+                    require_unposted(item)
                 if actor:
                     from app.services.workflow_service import role, APPROVERS
                     if actor.id != item.created_by and role(actor) not in APPROVERS:
                         from fastapi import HTTPException
-                        raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengedit draft')
+                        raise HTTPException(403, 'Hanya pembuat atau manajer/admin yang dapat mengubah dokumen ini')
             # Inner service commits become flushes until audit and idempotency are saved.
             db.info['accounting_depth'] = 1
             db.commit = db.flush
             result = function(*bound.args, **bound.kwargs)
             if item is not None and function.__name__.startswith('update_'):
-                from app.services.workflow_service import find_workflow, append_event
+                from app.services.workflow_service import find_workflow, append_event, effective_state
                 wf = find_workflow(db, item)
                 if wf:
-                    wf.approved_by = None
-                    append_event(db, wf, 'edit', 'DRAFT', actor.id if actor else item.created_by)
+                    # === Update #051 — dokumen final (safe-list): catat event
+                    # 'edit' TANPA me-reset state workflow ke DRAFT — link
+                    # invoice tidak mengubah status dokumen, jurnal & stok
+                    # tidak tersentuh. Dokumen draft tetap di-reset seperti
+                    # semula (perilaku lama). ===
+                    state = effective_state(item, wf)
+                    if (function.__module__, function.__name__) in _UPDATE_POSTED_SAFE and state not in ('DRAFT', 'REJECTED'):
+                        append_event(db, wf, 'edit', state, actor.id if actor else item.created_by)
+                    else:
+                        wf.approved_by = None
+                        append_event(db, wf, 'edit', 'DRAFT', actor.id if actor else item.created_by)
             if item is not None and function.__name__ in ('finish_sales_retur', 'finish_purchase_retur'):
                 from app.services.workflow_service import find_workflow, append_event
                 wf = find_workflow(db, item)
