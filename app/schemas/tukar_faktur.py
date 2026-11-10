@@ -48,7 +48,11 @@ class PenggunaSimpleResponse(BaseSchema):
 # TUKAR FAKTUR DETAIL
 # ==========================================
 class TukarFakturDetailCreate(BaseSchema):
-    barang_id: UUID
+    # Update #045 — barang_id OPSIONAL: baris bisa berupa ITEM BEBAS
+    # (jasa/custom dari penawaran → SO → invoice; wajib item_nama saat NULL).
+    barang_id: UUID | None = None
+    item_nama: str | None = None
+    item_satuan: str | None = None
     satuan_id: UUID | None = None
     qty: int = 0
 

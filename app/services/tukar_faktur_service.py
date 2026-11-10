@@ -140,7 +140,9 @@ def create_tukar_faktur(
     - Snapshot header: pelanggan_id, no_so, no_po_customer, no_surat_jalan
       (distinct pengiriman), total = grand_total invoice — immutable setelah create.
     - Detail = copy tiap baris invoice (barang_id, qty, satuan_id fallback
-      delivery_detail -> sales_order_detail -> None).
+      delivery_detail -> sales_order_detail -> None). Baris ITEM BEBAS
+      (barang_id NULL) disalin apa adanya dengan item_nama/item_satuan
+      snapshot (Update #045).
     - Status DRAFT; TANPA jurnal, TANPA stok, TANPA workflow.
     """
     try:
@@ -182,11 +184,15 @@ def create_tukar_faktur(
         db.add(tf)
         db.flush()
 
-        # Copy baris detail invoice
+        # Copy baris detail invoice — termasuk baris ITEM BEBAS (Update #045):
+        # barang_id NULL + item_nama/item_satuan snapshot dari invoice; satuan
+        # master diambil dari delivery_detail -> sales_order_detail -> None.
         for d in inv.details:
             db.add(TukarFakturDetail(
                 tukar_faktur_id=tf.id,
                 barang_id=d.barang_id,
+                item_nama=getattr(d, "item_nama", None),
+                item_satuan=getattr(d, "item_satuan", None),
                 satuan_id=_detail_satuan_id(d),
                 qty=d.qty,
             ))

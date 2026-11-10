@@ -203,6 +203,10 @@ Efek setelah reset (yang diharapkan):
       (supplier-from-coa) — tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-11-10  + WIPE : voucher_memorial, voucher_memorial_detail (Voucher
+                         Memorial / jurnal memorial beserta rinciannya);
+                         sebelumnya belum terklasifikasi sehingga script
+                         menolak jalan.
     2026-11-05  + WIPE : penawaran_katalog_item (item katalog di Penawaran),
                          sales_order_termin (termin pembayaran Sales Order).
                          Keduanya anak dari dokumen transaksi; sebelumnya
@@ -348,6 +352,8 @@ WIPE_TABLES = frozenset({
     # Jurnal
     "jurnal_umum",
     "jurnal_detail",
+    "voucher_memorial",
+    "voucher_memorial_detail",
     # Kas & Bank
     "penerimaan_kas",
     "penerimaan_rincian",
@@ -405,7 +411,9 @@ WIPE_TABLES = frozenset({
 
 # Grup tampilan (urutan yang rapi untuk output konsol)
 WIPE_GROUPS = [
-    ("Jurnal", ["jurnal_umum", "jurnal_detail"]),
+    ("Jurnal", [
+        "jurnal_umum", "jurnal_detail", "voucher_memorial", "voucher_memorial_detail",
+    ]),
     ("Kas & Bank", [
         "penerimaan_kas", "penerimaan_rincian", "pembayaran_kas", "pembayaran_rincian",
         "transfer_bank", "rekonsiliasi_bank", "rekonsiliasi_bank_detail",

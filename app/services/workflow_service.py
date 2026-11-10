@@ -19,6 +19,7 @@ from app.models import (
     PenyesuaianStok, PemindahanBarang, PermintaanBarang, JurnalUmum, Penawaran, TukarFaktur,
     VoucherMemorial,  # === Update #044 — Voucher Memorial (Gagal Tagih) ===
 )
+from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent
 from app.services.accounting_control import atomic_accounting_write
 from app.services.access_registry import KIND_RESOURCE
@@ -50,6 +51,22 @@ EXECUTABLE = {
     'pengiriman_barang', 'penerimaan_barang', 'penyesuaian_stok', 'pemindahan_barang',
     'permintaan_barang', 'sales_retur', 'purchase_retur',
 }
+
+
+# === Update #045 — sinkronisasi kolom status dokumen ORDER saat finalisasi ===
+# SO/PO yang dibuat lewat form langsung difinalisasi (direct_complete force=True /
+# approve manual) — kolom ``status`` ikut dinaikkan ke DIPROSES agar badge di
+# daftar dokumen tidak lagi "Draft" untuk dokumen yang sudah jadi. ROP → PO
+# draft (tanpa finalisasi) TETAP DRAFT sampai diedit & disimpan (Update #043).
+ORDER_STATUS_SYNC = {'sales_order', 'purchase_order'}
+
+
+def _sync_order_status(obj):
+    """Naikkan kolom status SO/PO DRAFT → DIPROSES saat workflow mencapai APPROVED."""
+    if obj.__tablename__ in ORDER_STATUS_SYNC:
+        current = getattr(obj.status, 'value', obj.status)
+        if current == StatusPenjualan.DRAFT.value:
+            obj.status = StatusPenjualan.DIPROSES
 
 
 def role(user):
@@ -256,6 +273,9 @@ def _direct_complete_tx(db, user, kind, document_id, force: bool = False):
     wf.approved_by = user.id
     append_event(db, wf, 'approve', 'APPROVED', user.id)
 
+    # Update #045 — SO/PO final: kolom status ikut DIPROSES (bukan DRAFT).
+    _sync_order_status(obj)
+
     # 3) Posting/Eksekusi (APPROVED → final). Order berhenti di APPROVED (terminal).
     if kind in ('sales_retur', 'purchase_retur'):
         post_existing(db, obj, user.id)
@@ -311,6 +331,8 @@ def transition(db, document_type, document_id, action, user, expected_version, r
     elif action == 'approve':
         wf.approved_by = user.id
         target = 'APPROVED'
+        # Update #045 — SO/PO final: kolom status ikut DIPROSES (bukan DRAFT).
+        _sync_order_status(obj)
     elif action in ('reject', 'withdraw'):
         if not reason or not reason.strip():
             raise ValueError('Alasan wajib diisi untuk reject/withdraw')
