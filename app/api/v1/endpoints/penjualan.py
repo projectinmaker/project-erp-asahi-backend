@@ -9,10 +9,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy import case as sa_case, or_ as sa_or
+from decimal import Decimal
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
-from app.models.transaksi.penjualan.sales_order import StatusPenjualan
+from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
+from app.models.transaksi.penjualan.sales_invoice import SalesInvoice
+from app.models.transaksi.penjualan.pengiriman_barang import PengirimanBarang
+from app.models.detail.sales_invoice_detail import SalesInvoiceDetail
+from app.models.detail.pengiriman_barang_detail import PengirimanBarangDetail
 from app.models.transaksi.jurnal import JurnalUmum, RefModule
 from sqlalchemy import func as sa_func
 from app.schemas.base import PaginatedResponse
@@ -90,6 +96,88 @@ def get_sales_order_termin_open(
         return svc.get_open_termin_sos(db, search=search, limit=limit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/sales-order/tersedia")
+def get_sales_order_tersedia(
+    untuk: str = Query("pengiriman", description="Tujuan tarik data: 'pengiriman' (sisa qty kirim) atau 'invoice' (sisa nilai tagih)"),
+    search: str | None = Query(None, description="Cari no pesanan"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #047 — SO yang MASIH PUNYA SISA untuk narik data. ===
+
+    Dipakai dropdown "Sales Order" di form Pengiriman (DO) dan Invoice
+    Penjualan. Dokumen yang sudah TERPAKAI PENUH tidak ditawarkan lagi
+    (permintaan user: "yang sudah terpakai sebelumnya jangan ditampilkan
+    lagi — status harus akurat biar tidak terpanggil lagi"):
+
+    - untuk=pengiriman : SO non-DIBATALKAN yang masih ada baris belum
+      terkirim penuh (kolom fulfillment_status ≠ FULFILLED/CLOSED; NULL
+      dianggap masih terbuka). Berbasis kolom (murah) — nilainya
+      di-maintain _refresh_fulfillment_status (Update #7 M-05).
+    - untuk=invoice    : SO non-DIBATALKAN yang masih punya SISA NILAI
+      tagih = grand_total − Σ nilai-tagih invoice non-batal > 0.005
+      (nilai-tagih = dp_pelunasan bila > 0, selain itu sub_total —
+      paritas _so_sisa_nilai #042). Set-based (satu query agregat).
+
+    Response ringan {id, noPesanan, pelangganId} — tanpa detail baris.
+    Form tetap menarik sisa per baris lewat /sales-order/{id}/sisa.
+    """
+    base = db.query(SalesOrder.id, SalesOrder.no_pesanan, SalesOrder.pelanggan_id).filter(
+        SalesOrder.status != StatusPenjualan.DIBATALKAN
+    )
+    if search:
+        base = base.filter(SalesOrder.no_pesanan.ilike(f"%{search}%"))
+
+    if untuk == "invoice":
+        billed_sq = (
+            db.query(
+                SalesInvoice.sales_order_id.label("so_id"),
+                sa_func.coalesce(
+                    sa_func.sum(
+                        sa_case(
+                            (SalesInvoice.dp_pelunasan > 0, SalesInvoice.dp_pelunasan),
+                            else_=SalesInvoice.sub_total,
+                        )
+                    ),
+                    0,
+                ).label("billed"),
+            )
+            .filter(
+                SalesInvoice.status != StatusPenjualan.DIBATALKAN,
+                SalesInvoice.sales_order_id.isnot(None),
+            )
+            .group_by(SalesInvoice.sales_order_id)
+            .subquery()
+        )
+        rows = (
+            base.outerjoin(billed_sq, billed_sq.c.so_id == SalesOrder.id)
+            .filter(SalesOrder.grand_total - sa_func.coalesce(billed_sq.c.billed, 0) > Decimal("0.005"))
+            .order_by(SalesOrder.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+    else:
+        # pengiriman — masih ada baris yang belum terkirim penuh.
+        # NULL fulfillment_status (SO lama) dianggap masih terbuka.
+        rows = (
+            base.filter(
+                sa_or(
+                    SalesOrder.fulfillment_status.is_(None),
+                    ~SalesOrder.fulfillment_status.in_(["FULFILLED", "CLOSED"]),
+                )
+            )
+            .order_by(SalesOrder.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    return [
+        {"id": r.id, "noPesanan": r.no_pesanan, "pelangganId": r.pelanggan_id}
+        for r in rows
+    ]
 
 
 @router.get("/sales-order", response_model=PaginatedResponse[SalesOrderResponse])
@@ -655,6 +743,69 @@ def create_pengiriman(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+@router.get("/pengiriman/tersedia")
+def get_pengiriman_tersedia(
+    search: str | None = Query(None, description="Cari no surat jalan"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #047 — DO yang masih punya SISA FAKTUR untuk narik data. ===
+
+    Dipakai dropdown "No DO" di form Invoice Penjualan. DO yang semua
+    barisnya sudah terfaktur penuh tidak ditawarkan lagi (paritas dengan
+    /sales-order/tersedia untuk=pengiriman).
+
+    Sisa per baris = qty − QTY EFEKTIF invoice ter-link via
+    delivery_detail_id (sub_total/harga bila harga > 0 — Update #046),
+    hanya invoice DIPROSES/SELESAI. Set-based (satu query agregat).
+
+    Response ringan {id, noSuratJalan, pelangganId} — form tetap menarik
+    sisa per baris lewat /pengiriman/{id}/sisa.
+    """
+    eff_sq = (
+        db.query(
+            SalesInvoiceDetail.delivery_detail_id.label("dd_id"),
+            sa_func.sum(
+                sa_case(
+                    (SalesInvoiceDetail.harga > 0, SalesInvoiceDetail.sub_total / SalesInvoiceDetail.harga),
+                    else_=SalesInvoiceDetail.qty,
+                )
+            ).label("eff"),
+        )
+        .join(SalesInvoice, SalesInvoice.id == SalesInvoiceDetail.sales_invoice_id)
+        .filter(
+            SalesInvoiceDetail.delivery_detail_id.isnot(None),
+            SalesInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+        )
+        .group_by(SalesInvoiceDetail.delivery_detail_id)
+        .subquery()
+    )
+    query = (
+        # created_at ikut di-select supaya DISTINCT + ORDER BY valid di
+        # PostgreSQL (kolom order by harus ada di select list).
+        db.query(
+            PengirimanBarang.id,
+            PengirimanBarang.no_surat_jalan,
+            PengirimanBarang.pelanggan_id,
+            PengirimanBarang.created_at,
+        )
+        .join(PengirimanBarangDetail, PengirimanBarangDetail.pengiriman_id == PengirimanBarang.id)
+        .outerjoin(eff_sq, eff_sq.c.dd_id == PengirimanBarangDetail.id)
+        .filter(
+            PengirimanBarang.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+            PengirimanBarangDetail.qty - sa_func.coalesce(eff_sq.c.eff, 0) > 0,
+        )
+    )
+    if search:
+        query = query.filter(PengirimanBarang.no_surat_jalan.ilike(f"%{search}%"))
+    rows = query.distinct().order_by(PengirimanBarang.created_at.desc()).limit(limit).all()
+    return [
+        {"id": r.id, "noSuratJalan": r.no_surat_jalan, "pelangganId": r.pelanggan_id}
+        for r in rows
+    ]
+
+
 @router.get("/pengiriman/{pengiriman_id}", response_model=PengirimanBarangResponse)
 def get_pengiriman_detail(
     pengiriman_id: UUID,
@@ -954,6 +1105,13 @@ def get_penawaran_untuk_so(
     boleh dipakai beberapa SO). DIREVISI & DIBATALKAN tidak ditawarkan.
     Form SO memakai ini untuk auto-isi pelanggan + item (barang master &
     item bebas) + harga saat "Pilih Penawaran".
+
+    === Update #047 — penawaran yang SUDAH TERPAKAI PENUH tidak
+    ditawarkan lagi (permintaan user: dokumen sumber yang sudah dipakai
+    tidak tampil di dropdown narik data). Aturan: tampil bila (belum
+    pernah dipakai) ATAU (masih punya sisa nilai — mis. SO-nya dibatalkan
+    sehingga sisanya kembali). Tombol "Buat SO" di daftar penawaran
+    tetap bisa dipakai untuk repeat order apa pun statusnya. ===
     """
     return [
         {
@@ -972,6 +1130,8 @@ def get_penawaran_untuk_so(
             "jumlah_item": len(p.details or []),
         }
         for p in penawaran_service.get_penawaran_untuk_so(db, search=search, limit=limit)
+        # === Update #047 — belum terpakai ATAU masih ada sisa nilai ===
+        if (p.digunakan_count or 0) == 0 or (p.sisa_penawaran or 0) > 0
     ]
 
 
