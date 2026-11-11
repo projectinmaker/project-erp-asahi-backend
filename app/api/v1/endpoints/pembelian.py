@@ -4,6 +4,7 @@ PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang, LPPB.
 """
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional, Dict, Any
 from uuid import UUID
 
@@ -342,6 +343,12 @@ def get_purchase_order_sisa(
         "no_pesanan": po.no_pesanan,
         "alamat": po.alamat,
         "syarat_bayar_id": po.syarat_bayar_id,
+        # === Update #053 — pilihan pajak PO (diwarisi kartu Pajak form
+        # Invoice Pembelian saat PO ini dipilih). ===
+        "ppn": po.ppn if po.ppn is not None else Decimal("11"),
+        "ppn_applicable": bool(po.ppn_applicable) if po.ppn_applicable is not None else True,
+        "pph23": po.pph23 if po.pph23 is not None else Decimal("2"),
+        "pph23_applicable": bool(po.pph23_applicable) if po.pph23_applicable is not None else False,
         "details": details,
     }
 

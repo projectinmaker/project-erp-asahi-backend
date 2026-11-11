@@ -658,6 +658,13 @@ class PurchaseOrderSisaResponse(BaseSchema):
     alamat: str | None = None
     syarat_bayar_id: UUID | None = None
     details: list[PurchaseOrderSisaDetailResponse] = []
+    # === Update #053 — pilihan pajak PO ikut dikirim supaya form Invoice
+    # Pembelian bisa MEWARISI setting PPN/PPh23 dari PO terpilih (set pajak
+    # sekali di PO; invoice tinggal mengikuti — tetap bisa disesuaikan). ===
+    ppn: Decimal = Decimal("11")
+    ppn_applicable: bool = True
+    pph23: Decimal = Decimal("2")
+    pph23_applicable: bool = False
 
 
 # ==========================================
