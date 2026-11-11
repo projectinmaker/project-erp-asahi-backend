@@ -304,6 +304,26 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
         if so_sid is not None:
             sync_so_ids = {so_sid}
 
+    # === Update #052 — PO terkait dokumen pembelian/kas utk sinkronisasi
+    # status PASCA-pembatalan (revert SELESAI → DIPROSES bila rantai PO tidak
+    # lagi tuntas). Di-capture SEBELUM alokasi/hard-delete supaya relasinya
+    # masih ketemu. ===
+    sync_po_ids = set()
+    if document_type == 'pembayaran_kas':
+        _pinv_rows = db.query(PurchaseInvoice).join(
+            PaymentAllocation, PaymentAllocation.purchase_invoice_id == PurchaseInvoice.id
+        ).filter(PaymentAllocation.pembayaran_id == db_obj.id).all()
+        from app.services.pembelian_service import po_ids_of_invoice
+        for _pinv in _pinv_rows:
+            sync_po_ids |= po_ids_of_invoice(db, _pinv)
+    elif document_type == 'purchase_invoice':
+        from app.services.pembelian_service import po_ids_of_invoice
+        sync_po_ids = po_ids_of_invoice(db, db_obj)
+    elif document_type == 'penerimaan_barang':
+        _po_sid = getattr(db_obj, 'purchase_order_id', None)
+        if _po_sid is not None:
+            sync_po_ids = {_po_sid}
+
     journals = _collect_journals(db, db_obj)
     mutasi = _collect_mutasi(db, db_obj) if document_type in _STOCK_KINDS else []
     has_accounting_trace = bool(journals) or bool(mutasi)
@@ -427,6 +447,18 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
         except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan pembatalan
             logger.warning(
                 f"Sinkronisasi status SO pasca-pembatalan {document_number(db_obj)} "
+                f"dilewati: {sync_exc}"
+            )
+    # === Update #052 — sinkronisasi status PO terkait (batal pembayaran
+    # hutang / batal invoice / batal penerimaan → PO SELESAI kembali
+    # DIPROSES bila rantainya tidak lagi tuntas). ===
+    if sync_po_ids:
+        try:
+            from app.services.pembelian_service import sync_po_completion
+            sync_po_completion(db, sync_po_ids)
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan pembatalan
+            logger.warning(
+                f"Sinkronisasi status PO pasca-pembatalan {document_number(db_obj)} "
                 f"dilewati: {sync_exc}"
             )
     return db_obj

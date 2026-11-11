@@ -51,7 +51,10 @@ from app.services.setting_akun_service import (
     KEY_PPN_MASUKAN,
     KEY_RETUR_PEMBELIAN,
     KEY_BEBAN_ANGKUT_PEMBELIAN,
+    # === Update #052 — PPh23 Invoice Pembelian: akun lawan potongan ===
+    KEY_HUTANG_PPH23,
 )
+from app.models.detail.purchase_invoice_receipt_match import PurchaseInvoiceReceiptMatch
 from app.utils.nomor_dokumen import get_nomor_dokumen, get_nomor_dokumen_tahunan
 
 
@@ -1409,6 +1412,11 @@ def create_purchase_invoice(
     syarat_bayar_id=None,
     # Update #7 (B-06): link invoice ke Purchase Order sumber (opsional).
     purchase_order_id: UUID | None = None,
+    # === Update #052 — pilihan PPh23/PPN saat input Invoice Pembelian
+    # (mirror PO & Invoice Penjualan; sebelumnya PPh23 diabaikan backend). ===
+    ppn_applicable: bool = True,
+    pph23_applicable: bool = False,
+    pph23: Decimal = Decimal("2"),
 ) -> PurchaseInvoice:
     """Buat PurchaseInvoice baru beserta detail + biaya tambahan."""
     try:
@@ -1419,13 +1427,22 @@ def create_purchase_invoice(
         if not supplier:
             raise ValueError(f"Supplier dengan ID {supplier_id} tidak ditemukan")
 
+        # === Update #052 — normalisasi tarif None (schema optional) ===
+        if ppn is None:
+            ppn = Decimal("11")
+        if pph23 is None:
+            pph23 = Decimal("2")
+
         # Hitung sub_total dan total_diskon dari detail
         sub_total, total_diskon = _hitung_total_detail_with_diskon(details_data)
 
         total_biaya_tambahan = _hitung_total_biaya(biaya_data)
-        # Invoice pembelian belum mendukung pilihan PPh23 (default PPN aktif).
-        total_ppn, _total_pph23, grand_total = _hitung_grand_total(
-            sub_total, total_diskon, ppn, total_biaya_tambahan
+        # === Update #052 — PPh23/PPN opsional pada Invoice Pembelian ===
+        total_ppn, total_pph23, grand_total = _hitung_grand_total(
+            sub_total, total_diskon, ppn, total_biaya_tambahan,
+            ppn_applicable=ppn_applicable,
+            pph23_pct=pph23,
+            pph23_applicable=pph23_applicable,
         )
 
         # Generate nomor form (invoice pembelian)
@@ -1447,6 +1464,11 @@ def create_purchase_invoice(
             alamat=alamat,
             diskon_global=diskon_global,
             ppn=ppn,
+            # === Update #052 — pilihan PPh23/PPN tersimpan (mirror PO) ===
+            ppn_applicable=ppn_applicable,
+            pph23_applicable=pph23_applicable,
+            pph23=pph23 if pph23 is not None else Decimal("2"),
+            total_pph23=total_pph23,
             sub_total=sub_total,
             total_diskon=total_diskon,
             total_ppn=total_ppn,
@@ -1525,6 +1547,10 @@ def update_purchase_invoice(
     details: list | None = None,
     # Update #7 (B-06): link/ubah PO sumber saat invoice masih draft.
     purchase_order_id: UUID | None = None,
+    # === Update #052 — pilihan PPh23/PPN pada update (draft saja) ===
+    ppn_applicable: Optional[bool] = None,
+    pph23_applicable: Optional[bool] = None,
+    pph23: Optional[Decimal] = None,
 ) -> PurchaseInvoice:
     """Update data purchase invoice (field header + opsional replace detail)."""
     require_unposted(db_obj)
@@ -1543,6 +1569,13 @@ def update_purchase_invoice(
         db_obj.diskon_global = diskon_global
     if ppn is not None:
         db_obj.ppn = ppn
+    # === Update #052 — pilihan pajak PPN/PPh23 ===
+    if ppn_applicable is not None:
+        db_obj.ppn_applicable = ppn_applicable
+    if pph23_applicable is not None:
+        db_obj.pph23_applicable = pph23_applicable
+    if pph23 is not None:
+        db_obj.pph23 = pph23
     if keterangan is not None:
         db_obj.keterangan = keterangan
     if auto_post_jurnal is not None:
@@ -1592,14 +1625,179 @@ def cancel_purchase_invoice(db: Session, db_obj: PurchaseInvoice, user_id: Optio
     require_no_settlements(db, db_obj)
     if db_obj.status == StatusPenjualan.DIBATALKAN:
         raise ValueError("Purchase Invoice sudah dibatalkan")
+    # === Update #052 — PO terkait di-capture SEBELUM status diubah supaya
+    # sync pasca-pembatalan masih menemukan relasinya. ===
+    _po_ids = po_ids_of_invoice(db, db_obj)
     if getattr(db_obj, "jurnal_umum_id", None):
         reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusPenjualan.DIBATALKAN
     db.add(db_obj)
+    # === Update #052 — PO SELESAI kembali DIPROSES bila rantainya tidak
+    # lagi lengkap (invoice batal). Tanpa commit — transaksi pemanggil. ===
+    if _po_ids:
+        try:
+            sync_po_completion(db, _po_ids)
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan pembatalan
+            logger.warning(f"Sync status PO pasca-batal invoice {db_obj.no_form} dilewati: {sync_exc}")
     db.commit()
     db.refresh(db_obj)
     logger.info(f"PurchaseInvoice cancelled: {db_obj.no_form}")
     return db_obj
+
+
+# ==========================================
+# === Update #052 — SINKRONISASI STATUS PO ===
+# ==========================================
+# Mirror sync_so_completion (#046): selama ini TIDAK ADA mekanisme yang
+# menaikkan status PO dari DIPROSES — PO "nyangkut" di Diproses selamanya
+# walau barang sudah diterima, diinvois, dan dibayar penuh.
+
+def po_ids_of_invoice(db: Session, inv: PurchaseInvoice) -> set:
+    """Kumpulkan ID PO yang terhubung ke sebuah invoice pembelian:
+    link langsung (purchase_order_id) + PO dari penerimaan yang ter-link
+    (penerimaan.purchase_invoice_id) + PO lewat match table."""
+    po_ids = set()
+    if getattr(inv, "purchase_order_id", None):
+        po_ids.add(inv.purchase_order_id)
+    receipt_rows = db.query(PenerimaanBarang.purchase_order_id).filter(
+        PenerimaanBarang.purchase_invoice_id == inv.id,
+        PenerimaanBarang.purchase_order_id.isnot(None),
+    ).all()
+    po_ids |= {row[0] for row in receipt_rows if row[0]}
+    match_rows = (
+        db.query(PenerimaanBarang.purchase_order_id)
+        .join(PenerimaanBarangDetail,
+              PenerimaanBarangDetail.penerimaan_barang_id == PenerimaanBarang.id)
+        .join(PurchaseInvoiceReceiptMatch,
+              PurchaseInvoiceReceiptMatch.penerimaan_barang_detail_id == PenerimaanBarangDetail.id)
+        .join(PurchaseInvoiceDetail,
+              PurchaseInvoiceDetail.id == PurchaseInvoiceReceiptMatch.purchase_invoice_detail_id)
+        .filter(PurchaseInvoiceDetail.purchase_invoice_id == inv.id,
+                PenerimaanBarang.purchase_order_id.isnot(None))
+        .all()
+    )
+    po_ids |= {row[0] for row in match_rows if row[0]}
+    return po_ids
+
+
+def _po_linked_invoices(db: Session, po_id) -> list:
+    """Invoice pembelian AKTIF (non-DIBATALKAN) yang terhubung ke PO —
+    jalur: link langsung, penerimaan.purchase_invoice_id, atau match table."""
+    inv_ids = {
+        row[0] for row in db.query(PurchaseInvoice.id).filter(
+            PurchaseInvoice.purchase_order_id == po_id,
+            PurchaseInvoice.status != StatusPenjualan.DIBATALKAN,
+        ).all()
+    }
+    receipt_ids = [
+        row[0] for row in db.query(PenerimaanBarang.id).filter(
+            PenerimaanBarang.purchase_order_id == po_id).all()
+    ]
+    if receipt_ids:
+        via_pb = db.query(PenerimaanBarang.purchase_invoice_id).filter(
+            PenerimaanBarang.id.in_(receipt_ids),
+            PenerimaanBarang.purchase_invoice_id.isnot(None),
+        ).all()
+        inv_ids |= {row[0] for row in via_pb if row[0]}
+        via_match = (
+            db.query(PurchaseInvoiceDetail.purchase_invoice_id)
+            .join(PurchaseInvoiceReceiptMatch,
+                  PurchaseInvoiceReceiptMatch.purchase_invoice_detail_id == PurchaseInvoiceDetail.id)
+            .join(PenerimaanBarangDetail,
+                  PenerimaanBarangDetail.id == PurchaseInvoiceReceiptMatch.penerimaan_barang_detail_id)
+            .filter(PenerimaanBarangDetail.penerimaan_barang_id.in_(receipt_ids))
+            .all()
+        )
+        inv_ids |= {row[0] for row in via_match if row[0]}
+    if not inv_ids:
+        return []
+    return db.query(PurchaseInvoice).filter(
+        PurchaseInvoice.id.in_(inv_ids),
+        PurchaseInvoice.status != StatusPenjualan.DIBATALKAN,
+    ).all()
+
+
+def _po_fully_received(db: Session, po: PurchaseOrder) -> bool:
+    """Setiap baris PO sudah diterima penuh oleh penerimaan berstatus
+    SELESAI (ditelusuri lewat purchase_order_detail_id; over-receipt OK)."""
+    lines = list(po.details)
+    if not lines:
+        return False
+    for line in lines:
+        received = (
+            db.query(func.sum(PenerimaanBarangDetail.qty))
+            .join(PenerimaanBarang,
+                  PenerimaanBarangDetail.penerimaan_barang_id == PenerimaanBarang.id)
+            .filter(
+                PenerimaanBarangDetail.purchase_order_detail_id == line.id,
+                PenerimaanBarang.status == StatusPenjualan.SELESAI,
+            ).scalar()
+            or 0
+        )
+        if int(received) < int(line.qty or 0):
+            return False
+    return True
+
+
+def sync_po_completion(db: Session, po_ids) -> None:
+    """=== Update #052 — PO ikut SELESAI saat rantainya tuntas. ===
+
+    Dipanggil setelah titik yang mengubah kelengkapan rantai PO (penerimaan
+    selesai, invoice diposting/dibatalkan, pembayaran hutang diposting /
+    dibatalkan). Aturan:
+
+    - PO DIPROSES dinaikkan ke SELESAI bila SEMUA terpenuhi:
+      (1) barang diterima penuh (per baris, lewat penerimaan SELESAI)
+          ATAU invoice terhubung menutup nilai PO (Σ grand_total ≥
+          grand_total PO − 0,005 — menutup alur belanja jasa tanpa
+          penerimaan), dan
+      (2) ada minimal satu invoice aktif yang terhubung, dan
+      (3) SEMUA invoice terhubung sudah terpelunasi penuh
+          (status pembayaran LUNAS / LEBIH_BAYAR).
+    - Sebaliknya PO yang sudah SELESAI dikembalikan ke DIPROSES bila
+      rantainya tidak lagi tuntas (invoice dibatalkan / pelunasan dibatalkan)
+      — selama PO belum DIBATALKAN.
+
+    Idempotent; tidak melakukan commit (pemanggil memiliki transaksi).
+    """
+    from app.services import settlement_service as settlement
+
+    for po_id in {p for p in po_ids if p}:
+        po = db.get(PurchaseOrder, po_id)
+        if po is None:
+            continue
+        current = getattr(po.status, "value", po.status)
+        if current == StatusPenjualan.DIBATALKAN.value:
+            continue
+        invoices = _po_linked_invoices(db, po_id)
+        billed = sum((safe_decimal(inv.grand_total or 0) for inv in invoices), Decimal("0"))
+        fully_billed = (
+            bool(invoices)
+            and safe_decimal(po.grand_total or 0) - billed <= Decimal("0.005")
+        )
+        fully_received = _po_fully_received(db, po)
+        all_settled = bool(invoices) and all(
+            b["status_pembayaran"] in ("LUNAS", "LEBIH_BAYAR")
+            for b in settlement.balances(db, invoices).values()
+        )
+        complete = (fully_received or fully_billed) and all_settled
+        if complete:
+            # Hanya DIPROSES yang dinaikkan (DRAFT belum difinalisasi —
+            # tidak lompat ke SELESAI; SELESAI tetap).
+            if current == StatusPenjualan.DIPROSES.value:
+                po.status = StatusPenjualan.SELESAI
+                db.add(po)
+                logger.info(
+                    f"Update #052 — PO {po.no_pesanan} → SELESAI "
+                    f"(diterima/ditagih penuh & terpelunasi)"
+                )
+        elif current == StatusPenjualan.SELESAI.value:
+            po.status = StatusPenjualan.DIPROSES
+            db.add(po)
+            logger.info(
+                f"Update #052 — PO {po.no_pesanan} SELESAI → DIPROSES "
+                f"(rantai penerimaan/invoice/pelunasan tidak lagi tuntas)"
+            )
 
 
 # ==========================================
@@ -2174,6 +2372,16 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
 
     db_obj.status = StatusPenjualan.SELESAI
     db.add(db_obj)
+    # === Update #052 — PO sumber ikut disinkronkan saat penerimaan selesai
+    # (bila invoice terhubung sudah ada & lunas → PO bisa naik SELESAI).
+    # Tanpa commit — commit tetap milik alur ini di bawah. ===
+    if db_obj.purchase_order_id is not None:
+        try:
+            sync_po_completion(db, {db_obj.purchase_order_id})
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan finalisasi
+            logger.warning(
+                f"Sync status PO pasca-selesai penerimaan {db_obj.no_form} dilewati: {sync_exc}"
+            )
     db.commit()
     db.refresh(db_obj)
     logger.info(f"PenerimaanBarang finished: {db_obj.no_form} | stok ditambahkan")
@@ -2326,6 +2534,23 @@ def post_purchase_invoice(db: Session, inv, created_by):
             )
         )
 
+    # === Update #052 — PPh23 opsional pada Invoice Pembelian (mirror SI).
+    # Grand total sudah dipotong total_pph23 (Kredit Utang lebih kecil —
+    # PPh23 ditahan dari pembayaran supplier), sehingga perlu KREDIT akun
+    # "Hutang PPh 23" (setting HUTANG_PPH23) agar jurnal balance:
+    # D(Pembelian/GRNI + PPN + Biaya) = K(Utang + Hutang PPh23). ===
+    total_pph23 = safe_decimal(getattr(inv, "total_pph23", 0))
+    if total_pph23 > 0:
+        entries.append(
+            JurnalEntryItem(
+                akun_perkiraan_id=get_akun_id_or_raise(
+                    db, KEY_HUTANG_PPH23, context=f"PINV {no_form}"
+                ),
+                kredit=total_pph23,
+                keterangan=f"PPh23 ditahan supplier PINV {no_form}",
+            )
+        )
+
     try:
         jurnal = auto_posting_jurnal(
             db=db,
@@ -2342,6 +2567,14 @@ def post_purchase_invoice(db: Session, inv, created_by):
         inv.status = StatusPenjualan.SELESAI
     except Exception as e:
         raise ValueError(f"Jurnal PINV gagal diposting: {e}")
+    # === Update #052 — PO sumber ikut disinkronkan setelah invoice final
+    # (bila barang sudah diterima penuh / nilai PO tertutup dan semua invoice
+    # terhubung sudah lunas → PO DIPROSES naik SELESAI). Tanpa commit —
+    # pemanggil (workflow) yang memiliki transaksi. ===
+    try:
+        sync_po_completion(db, po_ids_of_invoice(db, inv))
+    except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan posting
+        logger.warning(f"Sync status PO pasca-posting PINV {no_form} dilewati: {sync_exc}")
     return inv
 
 

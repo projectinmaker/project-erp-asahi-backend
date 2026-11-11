@@ -2409,6 +2409,22 @@ def post_sales_invoice(db: Session, inv, created_by):
         inv.status = StatusPenjualan.SELESAI
     except Exception as e:
         raise ValueError(f"Jurnal INV gagal diposting: {e}")
+    # === Update #052 — SO sumber ikut disinkronkan saat invoice final.
+    # Menutup celah "SO nyangkut di Diproses": sebelumnya sync_so_completion
+    # hanya dipanggil saat pelunasan diposting — padahal alur #042 bisa
+    # terbalik (DP/termin dibayar DULU lewat Penerimaan, invoice dibuat
+    # BELAKANGAN). Saat pelunasan diposting, SO belum tertagih penuh →
+    # tidak naik; saat invoice akhirnya dibuat, sync tidak dipanggil →
+    # SO terkunci di DIPROSES selamanya. Dengan hook ini kedua urutan
+    # alur tersinkron. Tanpa commit — pemanggil (workflow) memiliki
+    # transaksi. ===
+    if inv.sales_order_id is not None:
+        try:
+            sync_so_completion(db, {inv.sales_order_id})
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan posting
+            logger.warning(
+                f"Sync status SO pasca-posting INV {no_invoice} dilewati: {sync_exc}"
+            )
     return inv
 
 

@@ -397,6 +397,9 @@ class PurchaseInvoiceBase(BaseSchema):
     # RATE_PPN) — di-resolve endpoint sebelum service; klien tetap bisa kirim
     # tarif custom per dokumen.
     ppn: Optional[Decimal] = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    # === Update #052 — PPN bisa dimatikan per invoice (mirror PO/SI):
+    # ppn_applicable=False → total_ppn 0. Default true = perilaku lama. ===
+    ppn_applicable: bool = True
     # === AUD-09 (update #04) — PPh 23 pada Purchase Invoice ===
     # Mirror SI/PO: potongan PPh 23 supplier tercatat sejak invoice (hutang
     # net + Cr Hutang PPh 23 saat posting). Default false = perilaku lama
@@ -425,6 +428,8 @@ class PurchaseInvoiceUpdate(BaseSchema):
     alamat: Optional[str] = None
     diskon_global: Optional[Decimal] = None
     ppn: Optional[Decimal] = None
+    # Update #052 — PPN per invoice bisa dimatikan (draft saja).
+    ppn_applicable: Optional[bool] = None
     # AUD-09 — PPh 23 PI (hanya bisa diubah saat masih draft)
     pph23: Optional[Decimal] = None
     pph23_applicable: Optional[bool] = None

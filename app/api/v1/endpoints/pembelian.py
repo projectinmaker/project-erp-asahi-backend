@@ -453,6 +453,11 @@ def create_purchase_invoice(
             alamat=data_in.alamat,
             diskon_global=data_in.diskon_global,
             ppn=data_in.ppn,
+            # === Update #052 — pilihan PPh23/PPN kini diteruskan ke service
+            # (sebelumnya diabaikan → grand total tersimpan ≠ tampilan form). ===
+            ppn_applicable=data_in.ppn_applicable,
+            pph23_applicable=data_in.pph23_applicable,
+            pph23=data_in.pph23,
             keterangan=data_in.keterangan,
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,

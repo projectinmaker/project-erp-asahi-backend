@@ -1029,6 +1029,27 @@ def post_pembayaran(db: Session, pembayaran, created_by, is_settlement: bool = F
     )
     pembayaran.jurnal_umum_id = jurnal.id
     pembayaran.status = StatusTransaksi.SELESAI
+    # === Update #052 — PO terkait invoice yang dialokasikan pembayaran ini
+    # ikut disinkronkan (mirror #046 sisi SO): bila barang sudah diterima
+    # penuh / nilai PO tertutup dan SEMUA invoice terhubung sudah LUNAS,
+    # kolom status PO dinaikkan DIPROSES → SELESAI. Tanpa commit —
+    # pemanggil/workflow yang memiliki transaksi. ===
+    po_ids = set()
+    for alloc in (pembayaran.alokasi or []):
+        inv = getattr(alloc, "purchase_invoice", None)
+        if inv is None:
+            continue
+        from app.services.pembelian_service import po_ids_of_invoice
+        po_ids |= po_ids_of_invoice(db, inv)
+    if po_ids:
+        try:
+            from app.services.pembelian_service import sync_po_completion
+            sync_po_completion(db, po_ids)
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan posting
+            from loguru import logger as _logger
+            _logger.warning(
+                f"Sync status PO pasca-posting pembayaran {no_bukti} dilewati: {sync_exc}"
+            )
     return pembayaran
 
 
