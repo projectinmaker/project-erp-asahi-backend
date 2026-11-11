@@ -53,19 +53,22 @@ def refresh_session(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update #051 — sesi geser (idle-timeout).
+    """Update #051 — sesi geser (idle-timeout); disempurnakan #055.
 
     Tukar token lama (yang MASIH sah) dengan token baru berumur penuh
-    (ACCESS_TOKEN_EXPIRE_MINUTES = 2 jam, di app/config.py). Frontend
-    memanggil endpoint ini secara periodik HANYA saat user aktif — bukan
-    saat idle. Efeknya umur sesi "bergeser" mengikuti aktivitas:
+    (ACCESS_TOKEN_EXPIRE_MINUTES = 5 jam, di app/config.py — sengaja lebih
+    panjang dari window idle 2 jam). Frontend memanggil endpoint ini secara
+    periodik HANYA saat user aktif — bukan saat idle. Efeknya umur sesi
+    "bergeser" mengikuti aktivitas:
 
     - User terus aktif → token terus diperbarui → sesi tidak pernah berakhir.
-    - User diam ≥ 2 jam → token kadaluarsa, pemanggilan ini ditolak 401
-      (get_current_user) → frontend menampilkan "Sesi Berakhir".
+    - User diam ≥ 2 jam → FRONTEND (useSessionWatch) yang mengakhiri sesi
+      dan menampilkan "Sesi Berakhir" — sejak #055 umur token (5 jam)
+      selalu melampaui window idle, jadi token bukan lagi penyebab sesi
+      berakhir lebih awal (penyebab lama: token "tua" 2 jam keburu mati
+      sebelum idle 2 jam tercapai → 401 prematur).
 
-    Jadi sesi benar-benar berakhir HANYA karena tidak ada aktivitas —
-    bukan karena timer mati sejak login seperti sebelumnya (#043).
+    Jadi sesi benar-benar berakhir HANYA karena tidak ada aktivitas.
     """
     # Cek ulang status akun: admin bisa menonaktifkan user kapan pun.
     if current_user.status != "AKTIF":

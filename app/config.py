@@ -43,7 +43,16 @@ class Settings(BaseSettings):
     # ==========================================
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120  # Update #043 — 2 hours (sebelumnya 1440 / 24 jam)
+    # === Update #055 — 5 jam (300 menit). Sengaja LEBIH PANJANG dari window
+    # idle sesi 2 jam (frontend, useSessionWatch): sesi boleh berakhir HANYA
+    # karena tidak ada aktivitas — bukan karena umur token.
+    # Sebelumnya 120 (#043, lalu #051): token yang sudah "tua" (terakhir
+    # digeser >30 menit sebelum user diam) bisa kadaluarsa LEBIH CEPAT dari
+    # batas idle 2 jam → request berikutnya 401 → sesi berakhir lebih awal
+    # padahal belum idle 2 jam penuh. Dengan 5 jam, token selalu hidup
+    # melampaui window idle; penukaran token berkala (POST /auth/refresh)
+    # tetap berjalan selama user aktif. ===
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 300
 
     # ==========================================
     # CORS Settings
