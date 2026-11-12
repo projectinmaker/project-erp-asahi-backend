@@ -44,6 +44,15 @@ class BarangSimpleResponse(BaseSchema):
     harga_pokok: Decimal
 
 
+class GudangSimpleResponse(BaseSchema):
+    """=== Update #066 — gudang asal pengiriman (DO): label gudang di form
+    & daftar DO. Definisi LOKAL (mirror pola stok_kartu/persediaan — id/kode/
+    nama) agar modul penjualan tidak bergantung modul lain. ==="""
+    id: UUID
+    kode: str
+    nama: str
+
+
 class SatuanSimpleResponse(BaseSchema):
     id: UUID
     nama: str
@@ -453,6 +462,11 @@ class PengirimanBarangDetailBase(BaseSchema):
     satuan_id: Optional[UUID] = None
     # Phase C fix (Catatan Audit Delivery §7): link ke SO detail untuk over-delivery check
     sales_order_detail_id: Optional[UUID] = None
+    # === Update #066 — snapshot harga jual & diskon % line SO (kolom
+    # nominal di form/daftar/detail DO). Kosong/null → backend mengambil
+    # harga/diskon line SO saat create (lihat penjualan_service). ===
+    harga: Optional[Decimal] = None
+    diskon: Optional[Decimal] = None
 
 
 class PengirimanBarangDetailCreate(PengirimanBarangDetailBase):
@@ -509,6 +523,9 @@ class PengirimanBarangResponse(PengirimanBarangBase):
     sales_order: Optional[SalesOrderSimpleResponse] = None
     pelanggan: Optional[PelangganSimpleResponse] = None
     creator: Optional[PenggunaSimpleResponse] = None
+    # === Update #066 — gudang asal pengiriman (label di form & daftar DO;
+    # gudang fleksibel — boleh non-aktif, wajib hanya bila ada baris master). ===
+    gudang: Optional[GudangSimpleResponse] = None
     details: List[PengirimanBarangDetailResponse] = []
 
 
@@ -667,9 +684,14 @@ class PenawaranBase(BaseSchema):
     customer_code: str | None = None
     mata_uang: str = "IDR"
     diskon_global: Decimal | None = Decimal("0")
-    # === Update #042 — PPN dihapus dari Penawaran (mirror SO): field
-    # ppn/total_ppn dihapus dari schema create/update/response; pajak
-    # hanya dihitung di INVOICE. ===
+    # === Update #066 — PPN & PPh23 opsional (mirror Purchase Order): flag
+    # dikirim sesuai checkbox form; totalPpn menambah & totalPph23 memotong
+    # grand total (dihitung backend refresh_totals). Sejak #042 pajak
+    # penawaran dihapus; kini kembali opsional per dokumen. ===
+    ppn: Decimal = Decimal("11")
+    ppn_applicable: bool = True
+    pph23: Decimal = Decimal("2")
+    pph23_applicable: bool = False
 
 
 class PenawaranCreate(PenawaranBase):
@@ -693,7 +715,11 @@ class PenawaranUpdate(BaseSchema):
     customer_code: str | None = None
     mata_uang: str | None = None
     diskon_global: Decimal | None = None
-    # === Update #042 — ppn dihapus dari update Penawaran (kolom di-drop). ===
+    # === Update #066 — flag pajak bisa diubah saat edit (mirror PO). ===
+    ppn: Decimal | None = None
+    ppn_applicable: bool | None = None
+    pph23: Decimal | None = None
+    pph23_applicable: bool | None = None
     details: list[PenawaranDetailCreate] | None = None
     biaya_tambahan: list[TransaksiBiayaCreate] | None = None
 
@@ -715,9 +741,10 @@ class PenawaranResponse(PenawaranBase):
     so_list: list[PenawaranSoRingkas] = []
     sub_total: Decimal
     total_diskon: Decimal
-    # === Update #042 — total_ppn dihapus: penawaran tidak lagi ber-PPN
-    # (mirror SO; PPN hanya di INVOICE). Grand total = subtotal − diskon +
-    # biaya. ===
+    # === Update #066 — pajak penawaran kembali opsional: response membawa
+    # total PPN/PPh23 (grand_total sudah termasuk keduanya). ===
+    total_ppn: Decimal = Decimal("0")
+    total_pph23: Decimal = Decimal("0")
     total_biaya_tambahan: Decimal
     grand_total: Decimal
     status: str

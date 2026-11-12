@@ -2267,17 +2267,19 @@ def cancel_penerimaan(db: Session, db_obj: PenerimaanBarang, user_id: Optional[U
 @atomic_accounting_write
 def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang:
     """Finalisasi penerimaan barang — status SELESAI + tambah stok barang +
-    (Tahap 2) auto-post jurnal Persediaan jika akun perantara Penerimaan Dalam
-    Proses sudah di-configure di setting_akun.
+    (Tahap 2) auto-post jurnal Persediaan (setting GRNI tetap wajib sebagai
+    enforcement alur tiga-arah).
 
-    Jurnal Tahap 2 (jika PENERIMAAN_DALAM_PROSES ada di setting_akun):
+    === Update #066 — Jurnal Tahap 2: ===
         D: Persediaan (per-barang, dari mapping barang atau fallback kategori)
-        K: Penerimaan Dalam Proses (GRNI)
+        K: PEMBELIAN — HPP (Pembelian)   [dulu: Penerimaan Dalam Proses (GRNI)]
 
     Anti double-record:
     - Saat `post_purchase_invoice` dijalankan dan invoice terkait punya
-      penerimaan yang sudah di-posting (link via `purchase_invoice_id`),
-      invoice akan D: Penerimaan Dalam Proses (clearing) alih-alih D: Pembelian.
+      penerimaan yang sudah di-posting, invoice akan D: akun KREDIT jurnal
+      penerimaan tsb (clearing dinamis — sejak #066: HPP (Pembelian) untuk
+      penerimaan baru, GRNI untuk penerimaan lama) alih-alih D: Pembelian
+      penuh; net dua jurnal = D Persediaan / K Utang.
     - Jika akun perantara belum di-configure: penerimaan TIDAK mempost jurnal
       (legacy), invoice tetap D: Pembelian, K: Utang Dagang (cara lama).
 
@@ -2301,6 +2303,19 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             'Configure via PUT /master/setting-akun/PENERIMAAN_DALAM_PROSES.'
         )
     receipt_control.validate_execution(db, db_obj, grni_account_id)
+    # === Update #066 — jurnal PENERIMAAN kini meng-credit akun PEMBELIAN
+    #     (HPP (Pembelian)), bukan GRNI "Penerimaan Dalam Proses": jurnal
+    #     INVOICE pembelian otomatis menjadi D: HPP (Pembelian) / K: Utang
+    #     (clearing di inventory_receipt_control mengikuti akun KREDIT
+    #     jurnal penerimaan — penerimaan LAMA yang meng-credit GRNI tetap
+    #     ter-clearing ke akun GRNI-nya sehingga saldo historis netral).
+    #     Net dua jurnal: D Persediaan (penerimaan) / K Utang (invoice).
+    #     Setting GRNI tetap wajib (enforcement alur 3-way match di atas).
+    #     tipe_transaksi TETAP "PENERIMAAN_GRNI" agar eligibility matching
+    #     invoice↔penerimaan (inventory_receipt_control) tidak berubah. ===
+    pembelian_account_id = get_akun_id_or_raise(
+        db, KEY_PEMBELIAN, context=f"Penerimaan {db_obj.no_form}"
+    )
 
     # Tambah stok untuk setiap detail barang yang diterima
     inventory_entries = []
@@ -2333,13 +2348,13 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
         if grni_account_id:
             inventory_account_id = _get_akun_persediaan_id(db, detail.barang)
             movement['mutasi'].inventory_account_id = inventory_account_id
-            movement['mutasi'].expense_account_id = grni_account_id  # akun lawan (perantara)
+            movement['mutasi'].expense_account_id = pembelian_account_id  # === Update #066 — snapshot akun lawan retur ikut akun PEMBELIAN (dulu GRNI) ===
             line_value = movement['total_nilai']
             if line_value:
                 inventory_entries.append((inventory_account_id, line_value, detail.barang.nama))
 
     # Phase C: GRNI journal selalu di-post (bukan conditional lagi)
-    # Posting jurnal penerimaan: Dr Persediaan / Cr GRNI
+    # Posting jurnal penerimaan: Dr Persediaan / Cr Pembelian (HPP) — Update #066
     if inventory_entries:
         entries = []
         for inventory_account_id, line_value, barang_nama in inventory_entries:
@@ -2349,9 +2364,11 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
                 keterangan=f"Penerimaan {db_obj.no_form} - {barang_nama}",
             ))
             entries.append(JurnalEntryItem(
-                akun_perkiraan_id=grni_account_id,
+                # === Update #066 — kredit akun PEMBELIAN (HPP (Pembelian)),
+                # bukan GRNI; clearing invoice otomatis mengikuti akun ini. ===
+                akun_perkiraan_id=pembelian_account_id,
                 kredit=line_value,
-                keterangan=f"GRNI {db_obj.no_form} - {barang_nama}",
+                keterangan=f"Pembelian {db_obj.no_form} - {barang_nama}",
             ))
         try:
             jurnal = auto_posting_jurnal(
@@ -2359,7 +2376,7 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
                 ref_module=RefModule.PURCHASE_RECEIPT,  # konsisten dgn ref_module StokMutasi
                 ref_no=db_obj.no_form,
                 entries=entries,
-                keterangan=f"Penerimaan Barang {db_obj.no_form} (GRNI)",
+                keterangan=f"Penerimaan Barang {db_obj.no_form} (HPP Pembelian)",
                 ref_id=db_obj.id,
                 tanggal=db_obj.tanggal,
                 created_by=db_obj.created_by,
@@ -2368,7 +2385,7 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             db_obj.jurnal_umum_id = jurnal.id
             logger.info(
                 f"Penerimaan jurnal posted: {jurnal.no_jurnal} | "
-                f"D: Persediaan, K: GRNI | total={sum(v for _, v, _ in inventory_entries)}"
+                f"D: Persediaan, K: Pembelian (HPP) | total={sum(v for _, v, _ in inventory_entries)}"
             )
         except Exception as e:
             raise ValueError(f"Jurnal penerimaan gagal diposting: {e}") from e

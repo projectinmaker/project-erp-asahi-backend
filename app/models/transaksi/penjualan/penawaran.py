@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -61,6 +61,20 @@ class Penawaran(BaseModel, BaseMixin):
     customer_code = Column(String(20), nullable=True)
     mata_uang = Column(String(10), nullable=False, default="IDR")
     diskon_global = Column(Numeric(18, 2), default=0, nullable=False)
+    # === Update #066 — PPN & PPh23 OPSIONAL pada Penawaran (mirror Purchase
+    #     Order): flag dipilih saat input (checkbox di form); total dihitung
+    #     otomatis document_totals.refresh_totals — grand_total = DPP + PPN
+    #     + biaya − PPh23. Kolom pajak sempat dihapus di #042 (pajak hanya
+    #     di invoice); kini kembali opsional per dokumen sesuai request user.
+    #     Default ppn_applicable=True membuat penawaran BARU ber-PPN 11%
+    #     bila frontend tidak mengirim flag (frontend update ini selalu
+    #     mengirim flag sesuai checkbox). ===
+    ppn = Column(Numeric(5, 2), default=11, nullable=False, server_default="11")
+    ppn_applicable = Column(Boolean, nullable=False, default=True, server_default="true")
+    pph23 = Column(Numeric(5, 2), default=2, nullable=False, server_default="2")
+    pph23_applicable = Column(Boolean, nullable=False, default=False, server_default="false")
+    total_ppn = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
+    total_pph23 = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
     # === Update #042 — PPN dihapus dari Penawaran (mirror SalesOrder): pajak
     #     hanya dihitung/diterapkan di INVOICE. Kolom `ppn` & `total_ppn`
     #     di-drop; grand total = subtotal − diskon + biaya (tanpa PPN). ===

@@ -2121,10 +2121,22 @@ def _apply_total_barang(db: Session, items: list[Gudang]) -> None:
 
 @router.get("/gudang", response_model=list[GudangResponse])
 def get_gudang_list(
+    include_inactive: bool = Query(
+        default=False,
+        alias="include_inactive",
+        description="=== Update #066 === true = SEMUA gudang (AKTIF + NONAKTIF; untuk pilihan "
+                    "gudang fleksibel di form Pengiriman/DO). Default false = hanya AKTIF.",
+    ),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user)
 ):
-    rows = db.query(Gudang).filter(Gudang.status == "AKTIF").order_by(Gudang.nama).all()
+    # === Update #066 — ?include_inactive=true: dropdown gudang di form DO
+    #     menawarkan SEMUA gudang (non-aktif diberi tanda di FE); daftar master
+    #     & pemakaian lain tetap hanya AKTIF. ===
+    query = db.query(Gudang)
+    if not include_inactive:
+        query = query.filter(Gudang.status == "AKTIF")
+    rows = query.order_by(Gudang.nama).all()
     _apply_total_barang(db, rows)
     return rows
 

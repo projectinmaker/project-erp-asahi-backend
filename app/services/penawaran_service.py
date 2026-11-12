@@ -309,8 +309,13 @@ def create_penawaran(
     keterangan: str | None = None,
     mata_uang: str = "IDR",
     diskon_global: Decimal | None = Decimal("0"),
-    # === Update #042 — PPN dihapus dari Penawaran (mirror SO): param ppn
-    # dihapus; grand total = subtotal − diskon + biaya (tanpa PPN). ===
+    # === Update #066 — PPN & PPh23 opsional (mirror Purchase Order): flag
+    # dari checkbox form; totals dihitung refresh_totals (totalPpn menambah,
+    # totalPph23 memotong grand total). ===
+    ppn: Decimal | None = None,
+    ppn_applicable: bool | None = None,
+    pph23: Decimal | None = None,
+    pph23_applicable: bool | None = None,
     berlaku_hingga: date | None = None,
     customer_po_number: str | None = None,
     customer_code: str | None = None,
@@ -370,6 +375,13 @@ def create_penawaran(
             customer_code=customer_code,
             mata_uang=mata_uang,
             diskon_global=diskon_global,
+            # === Update #066 — flag pajak (None → default kolom: PPN 11%
+            # aktif, PPh23 nonaktif; frontend selalu mengirim nilai eksplisit
+            # sesuai checkbox). ===
+            ppn=ppn,
+            ppn_applicable=ppn_applicable,
+            pph23=pph23,
+            pph23_applicable=pph23_applicable,
             status="DRAFT",
             created_by=created_by,
         )
@@ -446,7 +458,11 @@ def update_penawaran(
     customer_code: str | None = None,
     mata_uang: str | None = None,
     diskon_global: Decimal | None = None,
-    # === Update #042 — ppn dihapus (kolom model di-drop). ===
+    # === Update #066 — flag pajak bisa diubah saat edit (mirror PO). ===
+    ppn: Decimal | None = None,
+    ppn_applicable: bool | None = None,
+    pph23: Decimal | None = None,
+    pph23_applicable: bool | None = None,
     details: list | None = None,
     biaya_tambahan: list | None = None,
 ) -> Penawaran:
@@ -492,6 +508,16 @@ def update_penawaran(
         db_obj.mata_uang = mata_uang
     if diskon_global is not None:
         db_obj.diskon_global = diskon_global
+    # === Update #066 — flag pajak bisa diubah saat edit (mirror PO);
+    # None = tidak berubah. ===
+    if ppn is not None:
+        db_obj.ppn = ppn
+    if ppn_applicable is not None:
+        db_obj.ppn_applicable = ppn_applicable
+    if pph23 is not None:
+        db_obj.pph23 = pph23
+    if pph23_applicable is not None:
+        db_obj.pph23_applicable = pph23_applicable
 
     # Replace detail (bila dikirim) — master / bebas + upsert katalog
     if details is not None:

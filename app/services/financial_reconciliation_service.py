@@ -121,6 +121,30 @@ def get_grni_reconciliation(
 
     open_receipts = open_receipts_query.all()
 
+    # === Update #066 — hanya penerimaan yang jurnalnya MENG-KREDIT akun GRNI
+    #     yang dihitung sebagai "open GRNI". Sejak #066 penerimaan baru
+    #     meng-credit akun PEMBELIAN (HPP) langsung — jurnalnya tidak
+    #     menyentuh GRNI sehingga BUKAN open GRNI (laporan tetap MATCH);
+    #     penerimaan lama (meng-credit GRNI) tetap dihitung sampai
+    #     di-clearing invoice-nya. ===
+    grni_crediting_journal_ids: set = set()
+    if open_receipts:
+        _journal_ids = [r.jurnal_umum_id for r in open_receipts if r.jurnal_umum_id]
+        if _journal_ids:
+            grni_crediting_journal_ids = {
+                row[0]
+                for row in (
+                    db.query(JurnalDetail.jurnal_umum_id)
+                    .filter(
+                        JurnalDetail.jurnal_umum_id.in_(_journal_ids),
+                        JurnalDetail.akun_perkiraan_id == grni_account_id,
+                        JurnalDetail.kredit > 0,
+                    )
+                    .distinct()
+                    .all()
+                )
+            }
+
     # Satu query aggregate: detail penerimaan yang SUDAH di-invoice via match
     # aktif (invoice DIPROSES/SELESAI) — hindari N+1 per receipt.
     invoiced_detail_ids = {
@@ -141,6 +165,10 @@ def get_grni_reconciliation(
     open_grni_value = Decimal("0")
     open_count = 0
     for receipt in open_receipts:
+        # === Update #066 — skip penerimaan yang jurnalnya TIDAK menyentuh
+        # akun GRNI (penerimaan baru meng-credit akun Pembelian/HPP). ===
+        if receipt.jurnal_umum_id not in grni_crediting_journal_ids:
+            continue
         receipt_has_open_detail = False
         for detail in receipt.details:
             if detail.id in invoiced_detail_ids:

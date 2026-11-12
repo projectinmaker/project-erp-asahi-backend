@@ -1922,6 +1922,11 @@ def create_pengiriman(
                     f"Pengiriman {no_surat_jalan} dibatalkan."
                 )
             so_qty_map[sod_id] += int(d["qty"])
+            # === Update #066 — snapshot harga/diskon line SO untuk kolom
+            # nominal DO (fallback bila payload FE tidak membawa nilai;
+            # prioritas tetap nilai eksplisit dari form). ===
+            d["_so_harga"] = safe_decimal(getattr(sod, "harga", None))
+            d["_so_diskon"] = safe_decimal(getattr(sod, "diskon", None))
 
         for sod_id, qty_aggregate in so_qty_map.items():
             try:
@@ -1962,6 +1967,19 @@ def create_pengiriman(
                 qty=int(d["qty"]),
                 satuan_id=d.get("satuan_id"),
                 sales_order_detail_id=d.get("sales_order_detail_id"),
+                # === Update #066 — snapshot harga/diskon (kolom nominal DO):
+                # prioritas payload FE, fallback harga/diskon line SO.
+                # Murni informatif — tidak memengaruhi stok/HPP/jurnal. ===
+                harga=(
+                    safe_decimal(d.get("harga"))
+                    if d.get("harga") is not None
+                    else d.get("_so_harga") or Decimal("0")
+                ),
+                diskon=(
+                    safe_decimal(d.get("diskon"))
+                    if d.get("diskon") is not None
+                    else d.get("_so_diskon") or Decimal("0")
+                ),
             )
             db.add(detail)
 
@@ -2118,11 +2136,16 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
     if db_obj.status == StatusPenjualan.SELESAI:
         raise ValueError("Pengiriman sudah selesai")
 
-    # === Phase C: gudang_id required ===
-    if not db_obj.gudang_id:
+    # === Update #066 — gudang wajib HANYA bila ada baris barang master ===
+    # (baris master menggerakkan stok → harus warehouse-explicit, Catatan
+    # Audit Delivery §3). DO yang seluruh barisnya ITEM BEBAS (jasa/manufaktur/
+    # custom — tidak menyentuh stok, mirror #041) boleh tanpa gudang. ===
+    has_master_line = any(detail.barang_id is not None for detail in db_obj.details)
+    if has_master_line and not db_obj.gudang_id:
         raise ValueError(
-            "Gudang wajib diisi untuk pengiriman barang. "
-            "Transaksi stok baru harus warehouse-explicit (Catatan Audit Delivery §3)."
+            "Gudang wajib diisi untuk pengiriman yang memuat barang master "
+            "(transaksi stok harus warehouse-explicit). Pengiriman yang "
+            "seluruh barisnya item bebas boleh tanpa gudang."
         )
 
     # === Phase C: qty > 0 + over-delivery validation per detail ===

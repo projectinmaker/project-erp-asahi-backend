@@ -25,6 +25,10 @@ class PengirimanBarang(BaseModel, BaseMixin):
     sales_order = relationship("SalesOrder", back_populates="pengiriman")
     pelanggan = relationship("Pelanggan")
     creator = relationship("Pengguna", foreign_keys=[created_by])
+    # === Update #066 — relasi gudang di-expose (label gudang asal di daftar
+    #     DO & form; gudang kini fleksibel: boleh non-aktif, wajib hanya bila
+    #     ada baris barang master — lihat finish_pengiriman). ===
+    gudang = relationship("Gudang")
     # Fix E2E audit: relasi jurnal HPP (sinkron dengan modul lain: SI/PI/kas-bank)
     jurnal = relationship("JurnalUmum")
     details = relationship("PengirimanBarangDetail", back_populates="pengiriman", cascade="all, delete-orphan")

@@ -59,7 +59,14 @@ def get_outstanding(jenis: Jenis, pihak_id: Optional[UUID] = Query(default=None,
                     skip: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=100),
                     db=Depends(get_current_db), user=Depends(get_current_user)):
     model = svc.invoice_model(jenis)
-    day = as_of or svc.today()
+    # === Update #066 — tanpa filter "Per Tanggal" EKSPLISIT (asOf), JANGAN
+    # pakai cutoff implisit "per hari ini": invoice yang tanggal (jurnalnya)
+    # setelah hari ini — mis. invoice kedua setelah DP yang dibuat di hari
+    # berikutnya — selama ini DISEMBUNYIKAN dan sisanya di-nol-kan
+    # (BELUM_EFEKTIF) padahal valid untuk dibayar. asOf eksplisit tetap
+    # dihormati; None = SEMUA dokumen aktif + sisa tagihan sebenarnya
+    # (konsisten dengan validasi saat simpan pelunasan). ===
+    day = as_of
     query = db.query(model).filter(model.id.in_(svc.active_documents(db, model, day).scalar_subquery()))
     if pihak_id:
         query = query.filter((model.pelanggan_id if jenis == 'piutang' else model.supplier_id) == pihak_id)
@@ -83,7 +90,14 @@ def export_tagihan(jenis: Jenis,
     belum jatuh tempo), dihitung terhadap tanggal as-of.
     """
     model = svc.invoice_model(jenis)
-    day = as_of or svc.today()
+    # === Update #066 — tanpa filter "Per Tanggal" EKSPLISIT (asOf), JANGAN
+    # pakai cutoff implisit "per hari ini": invoice yang tanggal (jurnalnya)
+    # setelah hari ini — mis. invoice kedua setelah DP yang dibuat di hari
+    # berikutnya — selama ini DISEMBUNYIKAN dan sisanya di-nol-kan
+    # (BELUM_EFEKTIF) padahal valid untuk dibayar. asOf eksplisit tetap
+    # dihormati; None = SEMUA dokumen aktif + sisa tagihan sebenarnya
+    # (konsisten dengan validasi saat simpan pelunasan). ===
+    day = as_of
     query = db.query(model).filter(model.id.in_(svc.active_documents(db, model, day).scalar_subquery()))
     if pihak_id:
         query = query.filter((model.pelanggan_id if jenis == 'piutang' else model.supplier_id) == pihak_id)
@@ -101,7 +115,7 @@ def export_tagihan(jenis: Jenis,
 
     rows = []
     for d in data:
-        umur = (day - d['jatuh_tempo']).days if d['jatuh_tempo'] else 0
+        umur = ((day or svc.today()) - d['jatuh_tempo']).days if d['jatuh_tempo'] else 0
         rows.append([
             d['no_dokumen'],
             pihak_names.get(d['pihak_id'], '-'),
@@ -121,7 +135,7 @@ def export_tagihan(jenis: Jenis,
         decimal_columns={4, 5, 6, 7, 8},
         date_columns={2, 3},
     )
-    return _xlsx_response(wb, f"tagihan-{jenis}-{day:%Y%m%d}.xlsx")
+    return _xlsx_response(wb, f"tagihan-{jenis}-{(day or svc.today()):%Y%m%d}.xlsx")
 
 
 @router.get('/invoice/{jenis}/{invoice_id}', response_model=SettlementHistoryResponse)

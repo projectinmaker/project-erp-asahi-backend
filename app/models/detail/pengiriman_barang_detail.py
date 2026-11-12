@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, ForeignKey, String
+from sqlalchemy import Column, Integer, ForeignKey, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import BaseModel
@@ -19,6 +19,12 @@ class PengirimanBarangDetail(BaseModel, BaseMixin):
     item_satuan = Column(String(50), nullable=True)
     qty = Column(Integer, default=0, nullable=False)
     satuan_id = Column(UUID(as_uuid=True), ForeignKey("satuan.id"), nullable=True)
+    # === Update #066 — snapshot harga jual & diskon % dari LINE SO saat
+    #     tarik data (kolom nominal di form/daftar/detail DO). Nominal baris
+    #     = harga × qty × (1 − diskon%) — MURNI INFORMATIF: tidak
+    #     memengaruhi stok/HPP/jurnal (nilai tagih tetap milik invoice). ===
+    harga = Column(Numeric(18, 2), default=0, nullable=False, server_default="0")
+    diskon = Column(Numeric(5, 2), default=0, nullable=False, server_default="0")
 
     # === NEW Phase 4 — Source-line trace (Roadmap §13: "Delivery: sales_order_detail_id") ===
     # FK ke SalesOrderDetail — identifikasi line SO mana yang dipenuhi oleh delivery line ini.

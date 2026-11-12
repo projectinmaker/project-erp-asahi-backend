@@ -1341,8 +1341,11 @@ def create_penawaran(
             customer_code=data_in.customer_code,
             mata_uang=data_in.mata_uang,
             diskon_global=data_in.diskon_global,
-            # === Update #042 — PPN dihapus dari Penawaran (resolve/pass ppn
-            # dihapus; pajak hanya dihitung di INVOICE). ===
+            # === Update #066 — flag pajak penawaran diteruskan (mirror PO). ===
+            ppn=data_in.ppn,
+            ppn_applicable=data_in.ppn_applicable,
+            pph23=data_in.pph23,
+            pph23_applicable=data_in.pph23_applicable,
             berlaku_hingga=data_in.berlaku_hingga,
             created_by=current_user.id,
             # === Update #031 — No Quotation: user hanya input bulan & tahun ===
