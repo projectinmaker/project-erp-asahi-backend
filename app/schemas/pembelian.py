@@ -163,6 +163,13 @@ class PurchaseOrderBase(BaseSchema):
     # string kosong = sengaja dikosongkan (tetap disimpan apa adanya).
     pic_gudang: Optional[str] = None
     pic_gudang_telepon: Optional[str] = None
+    # === Update #067 — PIC Supplier & No. HP (field AKTIF saat buat PO) ===
+    # Kontak pihak SUPPLIER untuk PO ini (bukan PIC internal gudang —
+    # pic_gudang tetap seperti versi sebelumnya). None = backend mengisi
+    # snapshot dari master Supplier (Kontak Person / Telepon); string
+    # kosong = sengaja dikosongkan.
+    pic_supplier: Optional[str] = None
+    pic_supplier_telepon: Optional[str] = None
 
 
 class PurchaseOrderCreate(PurchaseOrderBase):
@@ -193,6 +200,9 @@ class PurchaseOrderUpdate(BaseSchema):
     # === Update ASAHI #002 — PIC Gudang ===
     pic_gudang: Optional[str] = None
     pic_gudang_telepon: Optional[str] = None
+    # === Update #067 — PIC Supplier & No. HP (edit PO draft/diproses) ===
+    pic_supplier: Optional[str] = None
+    pic_supplier_telepon: Optional[str] = None
     # Phase B — support detail update
     details: Optional[List[PurchaseOrderDetailCreate]] = None
 
@@ -214,6 +224,10 @@ class PurchaseOrderResponse(PurchaseOrderBase):
     # === Update ASAHI #002 — snapshot PIC Gudang untuk cetak PO ===
     pic_gudang: Optional[str] = None
     pic_gudang_telepon: Optional[str] = None
+    # === Update #067 — snapshot PIC Supplier untuk cetak PO (kosong pada PO
+    # lama → cetak fallback ke Kontak Person/Telepon live master supplier). ===
+    pic_supplier: Optional[str] = None
+    pic_supplier_telepon: Optional[str] = None
     created_by: UUID
     created_at: datetime
     updated_at: datetime

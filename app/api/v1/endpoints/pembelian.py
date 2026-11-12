@@ -127,6 +127,10 @@ def create_purchase_order(
             # === Update ASAHI #002 — PIC Gudang (snapshot; None → dari master) ===
             pic_gudang=data_in.pic_gudang,
             pic_gudang_telepon=data_in.pic_gudang_telepon,
+            # === Update #067 — PIC Supplier & No. HP (field aktif di form PO;
+            # None → backend snapshot dari Kontak Person/Telepon master). ===
+            pic_supplier=data_in.pic_supplier,
+            pic_supplier_telepon=data_in.pic_supplier_telepon,
         )
         # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
         # (workflow maker-checker di modul penjualan/pembelian di-takedown).

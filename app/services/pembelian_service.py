@@ -307,6 +307,9 @@ def create_purchase_order(
     # === Update ASAHI #002 — PIC Gudang (kolom Pengiriman PO) ===
     pic_gudang: Optional[str] = None,
     pic_gudang_telepon: Optional[str] = None,
+    # === Update #067 — PIC Supplier & No. HP (field aktif saat buat PO) ===
+    pic_supplier: Optional[str] = None,
+    pic_supplier_telepon: Optional[str] = None,
 ) -> PurchaseOrder:
     """Buat PurchaseOrder baru beserta detail + biaya tambahan.
     - Generate no_pesanan otomatis (PO-YYYY-MM-NNN)
@@ -339,6 +342,17 @@ def create_purchase_order(
             pic_gudang = (alamat_kirim.pic_nama or "").strip() or None
         if pic_gudang_telepon is None:
             pic_gudang_telepon = (alamat_kirim.pic_telepon or "").strip() or None
+
+        # === Update #067 — PIC Supplier & No. HP (snapshot kontak supplier) ===
+        # Mirror perilaku PIC Gudang: None (tidak dikirim — mis. PO draft hasil
+        # alur Detail ROP / Part Stok Menipis) → fallback ke Kontak Person /
+        # Telepon master SUPPLIER; string kosong → sengaja dikosongkan.
+        # Nilai dari form (terisi otomatis saat supplier dipilih, boleh
+        # disunting) disimpan apa adanya sebagai snapshot per-PO.
+        if pic_supplier is None:
+            pic_supplier = (supplier.kontak_person or "").strip() or None
+        if pic_supplier_telepon is None:
+            pic_supplier_telepon = (supplier.telepon or "").strip() or None
 
         # === Update ASAHI #002 — validasi tracking per baris (SO + jenis) ===
         _validate_po_detail_refs(db, details_data)
@@ -403,6 +417,9 @@ def create_purchase_order(
             # === Update ASAHI #002 — PIC Gudang (snapshot) ===
             pic_gudang=pic_gudang,
             pic_gudang_telepon=pic_gudang_telepon,
+            # === Update #067 — PIC Supplier & No. HP (snapshot) ===
+            pic_supplier=pic_supplier,
+            pic_supplier_telepon=pic_supplier_telepon,
         )
         db.add(po)
         db.flush()
@@ -480,6 +497,9 @@ def update_purchase_order(
     # === Update ASAHI #002 — PIC Gudang + replace detail (SO/jenis per baris) ===
     pic_gudang: Optional[str] = None,
     pic_gudang_telepon: Optional[str] = None,
+    # === Update #067 — PIC Supplier & No. HP (edit PO draft/diproses) ===
+    pic_supplier: Optional[str] = None,
+    pic_supplier_telepon: Optional[str] = None,
     details: Optional[list] = None,
 ) -> PurchaseOrder:
     """Update data purchase order (header + opsional replace detail).
@@ -541,6 +561,12 @@ def update_purchase_order(
         db_obj.pic_gudang = pic_gudang.strip() or None
     if pic_gudang_telepon is not None:
         db_obj.pic_gudang_telepon = pic_gudang_telepon.strip() or None
+
+    # === Update #067 — PIC Supplier & No. HP pada update header ===
+    if pic_supplier is not None:
+        db_obj.pic_supplier = pic_supplier.strip() or None
+    if pic_supplier_telepon is not None:
+        db_obj.pic_supplier_telepon = pic_supplier_telepon.strip() or None
 
     # === Update ASAHI #002 — replace detail (SO/jenis per baris ikut terganti) ===
     if details is not None:
@@ -1176,6 +1202,10 @@ def create_po_draft_from_stok_menipis(
     alamat_pengiriman_snapshot = f"{alamat_kirim.prefix}\n{alamat_kirim.nama}" if alamat_kirim else None
     pic_gudang = ((alamat_kirim.pic_nama or "").strip() or None) if alamat_kirim else None
     pic_gudang_telepon = ((alamat_kirim.pic_telepon or "").strip() or None) if alamat_kirim else None
+    # === Update #067 — PIC Supplier & No. HP: snapshot kontak supplier (mirror
+    # fallback create_purchase_order — draft restock tidak punya input form). ===
+    pic_supplier = (supplier.kontak_person or "").strip() or None
+    pic_supplier_telepon = (supplier.telepon or "").strip() or None
 
     # Validasi mata uang default (mirror create_purchase_order).
     from app.models.master.mata_uang import MataUang
@@ -1303,6 +1333,9 @@ def create_po_draft_from_stok_menipis(
         ppic=False,
         pic_gudang=pic_gudang,
         pic_gudang_telepon=pic_gudang_telepon,
+        # === Update #067 — PIC Supplier & No. HP (snapshot) ===
+        pic_supplier=pic_supplier,
+        pic_supplier_telepon=pic_supplier_telepon,
     )
     db.add(po)
     db.flush()

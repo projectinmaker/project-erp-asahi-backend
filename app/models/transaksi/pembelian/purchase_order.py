@@ -70,6 +70,15 @@ class PurchaseOrder(BaseModel, BaseMixin):
     pic_gudang = Column(String(100), nullable=True)
     pic_gudang_telepon = Column(String(50), nullable=True)
 
+    # === Update #067 — PIC Supplier (snapshot, orang yang dihubungi di
+    # sisi supplier untuk PO ini). Field AKTIF (bisa diisi/diedit) saat
+    # pembuatan PO; terisi otomatis dari master Supplier (Kontak Person /
+    # Telepon) saat supplier dipilih lalu boleh disunting manual. Disimpan
+    # snapshot — berbeda dari PIC Gudang (internal), ini kontak pihak
+    # supplier yang dicantumkan pada dokumen PO. ===
+    pic_supplier = Column(String(150), nullable=True)
+    pic_supplier_telepon = Column(String(30), nullable=True)
+
     # Relationships
     supplier = relationship("Supplier")
     syarat_bayar = relationship("SyaratBayar", foreign_keys=[syarat_bayar_id])
