@@ -24,6 +24,10 @@ from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
 from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
 from app.models.transaksi.pembelian.purchase_retur import PurchaseRetur
 from app.models.detail.purchase_retur_detail import PurchaseReturDetail
+# === Update #064 — LPPB & Supplier untuk mode untuk=lppb (PO yang belum
+# dipakai LPPB mana pun) + supplierNama di response tersedia. ===
+from app.models.transaksi.pembelian.lppb import Lppb
+from app.models.master.supplier import Supplier
 from app.schemas.base import PaginatedResponse
 from app.schemas.pembelian import (
     PurchaseOrderCreate, PurchaseOrderUpdate, PurchaseOrderResponse,
@@ -135,7 +139,7 @@ def create_purchase_order(
 
 @router.get("/purchase-order/tersedia")
 def get_purchase_order_tersedia(
-    untuk: str = Query("penerimaan", description="Tujuan tarik data: 'penerimaan' (sisa qty terima) atau 'invoice' (sisa qty faktur)"),
+    untuk: str = Query("penerimaan", description="Tujuan tarik data: 'penerimaan' (sisa qty terima), 'invoice' (sisa qty faktur), atau 'lppb' (belum dipakai LPPB mana pun)"),
     search: Optional[str] = Query(None, description="Cari no pesanan"),
     limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_current_db),
@@ -156,11 +160,25 @@ def get_purchase_order_tersedia(
       detail baris PO tersebut — baris dengan kedua link dihitung SEKALI
       via COALESCE(pod langsung, pod dari penerimaan))
       (paritas get_qty_invoiced_for_po_detail).
+    - untuk=lppb       : PO non-DIBATALKAN yang belum pernah dipakai LPPB
+      mana pun (Update #064 — LPPB = laporan pemeriksaan per PO, satu PO
+      cukup satu LPPB; cancel LPPB = hard delete sehingga LPPB yang
+      dihapus tidak memblokir PO). Dipakai dropdown "Nomor PO" di form
+      LPPB (create & edit) — sebelumnya semua PO tampil termasuk yang
+      sudah ada LPPB-nya.
 
-    Response ringan {id, noPesanan, supplierId} — tanpa detail baris.
-    Form tetap menarik sisa per baris lewat /purchase-order/{id}/sisa.
+    Response ringan {id, noPesanan, supplierId, supplierNama} — tanpa
+    detail baris. supplierNama ditambahkan di Update #064 (dipakai form
+    LPPB untuk field Supplier read-only "otomatis dari PO"; field ini
+    opsional bagi konsumen lama). Form tetap menarik sisa per baris
+    lewat /purchase-order/{id}/sisa.
     """
-    base = db.query(PurchaseOrder.id, PurchaseOrder.no_pesanan, PurchaseOrder.supplier_id).filter(
+    base = db.query(
+        PurchaseOrder.id,
+        PurchaseOrder.no_pesanan,
+        PurchaseOrder.supplier_id,
+        Supplier.nama.label("supplier_nama"),
+    ).outerjoin(Supplier, Supplier.id == PurchaseOrder.supplier_id).filter(
         PurchaseOrder.status != StatusPenjualan.DIBATALKAN
     )
     if search:
@@ -206,6 +224,19 @@ def get_purchase_order_tersedia(
             )
             .exists()
         )
+    elif untuk == "lppb":
+        # === Update #064 — PO belum dipakai LPPB mana pun. Guard status
+        # DIBATALKAN hanya untuk keamanan (cancel LPPB saat ini hard delete);
+        # LPPB DRAFT pun sudah dihitung "dipakai" supaya tidak dobel LPPB. ===
+        lppb_exists = (
+            db.query(Lppb.id)
+            .filter(
+                Lppb.purchase_order_id == PurchaseOrder.id,
+                Lppb.status != StatusPenjualan.DIBATALKAN,
+            )
+            .exists()
+        )
+        sisa_exists = ~lppb_exists
     else:
         # penerimaan — masih ada baris yang belum diterima penuh.
         diterima_sq = (
@@ -235,7 +266,12 @@ def get_purchase_order_tersedia(
         .all()
     )
     return [
-        {"id": str(r.id), "noPesanan": r.no_pesanan, "supplierId": str(r.supplier_id)}
+        {
+            "id": str(r.id),
+            "noPesanan": r.no_pesanan,
+            "supplierId": str(r.supplier_id),
+            "supplierNama": r.supplier_nama,
+        }
         for r in rows
     ]
 
@@ -652,6 +688,58 @@ def get_purchase_invoice_tersedia_retur(
         .outerjoin(qty_sq, qty_sq.c.inv_id == PurchaseInvoice.id)
         .outerjoin(diretur_sq, diretur_sq.c.inv_id == PurchaseInvoice.id)
         .filter(func.coalesce(diretur_sq.c.diretur_inv, 0) < func.coalesce(qty_sq.c.qty_inv, 0))
+        .order_by(PurchaseInvoice.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return rows
+
+
+@router.get("/purchase-invoice/tersedia-link", response_model=list[PurchaseInvoiceResponse])
+def get_purchase_invoice_tersedia_link(
+    supplier_id: UUID = Query(..., description="Filter supplier (form penerimaan menyaring per supplier)"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #064 — invoice supplier yang BELUM dipakai penerimaan mana pun. ===
+
+    Dipakai dropdown "Invoice" di form Penerimaan Barang (create & edit).
+    Kelanjutan permintaan user: "alur yang menarik data — yang sudah
+    terpakai sebelumnya jangan ditampilkan lagi" untuk dokumen LPPB,
+    Penerimaan, dan Invoice.
+
+    Definisi "sudah dipakai": invoice sudah terhubung ke ≥ 1 penerimaan
+    (penerimaan.purchase_invoice_id terisi, penerimaan non-DIBATALKAN —
+    reverse penerimaan me-set status DIBATALKAN sehingga linknya tidak
+    lagi mengunci invoice). Invoice yang baru dibuat (belum di-link)
+    tetap tampil — mempertahankan tujuan update #049 (invoice baru bisa
+    langsung dipilih saat menghubungkan penerimaan).
+
+    Catatan alur GRNI (#048): satu invoice memang boleh terhubung ke
+    beberapa penerimaan — penghubungan multi itu tetap tersedia lewat
+    panel "Penerimaan Barang" di form Invoice (centang beberapa
+    penerimaan); endpoint ini hanya menyaring PENAWARAN di sisi form
+    Penerimaan agar invoice yang sudah terpakai tidak ditawarkan lagi.
+
+    Response = bentuk PurchaseInvoiceResponse (sama seperti daftar lama)
+    supaya hook frontend tinggal ganti URL.
+    """
+    linked_exists = (
+        db.query(PenerimaanBarang.id)
+        .filter(
+            PenerimaanBarang.purchase_invoice_id == PurchaseInvoice.id,
+            PenerimaanBarang.status != StatusPenjualan.DIBATALKAN,
+        )
+        .exists()
+    )
+    rows = (
+        db.query(PurchaseInvoice)
+        .filter(
+            PurchaseInvoice.supplier_id == supplier_id,
+            PurchaseInvoice.status != StatusPenjualan.DIBATALKAN,
+            ~linked_exists,
+        )
         .order_by(PurchaseInvoice.created_at.desc())
         .limit(limit)
         .all()
