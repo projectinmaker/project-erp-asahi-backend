@@ -4,16 +4,26 @@ PurchaseOrder, PurchaseInvoice, PurchaseRetur, PenerimaanBarang, LPPB.
 """
 
 from datetime import date, datetime
-from decimal import Decimal
 from typing import Optional, Dict, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
 from app.models.transaksi.penjualan.sales_order import StatusPenjualan
+# === Update #063 — model untuk endpoint "tersedia" (dokumen sumber yang
+# masih punya sisa — mirror /penjualan/sales-order/tersedia #047). ===
+from app.models.transaksi.pembelian.purchase_order import PurchaseOrder
+from app.models.detail.purchase_order_detail import PurchaseOrderDetail
+from app.models.transaksi.pembelian.penerimaan_barang import PenerimaanBarang
+from app.models.detail.penerimaan_barang_detail import PenerimaanBarangDetail
+from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
+from app.models.detail.purchase_invoice_detail import PurchaseInvoiceDetail
+from app.models.transaksi.pembelian.purchase_retur import PurchaseRetur
+from app.models.detail.purchase_retur_detail import PurchaseReturDetail
 from app.schemas.base import PaginatedResponse
 from app.schemas.pembelian import (
     PurchaseOrderCreate, PurchaseOrderUpdate, PurchaseOrderResponse,
@@ -121,6 +131,113 @@ def create_purchase_order(
         return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/purchase-order/tersedia")
+def get_purchase_order_tersedia(
+    untuk: str = Query("penerimaan", description="Tujuan tarik data: 'penerimaan' (sisa qty terima) atau 'invoice' (sisa qty faktur)"),
+    search: Optional[str] = Query(None, description="Cari no pesanan"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #063 — PO yang MASIH PUNYA SISA untuk narik data. ===
+
+    Mirror /penjualan/sales-order/tersedia (#047) untuk modul Pembelian
+    (permintaan user: "yang sudah terpakai sebelumnya jangan ditampilkan
+    lagi" — diterapkan ke semua modul yang alurnya menarik data):
+
+    - untuk=penerimaan : PO non-DIBATALKAN yang masih ada baris dengan
+      sisa terima = qty − Σ qty penerimaan DIPROSES/SELESAI > 0
+      (paritas get_qty_received_so_far).
+    - untuk=invoice    : PO non-DIBATALKAN yang masih ada baris dengan
+      sisa faktur = qty − Σ qty invoice DIPROSES/SELESAI (lewat dua jalur
+      link: purchase_order_detail_id langsung ATAU penerimaan barang
+      detail baris PO tersebut — baris dengan kedua link dihitung SEKALI
+      via COALESCE(pod langsung, pod dari penerimaan))
+      (paritas get_qty_invoiced_for_po_detail).
+
+    Response ringan {id, noPesanan, supplierId} — tanpa detail baris.
+    Form tetap menarik sisa per baris lewat /purchase-order/{id}/sisa.
+    """
+    base = db.query(PurchaseOrder.id, PurchaseOrder.no_pesanan, PurchaseOrder.supplier_id).filter(
+        PurchaseOrder.status != StatusPenjualan.DIBATALKAN
+    )
+    if search:
+        base = base.filter(PurchaseOrder.no_pesanan.ilike(f"%{search}%"))
+
+    if untuk == "invoice":
+        # Jalur link invoice detail → PO detail: langsung ATAU via penerimaan.
+        # COALESCE(memilih link langsung bila ada) menjaga baris dengan kedua
+        # link tetap dihitung sekali untuk PO detail tujuannya.
+        pbd_pod_sq = (
+            db.query(
+                PenerimaanBarangDetail.id.label("pbd_id"),
+                PenerimaanBarangDetail.purchase_order_detail_id.label("pod_id"),
+            )
+            .filter(PenerimaanBarangDetail.purchase_order_detail_id.isnot(None))
+            .subquery()
+        )
+        terfaktur_sq = (
+            db.query(
+                func.coalesce(
+                    PurchaseInvoiceDetail.purchase_order_detail_id,
+                    pbd_pod_sq.c.pod_id,
+                ).label("pod_id"),
+                func.coalesce(func.sum(PurchaseInvoiceDetail.qty), 0).label("terfaktur"),
+            )
+            .join(PurchaseInvoice, PurchaseInvoice.id == PurchaseInvoiceDetail.purchase_invoice_id)
+            .outerjoin(pbd_pod_sq, pbd_pod_sq.c.pbd_id == PurchaseInvoiceDetail.penerimaan_barang_detail_id)
+            .filter(PurchaseInvoice.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]))
+            .group_by(
+                func.coalesce(
+                    PurchaseInvoiceDetail.purchase_order_detail_id,
+                    pbd_pod_sq.c.pod_id,
+                )
+            )
+            .subquery()
+        )
+        sisa_exists = (
+            db.query(PurchaseOrderDetail.id)
+            .outerjoin(terfaktur_sq, terfaktur_sq.c.pod_id == PurchaseOrderDetail.id)
+            .filter(
+                PurchaseOrderDetail.purchase_order_id == PurchaseOrder.id,
+                PurchaseOrderDetail.qty - func.coalesce(terfaktur_sq.c.terfaktur, 0) > 0,
+            )
+            .exists()
+        )
+    else:
+        # penerimaan — masih ada baris yang belum diterima penuh.
+        diterima_sq = (
+            db.query(
+                PenerimaanBarangDetail.purchase_order_detail_id.label("pod_id"),
+                func.coalesce(func.sum(PenerimaanBarangDetail.qty), 0).label("diterima"),
+            )
+            .join(PenerimaanBarang, PenerimaanBarang.id == PenerimaanBarangDetail.penerimaan_barang_id)
+            .filter(PenerimaanBarang.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]))
+            .group_by(PenerimaanBarangDetail.purchase_order_detail_id)
+            .subquery()
+        )
+        sisa_exists = (
+            db.query(PurchaseOrderDetail.id)
+            .outerjoin(diterima_sq, diterima_sq.c.pod_id == PurchaseOrderDetail.id)
+            .filter(
+                PurchaseOrderDetail.purchase_order_id == PurchaseOrder.id,
+                PurchaseOrderDetail.qty - func.coalesce(diterima_sq.c.diterima, 0) > 0,
+            )
+            .exists()
+        )
+
+    rows = (
+        base.filter(sisa_exists)
+        .order_by(PurchaseOrder.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {"id": str(r.id), "noPesanan": r.no_pesanan, "supplierId": str(r.supplier_id)}
+        for r in rows
+    ]
 
 
 @router.get("/purchase-order/{po_id}", response_model=PurchaseOrderResponse)
@@ -343,12 +460,6 @@ def get_purchase_order_sisa(
         "no_pesanan": po.no_pesanan,
         "alamat": po.alamat,
         "syarat_bayar_id": po.syarat_bayar_id,
-        # === Update #053 — pilihan pajak PO (diwarisi kartu Pajak form
-        # Invoice Pembelian saat PO ini dipilih). ===
-        "ppn": po.ppn if po.ppn is not None else Decimal("11"),
-        "ppn_applicable": bool(po.ppn_applicable) if po.ppn_applicable is not None else True,
-        "pph23": po.pph23 if po.pph23 is not None else Decimal("2"),
-        "pph23_applicable": bool(po.pph23_applicable) if po.pph23_applicable is not None else False,
         "details": details,
     }
 
@@ -479,6 +590,73 @@ def create_purchase_invoice(
         return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/purchase-invoice/tersedia-retur", response_model=list[PurchaseInvoiceResponse])
+def get_purchase_invoice_tersedia_retur(
+    supplier_id: UUID = Query(..., description="Filter supplier (form retur menyaring per supplier)"),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #063 — invoice SELESAI yang BELUM ter-retur penuh. ===
+
+    Dipakai dropdown "Invoice" di form Retur Pembelian (create & edit).
+    Sebelumnya daftar = SEMUA invoice SELESAI supplier → invoice yang
+    barisnya sudah diretur penuh tetap muncul (permintaan user: "yang
+    sudah terpakai sebelumnya jangan ditampilkan lagi").
+
+    Definisi "belum terpakai penuh": masih ada sisa retur agregat —
+    Σ qty retur (status DIPROSES/SELESAI, via link purchase_invoice_detail_id)
+    < Σ qty detail invoice. Retur DRAFT tidak dihitung (bisa jadi batal);
+    paritas perhitungan over-return post_purchase_retur yang memakai qty
+    invoice sebagai batas baris di form (mirror sales_validation
+    get_qty_returned_so_far).
+
+    Response = bentuk PurchaseInvoiceResponse (sama seperti daftar lama)
+    supaya hook frontend tinggal ganti URL.
+    """
+    qty_sq = (
+        db.query(
+            PurchaseInvoiceDetail.purchase_invoice_id.label("inv_id"),
+            func.coalesce(func.sum(PurchaseInvoiceDetail.qty), 0).label("qty_inv"),
+        )
+        .group_by(PurchaseInvoiceDetail.purchase_invoice_id)
+        .subquery()
+    )
+    diretur_det_sq = (
+        db.query(
+            PurchaseReturDetail.purchase_invoice_detail_id.label("inv_detail_id"),
+            func.coalesce(func.sum(PurchaseReturDetail.qty), 0).label("diretur"),
+        )
+        .join(PurchaseRetur, PurchaseRetur.id == PurchaseReturDetail.purchase_retur_id)
+        .filter(PurchaseRetur.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]))
+        .group_by(PurchaseReturDetail.purchase_invoice_detail_id)
+        .subquery()
+    )
+    diretur_sq = (
+        db.query(
+            PurchaseInvoiceDetail.purchase_invoice_id.label("inv_id"),
+            func.coalesce(func.sum(func.coalesce(diretur_det_sq.c.diretur, 0)), 0).label("diretur_inv"),
+        )
+        .outerjoin(diretur_det_sq, diretur_det_sq.c.inv_detail_id == PurchaseInvoiceDetail.id)
+        .group_by(PurchaseInvoiceDetail.purchase_invoice_id)
+        .subquery()
+    )
+    rows = (
+        db.query(PurchaseInvoice)
+        .filter(
+            PurchaseInvoice.supplier_id == supplier_id,
+            PurchaseInvoice.status == StatusPenjualan.SELESAI,
+        )
+        .outerjoin(qty_sq, qty_sq.c.inv_id == PurchaseInvoice.id)
+        .outerjoin(diretur_sq, diretur_sq.c.inv_id == PurchaseInvoice.id)
+        .filter(func.coalesce(diretur_sq.c.diretur_inv, 0) < func.coalesce(qty_sq.c.qty_inv, 0))
+        .order_by(PurchaseInvoice.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return rows
 
 
 @router.get("/purchase-invoice/{inv_id}", response_model=PurchaseInvoiceResponse)

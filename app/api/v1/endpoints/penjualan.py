@@ -14,11 +14,16 @@ from decimal import Decimal
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
+from app.models.master.pelanggan import Pelanggan
 from app.models.transaksi.penjualan.sales_order import SalesOrder, StatusPenjualan
 from app.models.transaksi.penjualan.sales_invoice import SalesInvoice
 from app.models.transaksi.penjualan.pengiriman_barang import PengirimanBarang
 from app.models.detail.sales_invoice_detail import SalesInvoiceDetail
 from app.models.detail.pengiriman_barang_detail import PengirimanBarangDetail
+# === Update #063 — model untuk endpoint "tersedia" retur & tukar faktur. ===
+from app.models.detail.sales_retur_detail import SalesReturDetail
+from app.models.transaksi.penjualan.sales_retur import SalesRetur
+from app.models.transaksi.penjualan.tukar_faktur import TukarFaktur
 from app.models.transaksi.jurnal import JurnalUmum, RefModule
 from sqlalchemy import func as sa_func
 from app.schemas.base import PaginatedResponse
@@ -521,6 +526,134 @@ def create_sales_invoice(
         return obj
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/sales-invoice/tersedia-retur")
+def get_sales_invoice_tersedia_retur(
+    search: Optional[str] = Query(None, description="Cari no invoice"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #063 — Sales Invoice yang MASIH PUNYA SISA RETUR. ===
+
+    Dipakai dropdown "Invoice" di form Retur Penjualan. Sebelumnya dropdown
+    menawarkan SEMUA invoice → invoice yang barisnya sudah diretur penuh tetap
+    muncul (permintaan user: "yang sudah terpakai sebelumnya jangan
+    ditampilkan lagi" — diterapkan ke semua modul yang alurnya menarik data).
+
+    Definisi sisa retur per invoice (paritas sales_validation
+    get_qty_returned_so_far + validate_returnable_qty):
+      Σ qty retur detail (status retur DIPROSES/SELESAI, via link
+      sales_invoice_detail_id) < Σ qty detail invoice.
+    Invoice DIBATALKAN tidak ditawarkan (tidak bisa jadi sumber retur).
+
+    Response ringan {id, noInvoice} — detail baris ditarik form lewat
+    GET /sales-invoice/{id} (useSalesReturnSource).
+    """
+    qty_sq = (
+        db.query(
+            SalesInvoiceDetail.sales_invoice_id.label("inv_id"),
+            sa_func.coalesce(sa_func.sum(SalesInvoiceDetail.qty), 0).label("qty_inv"),
+        )
+        .group_by(SalesInvoiceDetail.sales_invoice_id)
+        .subquery()
+    )
+    diretur_det_sq = (
+        db.query(
+            SalesReturDetail.sales_invoice_detail_id.label("inv_detail_id"),
+            sa_func.coalesce(sa_func.sum(SalesReturDetail.qty), 0).label("diretur"),
+        )
+        .join(SalesRetur, SalesRetur.id == SalesReturDetail.sales_retur_id)
+        .filter(
+            SalesReturDetail.sales_invoice_detail_id.isnot(None),
+            SalesRetur.status.in_([StatusPenjualan.DIPROSES, StatusPenjualan.SELESAI]),
+        )
+        .group_by(SalesReturDetail.sales_invoice_detail_id)
+        .subquery()
+    )
+    diretur_sq = (
+        db.query(
+            SalesInvoiceDetail.sales_invoice_id.label("inv_id"),
+            sa_func.coalesce(
+                sa_func.sum(sa_func.coalesce(diretur_det_sq.c.diretur, 0)), 0
+            ).label("diretur_inv"),
+        )
+        .outerjoin(diretur_det_sq, diretur_det_sq.c.inv_detail_id == SalesInvoiceDetail.id)
+        .group_by(SalesInvoiceDetail.sales_invoice_id)
+        .subquery()
+    )
+    base = (
+        db.query(SalesInvoice.id, SalesInvoice.no_invoice)
+        .filter(SalesInvoice.status != StatusPenjualan.DIBATALKAN)
+    )
+    if search:
+        base = base.filter(SalesInvoice.no_invoice.ilike(f"%{search}%"))
+    rows = (
+        base.outerjoin(qty_sq, qty_sq.c.inv_id == SalesInvoice.id)
+        .outerjoin(diretur_sq, diretur_sq.c.inv_id == SalesInvoice.id)
+        .filter(
+            sa_func.coalesce(diretur_sq.c.diretur_inv, 0)
+            < sa_func.coalesce(qty_sq.c.qty_inv, 0)
+        )
+        .order_by(SalesInvoice.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [{"id": str(r.id), "noInvoice": r.no_invoice} for r in rows]
+
+
+@router.get("/sales-invoice/tersedia-tukar-faktur")
+# Nama fungsi sengaja TIDAK memuat "tukar_faktur" — pemetaan RBAC
+# (access_registry._ROUTER_PREFIXES) mencocokkan substring nama fungsi dan
+# "tukar_faktur" dicek lebih dulu; harus tetap sales.sales_invoice.view
+# (paritas dengan fetch daftar invoice lama yang dipakai form TF).
+def get_sales_invoice_tersedia_tf(
+    search: Optional[str] = Query(None, description="Cari no invoice"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #063 — Sales Invoice yang BELUM dipakai Tukar Faktur. ===
+
+    Dipakai dropdown "Invoice" di form Buat Tukar Faktur. Sebelumnya dropdown
+    menawarkan semua invoice non-DIBATALKAN → invoice yang sudah tercatat di
+    Tukar Faktur lain tetap muncul dan berisiko membuat TF ganda (permintaan
+    user: "yang sudah terpakai sebelumnya jangan ditampilkan lagi").
+
+    Invoice disembunyikan bila sudah dirujuk Tukar Faktur mana pun (cancel TF
+    = hard delete, sehingga TF terhapus otomatis tidak memblokir; status
+    DIBATALKAN juga dikecualikan sebagai pengaman data lama).
+
+    Response ringan {id, noInvoice, pelangganNama} — cukup untuk opsi
+    dropdown (label + subtitle); preview detail tetap lewat
+    GET /sales-invoice/{id}.
+    """
+    base = (
+        db.query(SalesInvoice.id, SalesInvoice.no_invoice, Pelanggan.nama)
+        .outerjoin(Pelanggan, Pelanggan.id == SalesInvoice.pelanggan_id)
+        .filter(SalesInvoice.status != StatusPenjualan.DIBATALKAN)
+    )
+    if search:
+        base = base.filter(SalesInvoice.no_invoice.ilike(f"%{search}%"))
+    dipakai_tf_exists = (
+        db.query(TukarFaktur.id)
+        .filter(
+            TukarFaktur.sales_invoice_id == SalesInvoice.id,
+            TukarFaktur.status != "DIBATALKAN",
+        )
+        .exists()
+    )
+    rows = (
+        base.filter(~dipakai_tf_exists)
+        .order_by(SalesInvoice.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {"id": str(r.id), "noInvoice": r.no_invoice, "pelangganNama": r.nama}
+        for r in rows
+    ]
 
 
 @router.get("/sales-invoice/{inv_id}", response_model=SalesInvoiceResponse)
