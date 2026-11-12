@@ -223,6 +223,10 @@ def get_purchase_order_list(
     """Ambil daftar purchase order dengan filter & pagination."""
     query = db.query(PurchaseOrder).options(
         joinedload(PurchaseOrder.supplier),
+        # === Update #061 — eager-load syarat bayar: nama Payment Term ikut
+        # response list PO (kolom "Payment Term" di FE membaca syaratBayar.nama;
+        # sebelumnya relasi tidak di-load → nama bisa kosong/None). ===
+        joinedload(PurchaseOrder.syarat_bayar),
         joinedload(PurchaseOrder.creator),
         joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.barang),
         # Update #7 (B-05): eager-load satuan baris — FE membaca satuan?.nama
@@ -258,6 +262,10 @@ def get_purchase_order_by_id(db: Session, po_id: UUID) -> Optional[PurchaseOrder
         db.query(PurchaseOrder)
         .options(
             joinedload(PurchaseOrder.supplier),
+            # === Update #061 — eager-load syarat bayar (mirror list): form
+            # edit/detail PO membaca original.syaratBayar.nama untuk dropdown
+            # "Syarat Bayar"; jamin tersedia tanpa lazy-load. ===
+            joinedload(PurchaseOrder.syarat_bayar),
             joinedload(PurchaseOrder.creator),
             joinedload(PurchaseOrder.jurnal),
             joinedload(PurchaseOrder.details).joinedload(PurchaseOrderDetail.barang),
