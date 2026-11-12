@@ -127,10 +127,19 @@ def get_sales_order_tersedia(
       (nilai-tagih = dp_pelunasan bila > 0, selain itu sub_total —
       paritas _so_sisa_nilai #042). Set-based (satu query agregat).
 
-    Response ringan {id, noPesanan, pelangganId} — tanpa detail baris.
-    Form tetap menarik sisa per baris lewat /sales-order/{id}/sisa.
+    Response ringan {id, noPesanan, pelangganId, sisaNilai} — tanpa detail
+    baris. Form tetap menarik sisa per baris lewat /sales-order/{id}/sisa.
+
+    === Update #065 — sisaNilai (untuk=invoice): sisa tagihan NILAI SO yang
+    masih bisa difakturkan = grand_total − Σ nilai-tagih invoice non-batal.
+    Dipakai dropdown SO di form Invoice untuk menampilkan "sisa Rp …" per
+    opsi — memperjelas permintaan user: SO boleh difakturkan BERKALI-KALI
+    (sebagian); SO tetap tampil selama sisa nilai > 0 (belum lunas) dan
+    hilang setelah nilainya tertagih penuh (visibility #047 tidak berubah,
+    kini ditambah info sisanya). Field opsional — konsumen lama aman.
+    Untuk mode pengiriman sisaNilai = null. ===
     """
-    base = db.query(SalesOrder.id, SalesOrder.no_pesanan, SalesOrder.pelanggan_id).filter(
+    base = db.query(SalesOrder.id, SalesOrder.no_pesanan, SalesOrder.pelanggan_id, SalesOrder.grand_total).filter(
         SalesOrder.status != StatusPenjualan.DIBATALKAN
     )
     if search:
@@ -158,12 +167,30 @@ def get_sales_order_tersedia(
             .subquery()
         )
         rows = (
-            base.outerjoin(billed_sq, billed_sq.c.so_id == SalesOrder.id)
+            base.with_entities(
+                SalesOrder.id,
+                SalesOrder.no_pesanan,
+                SalesOrder.pelanggan_id,
+                SalesOrder.grand_total,
+                sa_func.coalesce(billed_sq.c.billed, 0).label("billed"),
+            )
+            .outerjoin(billed_sq, billed_sq.c.so_id == SalesOrder.id)
             .filter(SalesOrder.grand_total - sa_func.coalesce(billed_sq.c.billed, 0) > Decimal("0.005"))
             .order_by(SalesOrder.created_at.desc())
             .limit(limit)
             .all()
         )
+        # === Update #065 — sisa nilai per SO (float ≥ 0) untuk label dropdown:
+        # SO tampil selama sisa > 0 (belum lunas); hilang setelah tertagih penuh. ===
+        return [
+            {
+                "id": r.id,
+                "noPesanan": r.no_pesanan,
+                "pelangganId": r.pelanggan_id,
+                "sisaNilai": float(max((r.grand_total or Decimal("0")) - (r.billed or Decimal("0")), Decimal("0"))),
+            }
+            for r in rows
+        ]
     else:
         # pengiriman — masih ada baris yang belum terkirim penuh.
         # NULL fulfillment_status (SO lama) dianggap masih terbuka.
@@ -179,8 +206,9 @@ def get_sales_order_tersedia(
             .all()
         )
 
+    # === Update #065 — mode pengiriman: tanpa info sisa nilai (null). ===
     return [
-        {"id": r.id, "noPesanan": r.no_pesanan, "pelangganId": r.pelanggan_id}
+        {"id": r.id, "noPesanan": r.no_pesanan, "pelangganId": r.pelanggan_id, "sisaNilai": None}
         for r in rows
     ]
 

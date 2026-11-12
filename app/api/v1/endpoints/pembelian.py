@@ -167,11 +167,12 @@ def get_purchase_order_tersedia(
       LPPB (create & edit) — sebelumnya semua PO tampil termasuk yang
       sudah ada LPPB-nya.
 
-    Response ringan {id, noPesanan, supplierId, supplierNama} — tanpa
-    detail baris. supplierNama ditambahkan di Update #064 (dipakai form
+    Response ringan {id, noPesanan, supplierId, supplierNama, sisaNilai} —
+    tanpa detail baris. supplierNama ditambahkan di Update #064 (dipakai form
     LPPB untuk field Supplier read-only "otomatis dari PO"; field ini
-    opsional bagi konsumen lama). Form tetap menarik sisa per baris
-    lewat /purchase-order/{id}/sisa.
+    opsional bagi konsumen lama). sisaNilai ditambahkan di Update #065
+    (hanya mode invoice — estimasi nilai belum terfaktur; mode lain null).
+    Form tetap menarik sisa per baris lewat /purchase-order/{id}/sisa.
     """
     base = db.query(
         PurchaseOrder.id,
@@ -265,12 +266,42 @@ def get_purchase_order_tersedia(
         .limit(limit)
         .all()
     )
+
+    # === Update #065 — sisa NILAI tagihan per PO (hanya untuk=invoice):
+    # estimasi nilai yang masih bisa difakturkan = Σ per baris PO
+    # (qty − terfaktur, min 0) × harga × (1 − diskon%). Dipakai dropdown PO
+    # di form Invoice Pembelian untuk label "sisa Rp …" — memperjelas bahwa
+    # PO boleh difakturkan BERKALI-KALI (potong sebagian qty per faktur):
+    # PO tetap tampil selama masih ada baris belum terfaktur penuh, dan
+    # hilang setelah seluruh qty terfaktur (visibility tetap berbasis sisa
+    # qty #063 — tidak berubah; sisaNilai murni informasi). Mode lain → null. ===
+    sisa_nilai_map: dict = {}
+    if untuk == "invoice" and rows:
+        po_ids = [r.id for r in rows]
+        sisa_rows = (
+            db.query(
+                PurchaseOrderDetail.purchase_order_id.label("po_id"),
+                func.sum(
+                    func.greatest(PurchaseOrderDetail.qty - func.coalesce(terfaktur_sq.c.terfaktur, 0), 0)
+                    * PurchaseOrderDetail.harga
+                    * (1 - func.coalesce(PurchaseOrderDetail.diskon, 0) / 100)
+                ).label("sisa_nilai"),
+            )
+            .outerjoin(terfaktur_sq, terfaktur_sq.c.pod_id == PurchaseOrderDetail.id)
+            .filter(PurchaseOrderDetail.purchase_order_id.in_(po_ids))
+            .group_by(PurchaseOrderDetail.purchase_order_id)
+            .all()
+        )
+        sisa_nilai_map = {str(r.po_id): float(r.sisa_nilai or 0) for r in sisa_rows}
+
     return [
         {
             "id": str(r.id),
             "noPesanan": r.no_pesanan,
             "supplierId": str(r.supplier_id),
             "supplierNama": r.supplier_nama,
+            # === Update #065 — sisa nilai (null di luar mode invoice). ===
+            "sisaNilai": sisa_nilai_map.get(str(r.id)) if untuk == "invoice" else None,
         }
         for r in rows
     ]
