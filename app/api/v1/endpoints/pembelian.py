@@ -177,6 +177,12 @@ def get_purchase_order_tersedia(
     opsional bagi konsumen lama). sisaNilai ditambahkan di Update #065
     (hanya mode invoice — estimasi nilai belum terfaktur; mode lain null).
     Form tetap menarik sisa per baris lewat /purchase-order/{id}/sisa.
+
+    === Update #068 — PO DRAFT tidak ditawarkan lagi (semua mode). PO hasil
+    "Buat PO Draft" dari Detail ROP / Stok Menipis memang sengaja berhenti di
+    DRAFT sampai diedit & disimpan (keputusan #043) — selama belum final,
+    datanya belum layak ditarik ke Penerimaan/Invoice/LPPB. PO yang sedang
+    dipakai form edit tetap tampil lewat pola re-insert existing di FE. ===
     """
     base = db.query(
         PurchaseOrder.id,
@@ -184,7 +190,7 @@ def get_purchase_order_tersedia(
         PurchaseOrder.supplier_id,
         Supplier.nama.label("supplier_nama"),
     ).outerjoin(Supplier, Supplier.id == PurchaseOrder.supplier_id).filter(
-        PurchaseOrder.status != StatusPenjualan.DIBATALKAN
+        PurchaseOrder.status.notin_([StatusPenjualan.DIBATALKAN, StatusPenjualan.DRAFT])
     )
     if search:
         base = base.filter(PurchaseOrder.no_pesanan.ilike(f"%{search}%"))
@@ -1048,6 +1054,39 @@ def update_penerimaan(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/penerimaan/{pb_id}/selesaikan", response_model=PenerimaanBarangResponse)
+def selesaikan_penerimaan(
+    pb_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #068 — "Selesaikan" Penerimaan Barang (DIPROSES → SELESAI). ===
+
+    Jalur pemulihan untuk penerimaan yang tertinggal di status DIPROSES.
+    Latar: create_penerimaan COMMIT dokumen berstatus DIPROSES lebih dulu,
+    baru workflow direct_complete menjalankan finish_penerimaan (tambah stok
+    + jurnal GRNI). Bila finalisasi itu GAGAL (mis. setting GRNI belum
+    di-configure, harga perolehan tak dapat ditentukan, periode ditutup,
+    stok bermasalah), dokumen DIPROSES TERSISA di database — qty-nya sudah
+    dihitung "diterima" (dropdown PO tersedia menyembunyikan PO-nya) tapi
+    penerimaannya tidak pernah SELESAI, sehingga PO tidak akan pernah naik
+    status ke Selesai (syarat _po_fully_received menerima penerimaan
+    berstatus SELESAI). Sebelum #068 tidak ada tombol pemulihan di FE —
+    satu-satunya jalan adalah Batal (hard delete) lalu buat ulang.
+
+    Endpoint ini memfinalisasi ulang penerimaan DIPROSES (idempotent untuk
+    yang sudah SELESAI: ditolak dengan pesan jelas). Mirror pola
+    /lppb/{id}/selesaikan.
+    """
+    item = svc.get_penerimaan_by_id(db, pb_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Penerimaan Barang tidak ditemukan")
+    try:
+        return svc.finish_penerimaan(db, item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/penerimaan/{pb_id}/cancel")
 def cancel_penerimaan(
     pb_id: UUID,
@@ -1130,9 +1169,20 @@ def get_invoice_belum_bayar(
     Pilih Hutang -> Pilih Supplier -> muncul list invoice.
 
     Return list sederhana dengan field tambahan `sisaTagihan`.
+
+    === Update #068 — sisa tagihan NYATA + hanya invoice yang masih punya
+    sisa (kelanjutan permintaan user: "alur yang menarik data — yang sudah
+    terpakai/sudah lunas jangan ditampilkan lagi", diterapkan ke semua
+    endpoint penarik data). Sebelumnya endpoint ini mengembalikan SEMUA
+    invoice aktif dengan sisaTagihan = grand_total (komentar lama: tracking
+    pembayaran per-invoice belum ada) — padahal alokasi pembayaran
+    (payment_allocation, #Phase 4) sudah lama tersedia. Kini sisa dihitung
+    pakai settlement_service.balances (grand_total − bayar − retur; paritas
+    modul ln/tagihan) dan hanya invoice dengan sisa > 0 yang dikirim. ===
     """
     from app.models.transaksi.pembelian.purchase_invoice import PurchaseInvoice
     from app.models.master.supplier import Supplier
+    from app.services import settlement_service as settlement
     from decimal import Decimal
 
     # Validasi supplier
@@ -1151,11 +1201,15 @@ def get_invoice_belum_bayar(
         .all()
     )
 
+    # === Update #068 — sisa tagihan per invoice dari alokasi pembayaran
+    # aktif + retur (paritas settlement_service.balances / modul ln). ===
+    balances = settlement.balances(db, invoices) if invoices else {}
+
     result = []
     for inv in invoices:
-        # NOTE: Untuk tracking per-invoice yang lebih akurat, perlu
-        # relasi langsung antara pembayaran dan invoice (Phase 4).
-        # Untuk sekarang, sisaTagihan = grand_total.
+        sisa = Decimal(str(balances.get(inv.id, {}).get("sisa_tagihan", inv.grand_total or 0)))
+        if sisa <= Decimal("0.00"):
+            continue  # sudah lunas / lebih bayar — jangan ditawarkan lagi
         result.append({
             "id": inv.id,
             "no_form": inv.no_form,
@@ -1163,7 +1217,7 @@ def get_invoice_belum_bayar(
             "tanggal": inv.tanggal,
             "grand_total": inv.grand_total,
             "total_ppn": inv.total_ppn,
-            "sisa_tagihan": inv.grand_total,  # grand_total karena tracking pembayaran per-invoice belum ada
+            "sisa_tagihan": sisa,
             "status": inv.status.value if inv.status else "DRAFT",
         })
 

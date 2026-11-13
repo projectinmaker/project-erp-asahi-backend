@@ -926,11 +926,23 @@ def cancel_sales_order(db: Session, db_obj: SalesOrder, user_id: Optional[UUID] 
 def _invoice_billed(inv: SalesInvoice) -> Decimal:
     """Nilai-tagih invoice terhadap SO (#042): dp_pelunasan bila > 0,
     selain itu sub_total (kompatibilitas invoice lama tanpa dp_pelunasan,
-    termasuk invoice #041 yang sub_total-nya sudah Σ dp per baris)."""
+    termasuk invoice #041 yang sub_total-nya sudah Σ dp per baris).
+
+    === Update #068 — BIAYA TAMBAHAN invoice ikut dihitung sebagai
+    nilai-tagih terhadap SO. Latar: biaya tambahan SO kini ikut
+    difakturkan sebagai baris biaya invoice (prefill form Invoice, endpoint
+    /sales-order/{id}/sisa #068). Tanpa dihitung di sini, SO yang punya
+    biaya tambahan tidak pernah mencapai "tertagih penuh" (Σ nilai-tagih
+    selalu kurang sebesar total biaya) → status SO nyangkut di DIPROSES
+    selamanya meski seluruh alur (kirim → faktur → bayar) selesai.
+    Biaya invoice TIDAK masuk dp_pelunasan (dari `grand_total invoice
+    mode DP = dp + PPN + biaya − PPh23`, memasukkan biaya ke dp akan
+    menagih dobel). Invoice standalone (tanpa SO) tidak memakai fungsi ini. ===
+    """
     dp = safe_decimal(getattr(inv, "dp_pelunasan", 0) or 0)
-    if dp > 0:
-        return dp
-    return safe_decimal(getattr(inv, "sub_total", 0) or 0)
+    dasar = dp if dp > 0 else safe_decimal(getattr(inv, "sub_total", 0) or 0)
+    biaya = safe_decimal(getattr(inv, "total_biaya_tambahan", 0) or 0)
+    return dasar + biaya
 
 
 def _so_sisa_nilai(
@@ -1248,7 +1260,18 @@ def create_sales_invoice(
             # {no_pesanan}". Update #043 — no_pesanan sudah berprefix "SO",
             # helper tidak lagi menambahkan kata "SO" (dulu dobel "SO SO").
             # Keterangan user (bila diisi) ditambahkan di belakang.
-            auto_ket = _auto_keterangan_invoice(order.no_pesanan, sisa_sebelum, dp_final)
+            # === Update #068 — Σ biaya tambahan invoice ikut dipakai sebagai
+            # "nilai yang ditagih tahap ini" (biaya SO ditarik ke baris biaya
+            # invoice; nilai-tagih = dp + Σ biaya — paritas _invoice_billed)
+            # supaya label "Pelunasan … — LUNAS" tetap akurat untuk SO
+            # ber-biaya yang difakturkan habis sekali jalan. ===
+            biaya_tarik = sum(
+                (safe_decimal(b.get("jumlah")) for b in (biaya_data or [])),
+                Decimal("0"),
+            )
+            auto_ket = _auto_keterangan_invoice(
+                order.no_pesanan, sisa_sebelum, dp_final + biaya_tarik
+            )
             keterangan = (
                 f"{auto_ket} — {keterangan}" if (keterangan or "").strip() else auto_ket
             )
@@ -2123,8 +2146,17 @@ def cancel_pengiriman(db: Session, db_obj: PengirimanBarang, user_id: Optional[U
 
 @atomic_accounting_write
 def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang:
-    """Finalisasi pengiriman barang — status SELESAI + kurangi stok barang +
-    posting jurnal HPP (D: HPP Penjualan, K: Persediaan Barang Jadi).
+    """Finalisasi pengiriman barang — status SELESAI + kurangi stok barang.
+
+    === Update #069 — JURNAL HPP (D HPP Penjualan / K Persediaan) SAAT
+    PENGIRIMAN DIHAPUS — MODEL PERIODIK. ===
+    Biaya pembelian kini dibukukan di jurnal INVOICE PEMBELIAN (D Pembelian
+    (HPP) / K Utang) dan langsung muncul di baris HPP Laba Rugi. Bila
+    pengiriman masih mempost COGS, HPP akan TERHITUNG DUA KALI (pembelian +
+    COGS) dan akun Persediaan GL jadi negatif karena tidak pernah di-debit
+    oleh pembelian. Pengiriman kini murni operasi GUDANG (StokMutasi +
+    snapshot akun persediaan/HPP per barang untuk retur & rekonsiliasi).
+    Pendapatan tetap dibukukan di jurnal Invoice Penjualan (tidak berubah).
 
     Phase C fix (Catatan Audit Delivery §3):
     - qty > 0 validation
@@ -2170,7 +2202,6 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
     try:
         # Kurangi stok untuk setiap detail barang
         total_hpp = Decimal("0")
-        cost_entries = []
         for detail in db_obj.details:
             # === Update #041 — baris ITEM BEBAS (barang_id None): tidak
             #     menyentuh stok/HPP — murni baris surat jalan (SO manufaktur/
@@ -2188,36 +2219,18 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
                 ref_id=db_obj.id,
                 gudang_id=db_obj.gudang_id,
             )
-            harga_pokok = detail.barang.harga_pokok or Decimal("0")
             total_hpp += movement['total_nilai']
+            # Snapshot akun di StokMutasi (dipakai retur stok / rekonsiliasi) —
+            # tetap diisi walau jurnal GL pengiriman sudah dihapus (#069).
             from app.services.persediaan_service import _get_akun_persediaan_id, _get_akun_hpp_id
-            inventory_id = _get_akun_persediaan_id(db, detail.barang)
-            # Tahap 2: akun HPP per-barang (mapping barang → item_type produk jadi →
-            # setting global), konsisten dengan pola resolusi akun Persediaan.
-            expense_id = _get_akun_hpp_id(db, detail.barang)
-            movement['mutasi'].inventory_account_id = inventory_id
-            movement['mutasi'].expense_account_id = expense_id
-            if movement['total_nilai']:
-                cost_entries += [JurnalEntryItem(expense_id, debit=movement['total_nilai']), JurnalEntryItem(inventory_id, kredit=movement['total_nilai'])]
+            movement['mutasi'].inventory_account_id = _get_akun_persediaan_id(db, detail.barang)
+            movement['mutasi'].expense_account_id = _get_akun_hpp_id(db, detail.barang)
 
         db_obj.status = StatusPenjualan.SELESAI
 
-        # Posting jurnal HPP (asumsi: barang yang dikirim adalah barang jadi)
-        # RefModule: SALES_DELIVERY (bukan SALES_INVOICE) — sesuai Master Roadmap §13:
-        # "Delivery ... RefModule SALES_DELIVERY. Delivery tidak boleh menggunakan SALES_INVOICE."
-        if total_hpp > 0:
-            entries = cost_entries
-            jurnal = auto_posting_jurnal(
-                db=db,
-                ref_module=RefModule.SALES_DELIVERY,
-                ref_no=db_obj.no_surat_jalan,
-                entries=entries,
-                keterangan=f"HPP Pengiriman {db_obj.no_surat_jalan}",
-                ref_id=db_obj.id,
-                tanggal=db_obj.tanggal,
-                created_by=db_obj.created_by,
-            )
-            db_obj.jurnal_umum_id = jurnal.id
+        # === Update #069 — jurnal HPP pengiriman DIHAPUS (lihat docstring):
+        #     HPP Laba Rugi = Pembelian (dari invoice pembelian) − retur;
+        #     pendapatan tetap dibukukan di jurnal invoice penjualan. ===
 
         # Update #7 (M-05): setelah stok + jurnal HPP sukses (sebelum commit),
         # hitung ulang fulfillment_status SO (OPEN/PARTIAL/FULFILLED) — kolom

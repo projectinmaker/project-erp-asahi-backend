@@ -124,10 +124,16 @@ def _eligible_receipts_for_invoice(db, inv):
     """Return receipts yang eligible untuk match dengan invoice ``inv``.
 
     Eligible criteria:
-        - Status != DIBATALKAN
+        - Status == SELESAI (bukan DIBATALKAN)
         - Supplier == invoice.supplier
         - Tanggal receipt <= tanggal invoice
-        - Punya jurnal GRNI POSTED yang belum direversal
+
+    === Update #069 — penerimaan baru TIDAK LAGI MEMILIKI JURNAL GL ===
+    (model periodik — biaya dibukukan di jurnal invoice). Penerimaan
+    tanpa jurnal cukup berstatus SELESAI. Penerimaan LEGACY (pra-#069)
+    yang menyimpan jurnal PENERIMAAN_GRNI tetap divalidasi integritas
+    jurnalnya (POSTED, belum reversal, nilai konsisten) agar clearing
+    historis tetap netral.
     """
     rows = (
         db.query(PenerimaanBarang)
@@ -140,10 +146,17 @@ def _eligible_receipts_for_invoice(db, inv):
     for row in rows:
         if getattr(row.status, 'value', row.status) == 'DIBATALKAN':
             continue
+        if getattr(row.status, 'value', row.status) != 'SELESAI':
+            continue
         if local_datetime(row.tanggal).date() > local_datetime(inv.tanggal).date():
             continue
-        journal = db.get(JurnalUmum, row.jurnal_umum_id) if row.jurnal_umum_id else None
-        if (getattr(row.status, 'value', row.status) != 'SELESAI' or not journal
+        if not row.jurnal_umum_id:
+            # === Update #069 — penerimaan baru (tanpa jurnal): langsung eligible ===
+            eligible.append((row, None))
+            continue
+        # Legacy path: penerimaan pra-#069 dengan jurnal PENERIMAAN_GRNI
+        journal = db.get(JurnalUmum, row.jurnal_umum_id)
+        if (not journal
                 or journal.status != StatusJurnal.POSTED
                 or journal.tipe_transaksi != 'PENERIMAAN_GRNI'
                 or journal.ref_id != row.id
@@ -197,7 +210,7 @@ def _already_matched_invoice_qty(db, invoice_detail_id):
     return sum((m.matched_qty for m in rows), 0)
 
 
-def _match_invoice_to_receipts(db, inv):
+def _match_invoice_to_receipts(db, inv, default_account_id=None):
     """Auto-match setiap invoice line ke receipt lines yang eligible (same barang).
 
     Strategy:
@@ -223,7 +236,16 @@ def _match_invoice_to_receipts(db, inv):
             "unmatched_invoice_detail_ids": [ ... ],
             "grni_clearing_by_account": { akun_id: Decimal(total_matched_value) },
         }
+
+    === Update #069 — ``grni_clearing_by_account`` untuk match atas penerimaan
+    TANPA jurnal (penerimaan baru) dialokasikan ke ``default_account_id``
+    (akun PEMBELIAN / HPP). ===
     """
+    if default_account_id is None:
+        from app.services.setting_akun_service import KEY_PEMBELIAN, get_akun_id_or_raise
+        default_account_id = get_akun_id_or_raise(
+            db, KEY_PEMBELIAN, context=f"PINV {getattr(inv, 'no_form', '')}"
+        )
     eligible = _eligible_receipts_for_invoice(db, inv)
     if not eligible:
         return {
@@ -297,7 +319,8 @@ def _match_invoice_to_receipts(db, inv):
             new_matches.append({
                 "invoice_detail_id": inv_line.id,
                 "receipt_detail_id": rd.id,
-                "receipt_journal_id": entry["journal"].id,
+                # None untuk penerimaan baru tanpa jurnal (#069)
+                "receipt_journal_id": entry["journal"].id if entry["journal"] else None,
                 "matched_qty": take,
                 "matched_unit_cost": invoice_unit_cost,
                 "matched_value": matched_value,
@@ -320,7 +343,8 @@ def _match_invoice_to_receipts(db, inv):
         "unmatched_invoice_detail_ids": unmatched_invoice_detail_ids,
         "grni_clearing_by_account": _build_clearing_from_matches(db, inv, eligible,
                                                                   list(existing_match_rows),
-                                                                  new_matches),
+                                                                  new_matches,
+                                                                  default_account_id),
     }
 
 
@@ -337,21 +361,25 @@ class _NewMatchProxy:
         self._receipt_journal_id = m.get("receipt_journal_id")
 
 
-def _build_clearing_from_matches(db, inv, eligible, existing_rows, new_matches):
+def _build_clearing_from_matches(db, inv, eligible, existing_rows, new_matches, default_account_id):
     """Build {akun_id: Decimal(total_matched_value)} dari all matches (existing + new).
 
     Allocation strategy:
-        - Index credit lines dari setiap eligible receipt journal: {journal_id: {akun_id: kredit_total}}
-        - Untuk setiap match row, lookup receipt_detail → dapatkan journal_id receipt-nya
-        - Allocate matched_value ke akun GRNI yang ada di journal receipt tsb,
-          proporsional terhadap kredit per akun.
+        - Match atas penerimaan LEGACY (punya jurnal PENERIMAAN_GRNI):
+          allocate matched_value ke akun GRNI/kredit di journal receipt tsb,
+          proporsional terhadap kredit per akun (perilaku lama — menjaga
+          netralitas historis penerimaan pra-#069).
+        - === Update #069 — match atas penerimaan TANPA jurnal (baru): seluruh
+          matched_value dialokasikan ke ``default_account_id`` (akun PEMBELIAN
+          / HPP) — jurnal invoice pun D Pembelian (HPP) penuh sehingga biaya
+          pembelian LANGSUNG tercatat di baris HPP Laba Rugi. ===
     """
-    # Build journal credit index
+    # Build journal credit index (legacy receipts only)
     journal_credit_index = defaultdict(lambda: defaultdict(Decimal))
     receipt_total_value = {}
-    journal_by_id = {}
     for receipt, journal in eligible:
-        journal_by_id[journal.id] = journal
+        if journal is None:
+            continue  # penerimaan baru (#069) — dialokasikan ke default account
         for line in journal.details:
             if line.kredit:
                 journal_credit_index[journal.id][line.akun_perkiraan_id] += Decimal(line.kredit)
@@ -361,11 +389,11 @@ def _build_clearing_from_matches(db, inv, eligible, existing_rows, new_matches):
         )
         receipt_total_value[journal.id] = total
 
-    # Build receipt_detail → journal_id index (untuk lookup existing match rows)
+    # Build receipt_detail → journal_id index (None = penerimaan tanpa jurnal)
     rd_to_journal = {}
     for receipt, journal in eligible:
         for rd in receipt.details:
-            rd_to_journal[rd.id] = journal.id
+            rd_to_journal[rd.id] = journal.id if journal else None
 
     # Aggregate matched_value per journal_id
     matched_value_per_journal = defaultdict(Decimal)
@@ -373,7 +401,7 @@ def _build_clearing_from_matches(db, inv, eligible, existing_rows, new_matches):
     def _process_match(match_row):
         rd_id = match_row.penerimaan_barang_detail_id
         journal_id = rd_to_journal.get(rd_id)
-        if journal_id is None:
+        if journal_id is None and rd_id not in rd_to_journal:
             # Receipt detail mungkin dari receipt yang sudah di-reverse;
             # skip (tidak eligible lagi).
             return
@@ -385,9 +413,13 @@ def _build_clearing_from_matches(db, inv, eligible, existing_rows, new_matches):
         # new_matches is list of dicts; build proxy
         _process_match(_NewMatchProxy(m))
 
-    # Allocate matched_value per journal → akun GRNI proporsional
+    # Allocate matched_value per journal → akun (proporsional untuk legacy)
     grni_clearing = defaultdict(Decimal)
     for journal_id, matched_total in matched_value_per_journal.items():
+        if journal_id is None:
+            # === Update #069 — penerimaan tanpa jurnal → akun PEMBELIAN (HPP) ===
+            grni_clearing[default_account_id] += matched_total
+            continue
         receipt_total = receipt_total_value.get(journal_id, Decimal(0))
         if receipt_total <= 0:
             continue
@@ -441,24 +473,28 @@ def _persist_match_rows(db, inv, match_result):
 
 
 def clearing_entries(db, inv, basis):
-    """Return GRNI clearing account totals using partial three-way match.
+    """Return debit-allocation totals for the purchase invoice journal.
 
     P0-01 (Re-Audit): Wire ``purchase_invoice_receipt_match`` bridge ke service.
 
-    Behavior baru:
-        - Auto-match invoice lines ke eligible receipt lines (same barang).
-        - Support partial receipt, partial invoice, many-to-many matching.
-        - Persist match rows ke ``purchase_invoice_receipt_match`` table.
-        - Hitung GRNI clearing per-account dari matched_value (proporsional
-          terhadap nilai kredit journal GRNI receipt).
-        - Sisa invoice yang tidak dapat match → tetap diposting sebagai direct
-          purchase portion di akun PEMBELIAN (di-handle caller post_purchase_invoice).
-        - Toleransi rounding 1.00 untuk validasi total debits vs basis.
+    === Update #069 — MODEL PERIODIK: ===
+        - Penerimaan baru TIDAK berjurnal GL. Match atas penerimaan tanpa
+          jurnal dialokasikan ke akun PEMBELIAN (HPP) — jadi jurnal invoice
+          D Pembelian (HPP) / K Utang, dan biaya pembelian LANGSUNG tampak
+          di baris HPP Laba Rugi (tidak pernah ter-net-out).
+        - Match atas penerimaan LEGACY (pra-#069, berjurnal PENERIMAAN_GRNI)
+          tetap dialokasikan ke akun kredit jurnal penerimaan tsb agar
+          saldo historis GRNI/Pembelian lama tetap netral.
+        - Behavior lama yang dipertahankan: partial receipt / partial
+          invoice / many-to-many matching; persist match rows ke
+          ``purchase_invoice_receipt_match``; sisa invoice yang tidak match
+          → direct purchase portion di akun PEMBELIAN (di-handle caller
+          post_purchase_invoice); toleransi rounding 1.00.
 
     Return:
-        Dict {akun_perkiraan_id: Decimal(debit_amount)} untuk GRNI clearing.
-        None kalau GRNI tidak configured dan tidak ada receipts sama sekali
-        (legacy fallback path di caller).
+        Dict {akun_perkiraan_id: Decimal(debit_amount)} untuk debit jurnal
+        invoice. None kalau GRNI tidak configured dan tidak ada receipts
+        sama sekali (legacy fallback path di caller).
 
     Raises:
         ValueError:

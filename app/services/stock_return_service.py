@@ -1,4 +1,12 @@
-"""Restore goods and COGS from the actual shipment, never today's master price."""
+"""Restore goods from the actual shipment, never today's master price.
+
+=== Update #069 — jurnal GL 'RETUR_HPP' (D Persediaan / K HPP) saat retur
+penjualan DIHAPUS (model periodik): stok dikembalikan di subledger
+(StokMutasi, dengan restore layer FIFO/FEFO + nilai HPP asli), sedangkan
+jurnal keuangan retur (D Retur Penjualan / K Piutang) tetap dipost oleh
+post_sales_retur. Dengan begitu HPP Laba Rugi tetap = Pembelian − Retur
+Pembelian dan akun Persediaan GL tidak digerakkan siklus beli-jual.
+"""
 from datetime import date, datetime
 from decimal import Decimal
 from app.models import PengirimanBarang, SalesRetur, StokMutasi
@@ -6,7 +14,6 @@ from app.models.transaksi.jurnal import RefModule
 from app.services.stok_service import update_stok_barang
 from app.services.warehouse_service import money, method
 from app.services.settlement_service import local_day
-from app.services.posting_service import JurnalEntryItem, auto_posting_jurnal
 
 
 def execute_sales_return(db, obj):
@@ -26,7 +33,6 @@ def execute_sales_return(db, obj):
         if detail.barang_id is None:
             continue
         grouped[detail.barang_id] = grouped.get(detail.barang_id, 0) + detail.qty
-    entries = []
     for item_id, qty in grouped.items():
         moves = db.query(StokMutasi).filter_by(ref_id=source.id, barang_id=item_id).order_by(StokMutasi.created_at, StokMutasi.id).all()
         if not moves or any(not m.inventory_account_id or not m.expense_account_id for m in moves):
@@ -38,7 +44,6 @@ def execute_sales_return(db, obj):
         accounts = {(m.inventory_account_id, m.expense_account_id) for m in moves}
         if len(accounts) != 1:
             raise ValueError('Snapshot akun HPP pengiriman ambigu')
-        inventory, expense = next(iter(accounts))
         item = moves[0].barang
         parts, skip, remaining = [], previous, qty
         for movement in moves:
@@ -65,9 +70,5 @@ def execute_sales_return(db, obj):
         movement = update_stok_barang(db, item_id, qty, 'TAMBAH', ref_module=RefModule.SALES_RETUR,
             ref_id=obj.id, ref_no=obj.no_retur, gudang_id=obj.gudang_id, harga_satuan=money(value/qty),
             incoming_parts=parts or None, exact_total=value if method(db, item) == 'AVERAGE' else None)
-        total = movement['total_nilai']
-        if total:
-            entries += [JurnalEntryItem(inventory, debit=total), JurnalEntryItem(expense, kredit=total)]
-    if entries:
-        auto_posting_jurnal(db, RefModule.SALES_RETUR, obj.no_retur, entries, ref_id=obj.id,
-            tanggal=obj.tanggal, created_by=obj.created_by, tipe_transaksi='RETUR_HPP')
+        # === Update #069 — tidak ada lagi posting jurnal RETUR_HPP di sini;
+        #     stok & nilai dikembalikan di subledger saja (lihat docstring). ===

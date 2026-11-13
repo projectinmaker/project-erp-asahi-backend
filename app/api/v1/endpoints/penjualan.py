@@ -137,15 +137,26 @@ def get_sales_order_tersedia(
     (sebagian); SO tetap tampil selama sisa nilai > 0 (belum lunas) dan
     hilang setelah nilainya tertagih penuh (visibility #047 tidak berubah,
     kini ditambah info sisanya). Field opsional — konsumen lama aman.
-    Untuk mode pengiriman sisaNilai = null. ===
+    Untuk mode pengiriman sisaNilai = null.
+
+    === Update #068 — SO DRAFT tidak ditawarkan lagi (semua mode). SO hasil
+    form pada dasarnya langsung final (#031 direct_complete force); SO DRAFT
+    hanya tersisa bila finalisasi saat pembuatan gagal — selama belum final,
+    datanya belum layak ditarik ke Pengiriman/Invoice. SO yang sedang dipakai
+    form edit tetap tampil lewat pola re-insert existing di FE. Paritas
+    /pembelian/purchase-order/tersedia #068. ===
     """
     base = db.query(SalesOrder.id, SalesOrder.no_pesanan, SalesOrder.pelanggan_id, SalesOrder.grand_total).filter(
-        SalesOrder.status != StatusPenjualan.DIBATALKAN
+        SalesOrder.status.notin_([StatusPenjualan.DIBATALKAN, StatusPenjualan.DRAFT])
     )
     if search:
         base = base.filter(SalesOrder.no_pesanan.ilike(f"%{search}%"))
 
     if untuk == "invoice":
+        # === Update #068 — nilai-tagih = (dp_pelunasan bila > 0, selain itu
+        # sub_total) + total_biaya_tambahan — paritas _invoice_billed
+        # (biaya tambahan SO kini ikut difakturkan sebagai baris biaya
+        # invoice; tanpa ini SO ber-biaya tidak pernah "tertagih penuh"). ===
         billed_sq = (
             db.query(
                 SalesInvoice.sales_order_id.label("so_id"),
@@ -155,6 +166,7 @@ def get_sales_order_tersedia(
                             (SalesInvoice.dp_pelunasan > 0, SalesInvoice.dp_pelunasan),
                             else_=SalesInvoice.sub_total,
                         )
+                        + sa_func.coalesce(SalesInvoice.total_biaya_tambahan, 0)
                     ),
                     0,
                 ).label("billed"),
@@ -353,6 +365,17 @@ def get_sales_order_sisa(
     # invoice berikutnya & guard Σ nilai-tagih ≤ grand_total SO. ===
     sisa_nilai = svc._so_sisa_nilai(db, so_id)
 
+    # === Update #068 — baris biaya tambahan SO ikut dikirim supaya form
+    # Invoice bisa mem-prefill-nya (sebelumnya biaya SO TIDAK pernah ikut
+    # difakturkan saat tarik data → Σ nilai-tagih invoice selalu kurang
+    # sebesar total biaya → SO tidak pernah mencapai "tertagih penuh" dan
+    # statusnya nyangkut di Diproses selamanya meski seluruh alur selesai).
+    # Field opsional — konsumen lama aman. ===
+    biaya_rows = [
+        {"nama": b.nama, "nilai": float(b.jumlah or 0)}
+        for b in (getattr(so, "biaya_tambahan", None) or [])
+    ]
+
     return {
         "sales_order_id": so.id,
         "pelanggan_id": so.pelanggan_id,
@@ -361,6 +384,8 @@ def get_sales_order_sisa(
         "alamat_pengiriman": so.alamat_pengiriman,
         "sisa_nilai": float(sisa_nilai),
         "details": details,
+        # === Update #068 — biaya tambahan SO (prefill form Invoice). ===
+        "biaya_tambahan": biaya_rows,
     }
 
 
@@ -1066,6 +1091,33 @@ def update_pengiriman(
     update_data = _service_kwargs(svc.update_pengiriman, data_in.model_dump(exclude_unset=True))
     try:
         return svc.update_pengiriman(db, db_obj=item, **update_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/pengiriman/{pengiriman_id}/selesaikan", response_model=PengirimanBarangResponse)
+def selesaikan_pengiriman(
+    pengiriman_id: UUID,
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """=== Update #068 — "Selesaikan" Pengiriman Barang / DO (DIPROSES → SELESAI). ===
+
+    Jalur pemulihan untuk DO yang tertinggal di status DIPROSES (mirror
+    /pembelian/penerimaan/{id}/selesaikan #068). Latar: create_pengiriman
+    COMMIT dokumen berstatus DIPROSES lebih dulu, baru workflow
+    direct_complete menjalankan finish_pengiriman (kurangi stok + jurnal
+    HPP). Bila finalisasi gagal (mis. stok tidak cukup, periode ditutup),
+    dokumen DIPROSES tersisa — qty-nya sudah dihitung "terkirim" (dropdown
+    SO tersedia menyembunyikan SO-nya) tapi DO-nya tidak pernah SELESAI,
+    sehingga baris SO tidak pernah FULFILLED. Sebelum #068 satu-satunya
+    jalan adalah Batal (hard delete) lalu buat ulang.
+    """
+    item = svc.get_pengiriman_by_id(db, pengiriman_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Pengiriman Barang tidak ditemukan")
+    try:
+        return svc.finish_pengiriman(db, item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -257,7 +257,21 @@ def audit_transaksi_persediaan(
         raise HTTPException(400, 'Tanggal awal tidak boleh melebihi tanggal akhir')
     anomali, summary = [], {}
 
-    def audit_model(model, label, journal_type=None):
+    def audit_model(model, label, journal_type=None, require_journal=True):
+        """Audit integritas stok (+ jurnal untuk tipe yang tetap wajib jurnal).
+
+        === Update #069 — MODEL PERIODIK: ===
+        PENERIMAAN / PENGIRIMAN / RETUR_PEMBELIAN / RETUR_PENJUALAN tidak
+        lagi mempost jurnal GL (require_journal=False) — yang diaudit adalah
+        KEUTUHAN MUTASI STOK:
+          - dokumen final tanpa mutasi stok (padahal ada baris barang
+            master) → anomali "stok tidak tercatat";
+          - dokumen belum final tapi mutasi stoknya sudah jalan → anomali
+            "zombie" (detektor yang sama dengan tombol Selesaikan #068).
+        Jurnal lama (pra-#069) yang masih melekat pada dokumen tetap dihitung
+        valid. PENYESUAIAN STOK tetap WAJIB berjurnal (alat penyeimbang GL
+        Persediaan di model periodik) — perilaku lamanya tidak berubah.
+        """
         rows = db.query(model).filter(model.tanggal >= date_from, model.tanggal <= date_to).all()
         total = with_jurnal = without_jurnal = 0
         for row in rows:
@@ -271,31 +285,54 @@ def audit_transaksi_persediaan(
                                                         status=StatusJurnal.POSTED).first()
             else:
                 journal = db.get(JurnalUmum, row.jurnal_umum_id) if row.jurnal_umum_id else None
-            valid = bool(journal and journal.status == StatusJurnal.POSTED and
-                         not db.query(JurnalUmum).filter_by(reversal_of_id=journal.id).first())
+            journal_valid = bool(journal and journal.status == StatusJurnal.POSTED and
+                                 not db.query(JurnalUmum).filter_by(reversal_of_id=journal.id).first())
+            final_state = state in ('SELESAI', 'DISETUJUI')
+            has_master_line = any(getattr(d, 'barang_id', None) is not None for d in row.details)
+            if require_journal:
+                valid = journal_valid
+            else:
+                # === Update #069 — valid = stok tercatat dengan benar ===
+                if final_state and movements:
+                    valid = True
+                elif final_state and not movements and not has_master_line:
+                    valid = True  # dokumen semua-baris item bebas: memang tanpa mutasi stok
+                elif not final_state and movements:
+                    valid = False  # zombie: stok sudah bergerak, dokumen belum final
+                else:
+                    valid = journal_valid  # fallback: pakai jurnal bila ada
             if valid:
                 with_jurnal += 1
             else:
                 without_jurnal += 1
                 value = sum((abs(m.total_nilai or ZERO) for m in movements), ZERO)
-                if value or (state in ('SELESAI', 'DISETUJUI') and not movements):
-                    legacy = label == 'PENERIMAAN' and not row.purchase_invoice_id
+                if value or (final_state and not movements) or (not final_state and movements):
+                    if not final_state and movements:
+                        catatan = ('Mutasi stok sudah berjalan tetapi dokumen belum final '
+                                   '(Diproses) — gunakan tombol "Selesaikan" atau batalkan dokumen')
+                    elif final_state and not movements and has_master_line:
+                        catatan = ('Dokumen final tetapi mutasi stok tidak ditemukan; '
+                                   'periksa data stok dokumen ini')
+                    else:
+                        catatan = ('Transaksi stok tidak memiliki jurnal stok POSTED aktif; '
+                                   'periksa mutasi/posting')
                     anomali.append({
                         'tipe': label, 'id': str(row.id),
                         'no_dokumen': getattr(row, 'no_form', None) or getattr(row, 'no_surat_jalan', None)
                                        or getattr(row, 'no_retur', None) or getattr(row, 'no_adj', None),
                         'status': state, 'jurnal_umum_id': str(journal.id) if journal else None,
-                        'catatan': ('Penerimaan tanpa jurnal; periksa mode legacy dan saldo pembukaan persediaan'
-                                    if legacy else 'Transaksi stok tidak memiliki jurnal stok POSTED aktif; periksa mutasi/posting'),
+                        'catatan': catatan,
                     })
         summary[f'{label.lower()}_total'] = total
         summary[f'{label.lower()}_dengan_jurnal'] = with_jurnal
         summary[f'{label.lower()}_tanpa_jurnal'] = without_jurnal
 
-    audit_model(PenerimaanBarang, 'PENERIMAAN', 'PENERIMAAN_GRNI')
-    audit_model(PengirimanBarang, 'PENGIRIMAN')
-    audit_model(PurchaseRetur, 'RETUR_PEMBELIAN', 'RETUR_STOCK')
-    audit_model(SalesRetur, 'RETUR_PENJUALAN', 'RETUR_HPP')
+    # === Update #069 — empat siklus beli/jual kini bebas-jurnal (stok saja);
+    #     hanya Penyesuaian Stok yang tetap wajib berjurnal GL. ===
+    audit_model(PenerimaanBarang, 'PENERIMAAN', 'PENERIMAAN_GRNI', require_journal=False)
+    audit_model(PengirimanBarang, 'PENGIRIMAN', require_journal=False)
+    audit_model(PurchaseRetur, 'RETUR_PEMBELIAN', 'RETUR_STOCK', require_journal=False)
+    audit_model(SalesRetur, 'RETUR_PENJUALAN', 'RETUR_HPP', require_journal=False)
     audit_model(PenyesuaianStok, 'PENYESUAIAN')
 
     from app.services.reporting_ledger import period

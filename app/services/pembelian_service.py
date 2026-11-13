@@ -2299,24 +2299,23 @@ def cancel_penerimaan(db: Session, db_obj: PenerimaanBarang, user_id: Optional[U
 
 @atomic_accounting_write
 def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang:
-    """Finalisasi penerimaan barang — status SELESAI + tambah stok barang +
-    (Tahap 2) auto-post jurnal Persediaan (setting GRNI tetap wajib sebagai
-    enforcement alur tiga-arah).
+    """Finalisasi penerimaan barang — status SELESAI + tambah stok barang.
 
-    === Update #066 — Jurnal Tahap 2: ===
-        D: Persediaan (per-barang, dari mapping barang atau fallback kategori)
-        K: PEMBELIAN — HPP (Pembelian)   [dulu: Penerimaan Dalam Proses (GRNI)]
+    === Update #069 — PENERIMAAN TIDAK LAGI MEMPOST JURNAL GL. ===
+    Sebelum #069 penerimaan mempost jurnal D Persediaan / K Pembelian (HPP)
+    yang otomatis DI-NET-OUT oleh debit akun Pembelian di jurnal invoice
+    (clearing #066) — akibatnya baris HPP di Laba Rugi selalu NOL setelah
+    pembelian (temuan test user #068). Model akuntansi kini PERIODIK:
 
-    Anti double-record:
-    - Saat `post_purchase_invoice` dijalankan dan invoice terkait punya
-      penerimaan yang sudah di-posting, invoice akan D: akun KREDIT jurnal
-      penerimaan tsb (clearing dinamis — sejak #066: HPP (Pembelian) untuk
-      penerimaan baru, GRNI untuk penerimaan lama) alih-alih D: Pembelian
-      penuh; net dua jurnal = D Persediaan / K Utang.
-    - Jika akun perantara belum di-configure: penerimaan TIDAK mempost jurnal
-      (legacy), invoice tetap D: Pembelian, K: Utang Dagang (cara lama).
+      - Penerimaan barang = operasi GUDANG saja (StokMutasi + snapshot akun).
+      - Invoice Pembelian = satu-satunya pencatatan GL pembelian:
+        D Pembelian (HPP) / K Utang — biaya pembelian LANGSUNG tampak di
+        Jurnal Umum & baris HPP Laba Rugi.
+      - Setting GRNI (PENERIMAAN_DALAM_PROSES) tetap WAJIB sebagai gate
+        alur tiga-arah (penerimaan wajib selesai sebelum invoice dipost).
 
-    Riwayat jurnal POSTED tetap dipertahankan; tidak ada rewrite transaksi lama.
+    Penerimaan LAMA yang sudah berjurnal (pra-#069) tetap dipertahankan
+    historisnya; jurnalnya tidak pernah di-rewrite.
     """
     if db_obj.status == StatusPenjualan.DIBATALKAN:
         raise ValueError("Penerimaan yang sudah dibatalkan tidak bisa difinalisasi")
@@ -2336,22 +2335,15 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             'Configure via PUT /master/setting-akun/PENERIMAAN_DALAM_PROSES.'
         )
     receipt_control.validate_execution(db, db_obj, grni_account_id)
-    # === Update #066 — jurnal PENERIMAAN kini meng-credit akun PEMBELIAN
-    #     (HPP (Pembelian)), bukan GRNI "Penerimaan Dalam Proses": jurnal
-    #     INVOICE pembelian otomatis menjadi D: HPP (Pembelian) / K: Utang
-    #     (clearing di inventory_receipt_control mengikuti akun KREDIT
-    #     jurnal penerimaan — penerimaan LAMA yang meng-credit GRNI tetap
-    #     ter-clearing ke akun GRNI-nya sehingga saldo historis netral).
-    #     Net dua jurnal: D Persediaan (penerimaan) / K Utang (invoice).
-    #     Setting GRNI tetap wajib (enforcement alur 3-way match di atas).
-    #     tipe_transaksi TETAP "PENERIMAAN_GRNI" agar eligibility matching
-    #     invoice↔penerimaan (inventory_receipt_control) tidak berubah. ===
+    # === Update #069 — TIDAK ADA lagi posting jurnal di penerimaan.
+    #     Akun Pembelian (HPP) cukup di-ensure ter-config karena akun tsb
+    #     dipakai sebagai snapshot "akun lawan" di StokMutasi (dipakai
+    #     retur/rekonsiliasi) dan sebagai akun debit jurnal invoice nanti. ===
     pembelian_account_id = get_akun_id_or_raise(
         db, KEY_PEMBELIAN, context=f"Penerimaan {db_obj.no_form}"
     )
 
     # Tambah stok untuk setiap detail barang yang diterima
-    inventory_entries = []
     for detail in db_obj.details:
         cost = detail.harga_perolehan
         if cost is None:
@@ -2377,56 +2369,14 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
             tanggal_kedaluwarsa=detail.tanggal_kedaluwarsa,
         )
 
-        # Tahap 2: snapshot akun Persediaan di StokMutasi (untuk retur nanti)
+        # Snapshot akun di StokMutasi (dipakai retur stok / rekonsiliasi)
         if grni_account_id:
-            inventory_account_id = _get_akun_persediaan_id(db, detail.barang)
-            movement['mutasi'].inventory_account_id = inventory_account_id
-            movement['mutasi'].expense_account_id = pembelian_account_id  # === Update #066 — snapshot akun lawan retur ikut akun PEMBELIAN (dulu GRNI) ===
-            line_value = movement['total_nilai']
-            if line_value:
-                inventory_entries.append((inventory_account_id, line_value, detail.barang.nama))
+            movement['mutasi'].inventory_account_id = _get_akun_persediaan_id(db, detail.barang)
+            movement['mutasi'].expense_account_id = pembelian_account_id
 
-    # Phase C: GRNI journal selalu di-post (bukan conditional lagi)
-    # Posting jurnal penerimaan: Dr Persediaan / Cr Pembelian (HPP) — Update #066
-    if inventory_entries:
-        entries = []
-        for inventory_account_id, line_value, barang_nama in inventory_entries:
-            entries.append(JurnalEntryItem(
-                akun_perkiraan_id=inventory_account_id,
-                debit=line_value,
-                keterangan=f"Penerimaan {db_obj.no_form} - {barang_nama}",
-            ))
-            entries.append(JurnalEntryItem(
-                # === Update #066 — kredit akun PEMBELIAN (HPP (Pembelian)),
-                # bukan GRNI; clearing invoice otomatis mengikuti akun ini. ===
-                akun_perkiraan_id=pembelian_account_id,
-                kredit=line_value,
-                keterangan=f"Pembelian {db_obj.no_form} - {barang_nama}",
-            ))
-        try:
-            jurnal = auto_posting_jurnal(
-                db=db,
-                ref_module=RefModule.PURCHASE_RECEIPT,  # konsisten dgn ref_module StokMutasi
-                ref_no=db_obj.no_form,
-                entries=entries,
-                keterangan=f"Penerimaan Barang {db_obj.no_form} (HPP Pembelian)",
-                ref_id=db_obj.id,
-                tanggal=db_obj.tanggal,
-                created_by=db_obj.created_by,
-                tipe_transaksi="PENERIMAAN_GRNI",
-            )
-            db_obj.jurnal_umum_id = jurnal.id
-            logger.info(
-                f"Penerimaan jurnal posted: {jurnal.no_jurnal} | "
-                f"D: Persediaan, K: Pembelian (HPP) | total={sum(v for _, v, _ in inventory_entries)}"
-            )
-        except Exception as e:
-            raise ValueError(f"Jurnal penerimaan gagal diposting: {e}") from e
-    elif not inventory_entries:
-        logger.warning(
-            f"Penerimaan {db_obj.no_form}: tidak ada inventory entries "
-            f"(kemungkinan semua barang tidak punya mapping akun persediaan)"
-        )
+    # === Update #069 — jurnal GL penerimaan DIHAPUS (lihat docstring):
+    #     biaya pembelian dibukukan SEKALI di jurnal invoice (D Pembelian /
+    #     K Utang) supaya baris HPP Laba Rugi tidak pernah ter-net-out. ===
 
     db_obj.status = StatusPenjualan.SELESAI
     db.add(db_obj)
@@ -2467,9 +2417,14 @@ def finish_purchase_retur(db: Session, db_obj: PurchaseRetur) -> PurchaseRetur:
             raise ValueError('Qty retur melebihi qty invoice pembelian yang belum diretur')
 
     # Kurangi stok untuk setiap detail barang yang dikembalikan ke supplier
-    stock_entries = []
+    # === Update #069 — jurnal lapis-stok RETUR_STOCK (D Retur Pembelian /
+    #     K Persediaan) DIHAPUS: jurnal GL retur pembelian cukup SATU di
+    #     post_purchase_retur (D Utang / K Retur Pembelian) sehingga akun
+    #     Retur Pembelian (baris HPP Laba Rugi) tidak ter-net-out dan
+    #     Persediaan GL tidak digerakkan oleh siklus beli-jual (model
+    #     periodik). Stok tetap dikurangi di subledger (StokMutasi). ===
     for detail in db_obj.details:
-        movement = update_stok_barang(
+        update_stok_barang(
             db=db,
             barang_id=detail.barang_id,
             qty_change=detail.qty,
@@ -2481,15 +2436,6 @@ def finish_purchase_retur(db: Session, db_obj: PurchaseRetur) -> PurchaseRetur:
             gudang_id=db_obj.gudang_id,
         )
 
-        from app.services.persediaan_service import _get_akun_persediaan_id
-        value = movement['total_nilai']
-        if value:
-            stock_entries += [JurnalEntryItem(get_akun_id_or_raise(db, KEY_RETUR_PEMBELIAN, context=db_obj.no_retur), debit=value),
-                              JurnalEntryItem(_get_akun_persediaan_id(db, detail.barang), kredit=value)]
-    if stock_entries:
-        auto_posting_jurnal(db, RefModule.PURCHASE_RETUR, db_obj.no_retur, stock_entries,
-            ref_id=db_obj.id, tanggal=db_obj.tanggal, created_by=db_obj.created_by, tipe_transaksi='RETUR_STOCK')
-
     db_obj.status = StatusPenjualan.SELESAI
     db.add(db_obj)
     db.commit()
@@ -2498,10 +2444,23 @@ def finish_purchase_retur(db: Session, db_obj: PurchaseRetur) -> PurchaseRetur:
     return db_obj
 
 def post_purchase_invoice(db: Session, inv, created_by):
-    """Clear all linked receipt GRNI snapshots after exact quantity/value checks.
+    """Post jurnal GL invoice pembelian — D Pembelian (HPP) / K Utang Dagang.
 
-    With GRNI configured, receipts must execute before invoice posting.
-    Without GRNI and without linked receipts, preserve the legacy purchase entry.
+    === Update #069 — MODEL PERIODIK: ===
+    - Debit akun PEMBELIAN (HPP (Pembelian)) sebesar dasar_pajak PENUH —
+      biaya pembelian LANGSUNG tampak di Jurnal Umum & baris HPP Laba Rugi
+      (dulu #066: debit diarahkan ke akun kredit jurnal penerimaan sehingga
+      HPP selalu ter-net-out menjadi NOL).
+    - Penerimaan barang (#069) tidak lagi mempost jurnal GL, jadi tidak ada
+      lawan yang menetralkan debit Pembelian ini.
+    - Penerapan LEGACY (pra-#069): invoice yang di-post atas penerimaan LAMA
+      yang masih menyimpan jurnal D Persediaan / K Pembelian akan tetap
+      di-clearing ke akun kredit jurnal penerimaan tsb (netral historis,
+      perilaku identik sebelum #069). Matching + persist bridge table tetap
+      berjalan untuk sinkronisasi status PO.
+    - Tanpa receipt sama sekali (GRNI tidak configured): tetap direct
+      D Pembelian / K Utang (legacy path).
+
     Existing posted journals are never rewritten.
     """
     from app.services.document_totals import validate_postable
@@ -2519,29 +2478,43 @@ def post_purchase_invoice(db: Session, inv, created_by):
         raise ValueError("Mapping akun akun_hutang_id belum diisi; posting dibatalkan")
     dasar_pajak = sub_total - total_diskon
 
+    pembelian_account_id = get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}")
     clearing = receipt_control.clearing_entries(db, inv, dasar_pajak)
     if clearing is None:
         # Legacy path: tidak ada GRNI & tidak ada receipts sama sekali
-        clearing = {get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}"): dasar_pajak}
-        description = f"Pembelian PINV {no_form} - {supplier.nama}"
-    else:
-        description = f"Clearing GRNI PINV {no_form}"
+        clearing = {pembelian_account_id: dasar_pajak}
 
-    entries = [JurnalEntryItem(akun_perkiraan_id=account_id, debit=value,
-                              keterangan=description) for account_id, value in clearing.items()]
+    # === Update #069 — keterangan per-baris: porsi yang mendarat di akun
+    #     PEMBELIAN (HPP) berlabel "Pembelian", porsi legacy yang di-clearing
+    #     ke akun kredit jurnal penerimaan lama berlabel "Clearing". ===
+    entries = [
+        JurnalEntryItem(
+            akun_perkiraan_id=account_id,
+            debit=value,
+            keterangan=(
+                f"Pembelian PINV {no_form} - {supplier.nama}"
+                if account_id == pembelian_account_id
+                else f"Clearing GRNI PINV {no_form}"
+            ),
+        )
+        for account_id, value in clearing.items()
+    ]
 
     # P0-01: Handle unmatched portion (partial three-way match).
     # Kalau total clearing < dasar_pajak, berarti ada invoice lines yang tidak
     # dapat match ke receipt manapun (misalnya: barang yang belum diterima, atau
     # supplier invoice datang sebelum receipt). Sisa tersebut di-posting sebagai
     # direct purchase debit ke akun PEMBELIAN.
+    # (Sejak #069 penerimaan baru tidak berjurnal — matching otomatis
+    # mengarahkan seluruh nilai ke akun PEMBELIAN, jadi porsi unmatched
+    # umumnya hanya muncul untuk invoice tanpa receipt sama sekali.)
     total_clearing = sum(clearing.values(), Decimal(0))
     unmatched_portion = Decimal(dasar_pajak) - total_clearing
     if unmatched_portion > 0:
         # Cek apakah akun PEMBELIAN sudah ada di clearing (kasus: ada direct + clearing mix)
         existing_pembelian = next(
             ((akun_id, val) for akun_id, val in clearing.items()
-             if akun_id == get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}")),
+             if akun_id == pembelian_account_id),
             None,
         )
         if existing_pembelian:
@@ -2552,7 +2525,7 @@ def post_purchase_invoice(db: Session, inv, created_by):
                 JurnalEntryItem(
                     akun_perkiraan_id=akun_pembelian,
                     debit=(value + unmatched_portion) if akun_id == akun_pembelian else value,
-                    keterangan=description if akun_id != akun_pembelian
+                    keterangan=f"Clearing GRNI PINV {no_form}" if akun_id != akun_pembelian
                                else f"Pembelian PINV {no_form} - {supplier.nama} (sebagian)",
                 )
                 for akun_id, value in clearing.items()
@@ -2560,7 +2533,7 @@ def post_purchase_invoice(db: Session, inv, created_by):
         else:
             # Tambah entry baru untuk akun PEMBELIAN
             entries.append(JurnalEntryItem(
-                akun_perkiraan_id=get_akun_id_or_raise(db, KEY_PEMBELIAN, context=f"PINV {no_form}"),
+                akun_perkiraan_id=pembelian_account_id,
                 debit=unmatched_portion,
                 keterangan=f"Pembelian PINV {no_form} - {supplier.nama} (tanpa receipt)",
             ))

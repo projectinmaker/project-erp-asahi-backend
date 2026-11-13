@@ -565,6 +565,17 @@ class SalesOrderSisaDetailResponse(BaseSchema):
     # header invoice dpPelunasan; baris SO selalu nilai penuh). ===
 
 
+class SalesOrderSisaBiayaResponse(BaseSchema):
+    """=== Update #068 — satu baris biaya tambahan SO (prefill form Invoice).
+
+    Biaya SO ikut difakturkan saat tarik data supaya Σ nilai-tagih invoice
+    mencapai grand_total SO (tanpa ini SO nyangkut di Diproses selamanya —
+    lihat komentar endpoint /sales-order/{id}/sisa). ===
+    """
+    nama: str
+    nilai: float = 0.0
+
+
 class SalesOrderSisaResponse(BaseSchema):
     sales_order_id: UUID
     pelanggan_id: UUID
@@ -577,6 +588,9 @@ class SalesOrderSisaResponse(BaseSchema):
     # invoice berikutnya atas SO ini. ===
     sisa_nilai: float = 0.0
     details: list[SalesOrderSisaDetailResponse] = []
+    # === Update #068 — baris biaya tambahan SO (opsional; default kosong —
+    # konsumen lama aman). Dipakai form Invoice untuk prefill tabel biaya. ===
+    biaya_tambahan: list[SalesOrderSisaBiayaResponse] = []
 
 
 # ==========================================

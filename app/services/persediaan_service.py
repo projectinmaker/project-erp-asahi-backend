@@ -173,10 +173,14 @@ def _get_akun_penerimaan_dalam_proses_id(db: Session) -> Optional[UUID]:
         UUID akun perantara, atau None jika belum di-configure di setting_akun.
 
     Catatan:
-    - Akun perantara dipakai saat `finish_penerimaan` mempost D: Persediaan,
-      K: PENERIMAAN_DALAM_PROSES.
-    - Saat `post_purchase_invoice` terkait, akun ini di-debit (clearing).
-    - Jika None: penerimaan TIDAK mempost jurnal (legacy), invoice tetap D: Pembelian.
+    - === Update #069 — sejak model periodik, penerimaan barang TIDAK LAGI
+      mempost jurnal GL (D Persediaan / K GRNI pra-#066, D Persediaan /
+      K Pembelian #066-#068 — keduanya dihapus). Setting
+      PENERIMAAN_DALAM_PROSES tetap dipakai sebagai GATE alur tiga-arah:
+      wajib ter-configure agar penerimaan bisa difinalisasi (enforcement
+      "barang diterima sebelum invoice dipost"). ===
+    - Akun GRNI hanya menerima jurnal LEGACY pra-#069 (historis) dan
+      jurnal manual; laporan Rekonsiliasi GRNI tetap membaca sisanya.
     """
     from app.services.inventory_receipt_control import configured_grni
     return configured_grni(db)
