@@ -968,28 +968,69 @@ def _so_sisa_nilai(
     return max(Decimal("0"), grand_total - billed)
 
 
-def sync_so_completion(db: Session, so_ids) -> None:
-    """=== Update #046 — SO ikut SELESAI saat tagihannya selesai. ===
+def _so_fully_delivered(db: Session, so: SalesOrder) -> bool:
+    """=== Update #070 — kelengkapan PENGIRIMAN SO (baris barang). ===
 
-    Dipanggil setelah titik-titik yang mengubah kelengkapan tagihan atas SO
-    (posting penerimaan pelunasan, posting Voucher Memorial gagal tagih,
-    pembatalan penerimaan/invoice). Aturan:
+    Setiap baris BARANG SO (barang_id tidak NULL, qty > 0) sudah terkirim
+    penuh (qty terkirim ≥ qty pesan) lewat PengirimanBarang berstatus
+    SELESAI — over-delivery OK, mirror _refresh_fulfillment_status.
+    Baris ITEM BEBAS (barang_id NULL — jasa/custom, #032) TIDAK dihitung:
+    memang tidak bisa dikirim, cukup difakturkan. SO tanpa baris barang
+    sama sekali → True (vacuous — tertagih penuh saja cukup).
+    """
+    goods_lines = [
+        d for d in (so.details or [])
+        if d.barang_id is not None and int(d.qty or 0) > 0
+    ]
+    if not goods_lines:
+        return True
+    delivered = dict(
+        db.query(
+            PengirimanBarangDetail.sales_order_detail_id,
+            func.coalesce(func.sum(PengirimanBarangDetail.qty), 0),
+        )
+        .join(PengirimanBarang, PengirimanBarangDetail.pengiriman_id == PengirimanBarang.id)
+        .filter(
+            PengirimanBarang.sales_order_id == so.id,
+            PengirimanBarang.status == StatusPenjualan.SELESAI,
+            PengirimanBarangDetail.sales_order_detail_id.in_(
+                [d.id for d in goods_lines]
+            ),
+        )
+        .group_by(PengirimanBarangDetail.sales_order_detail_id)
+        .all()
+    )
+    return all(
+        int(delivered.get(d.id, 0) or 0) >= int(d.qty or 0)
+        for d in goods_lines
+    )
+
+
+def sync_so_completion(db: Session, so_ids) -> None:
+    """=== Update #046 → #070 — SO ikut SELESAI saat pekerjaannya tuntas. ===
+
+    Dipanggil setelah titik-titik yang mengubah kelengkapan SO (invoice
+    final/dibatalkan, pengiriman selesai/dibatalkan, posting penerimaan
+    pelunasan / Voucher Memorial gagal tagih). Aturan BARU (#070 —
+    keputusan user: status SO = penanda penyelesaian OPERASIONAL, TIDAK
+    LAGI MENUNGGU PELUNASAN; status bayar dilacak di invoice & modul ln):
 
     - SO DIPROSES dinaikkan ke SELESAI bila KEDUA syarat terpenuhi:
-      (1) seluruh nilai SO sudah ditagihkan — sisaNilai ≤ 0.005 dan ada
-          minimal satu invoice dengan nilai-tagih > 0; dan
-      (2) SEMUA invoice non-batal atas SO sudah terpelunasi penuh
-          (status pembayaran LUNAS / LEBIH_BAYAR — bayar + retur + DP
-          teraplikasi + gagal tagih ≥ grand total invoice).
+      (1) seluruh nilai SO sudah ditagihkan — Σ nilai-tagih invoice
+          non-batal (DP/pelunasan + biaya tambahan) ≥ grand total SO
+          (toleransi 0,005) dan ada minimal satu invoice; dan
+      (2) seluruh BARANG sudah terkirim penuh (_so_fully_delivered;
+          baris item bebas dikecualikan).
     - Sebaliknya, SO yang sudah SELESAI dikembalikan ke DIPROSES bila
-      tagihannya tidak lagi lengkap (mis. penerimaan pelunasan dibatalkan
-      atau invoice atas SO dibatalkan) — selama SO belum DIBATALKAN.
+      syarat tidak lagi terpenuhi (invoice dibatalkan / pengiriman
+      dibatalkan) — selama SO belum DIBATALKAN.
+
+    (#046 dahulu juga mensyaratkan SEMUA invoice LUNAS/LEBIH_BAYAR —
+    dicabut di #070; lihat README-UPDATE-070.)
 
     Idempotent; tidak melakukan commit (pemanggil memiliki transaksi —
     dekorator atomic_accounting_write / alur workflow yang commit).
     """
-    from app.services import settlement_service as settlement
-
     for so_id in {s for s in so_ids if s}:
         so = db.get(SalesOrder, so_id)
         if so is None:
@@ -1008,26 +1049,23 @@ def sync_so_completion(db: Session, so_ids) -> None:
             billed > 0
             and safe_decimal(so.grand_total or 0) - billed <= Decimal("0.005")
         )
-        all_settled = bool(invoices) and all(
-            b["status_pembayaran"] in ("LUNAS", "LEBIH_BAYAR")
-            for b in settlement.balances(db, invoices).values()
-        )
-        if fully_billed and all_settled:
+        complete = fully_billed and _so_fully_delivered(db, so)
+        if complete:
             # Hanya DIPROSES yang dinaikkan (DRAFT belum difinalisasi —
             # tidak lompat ke SELESAI; SELESAI tetap).
             if current == StatusPenjualan.DIPROSES.value:
                 so.status = StatusPenjualan.SELESAI
                 db.add(so)
                 logger.info(
-                    f"Update #046 — SO {so.no_pesanan} → SELESAI "
-                    f"(seluruh nilai sudah ditagih & terpelunasi)"
+                    f"Update #070 — SO {so.no_pesanan} → SELESAI "
+                    f"(tertagih penuh & seluruh barang terkirim)"
                 )
         elif current == StatusPenjualan.SELESAI.value:
             so.status = StatusPenjualan.DIPROSES
             db.add(so)
             logger.info(
-                f"Update #046 — SO {so.no_pesanan} SELESAI → DIPROSES "
-                f"(tagihan tidak lagi lengkap/terpelunasi)"
+                f"Update #070 — SO {so.no_pesanan} SELESAI → DIPROSES "
+                f"(tagihan/pengiriman tidak lagi lengkap)"
             )
 
 
@@ -2137,6 +2175,16 @@ def cancel_pengiriman(db: Session, db_obj: PengirimanBarang, user_id: Optional[U
     # Update #7 (M-05): pengiriman yang dibatalkan tidak lagi menghitung ke
     # delivered SO — refresh supaya fulfillment_status mundur (PARTIAL/OPEN).
     _refresh_fulfillment_status(db, db_obj.sales_order_id)
+    # === Update #070 — SO ikut disinkronkan pasca-batal pengiriman: kriteria
+    # SELESAI SO kini memperhitungkan kelengkapan pengiriman (DO batal bisa
+    # menurunkan SO yang sudah SELESAI kembali ke DIPROSES). ===
+    if db_obj.sales_order_id is not None:
+        try:
+            sync_so_completion(db, {db_obj.sales_order_id})
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan pembatalan
+            logger.warning(
+                f"Sync status SO pasca-batal pengiriman {db_obj.no_surat_jalan} dilewati: {sync_exc}"
+            )
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
@@ -2236,6 +2284,18 @@ def finish_pengiriman(db: Session, db_obj: PengirimanBarang) -> PengirimanBarang
         # hitung ulang fulfillment_status SO (OPEN/PARTIAL/FULFILLED) — kolom
         # ini sebelumnya tidak pernah ditulis siapa pun (field mati).
         _refresh_fulfillment_status(db, db_obj.sales_order_id)
+
+        # === Update #070 — SO ikut disinkronkan saat DO selesai: kriteria
+        # SELESAI SO kini memperhitungkan kelengkapan pengiriman — DO terakhir
+        # yang melengkapi kirim (padahal tagihan sudah penuh) bisa menaikkan
+        # SO ke SELESAI. Tanpa commit — commit tetap milik alur ini. ===
+        if db_obj.sales_order_id is not None:
+            try:
+                sync_so_completion(db, {db_obj.sales_order_id})
+            except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan finalisasi
+                logger.warning(
+                    f"Sync status SO pasca-selesai pengiriman {db_obj.no_surat_jalan} dilewati: {sync_exc}"
+                )
 
         db.add(db_obj)
         db.commit()

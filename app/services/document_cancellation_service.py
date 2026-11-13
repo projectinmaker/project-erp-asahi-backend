@@ -289,7 +289,11 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
     # === Update #046 — SO terkait dokumen kas/invoice utk sinkronisasi
     # status PASCA-pembatalan (revert SELESAI → DIPROSES bila tagihan tidak
     # lagi lengkap). Di-capture SEBELUM alokasi pelunasan dihapus di branch
-    # REVERSAL supaya SO-nya tetap ketemu. ===
+    # REVERSAL supaya SO-nya tetap ketemu.
+    # === Update #070 — PENGIRIMAN (DO) ikut dicapture: kriteria SELESAI SO
+    # kini memperhitungkan kelengkapan pengiriman — batal DO SELESAI bisa
+    # menurunkan SO ke DIPROSES. (DO DIPROSES via branch hard-delete tidak
+    # berdampak — qty-nya memang tidak pernah dihitung sebagai terkirim.) ===
     sync_so_ids = set()
     if document_type == 'penerimaan_kas':
         sync_so_ids = {
@@ -299,7 +303,7 @@ def _cancel_document_tx(db: Session, db_obj, user, reason: Optional[str]):
                     SalesInvoice.sales_order_id.isnot(None))
             .all()
         }
-    elif document_type == 'sales_invoice':
+    elif document_type in ('sales_invoice', 'pengiriman_barang'):
         so_sid = getattr(db_obj, 'sales_order_id', None)
         if so_sid is not None:
             sync_so_ids = {so_sid}

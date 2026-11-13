@@ -1780,29 +1780,52 @@ def _po_fully_received(db: Session, po: PurchaseOrder) -> bool:
     return True
 
 
+def _po_has_receipt_flow(db: Session, po_id: UUID) -> bool:
+    """=== Update #070 — apakah PO pernah memakai alur PENERIMAAN. ===
+
+    True bila ada PenerimaanBarang non-DIBATALKAN yang menaut PO ini
+    (termasuk yang masih DIPROSES). Dipakai sync_po_completion: PO yang
+    memang berjalan TANPA penerimaan (belanja jasa) cukup ditutup
+    invoice penuh; PO yang memakai alur penerimaan wajib diterima penuh.
+    """
+    return (
+        db.query(PenerimaanBarang.id)
+        .filter(
+            PenerimaanBarang.purchase_order_id == po_id,
+            PenerimaanBarang.status != StatusPenjualan.DIBATALKAN,
+        )
+        .first()
+        is not None
+    )
+
+
 def sync_po_completion(db: Session, po_ids) -> None:
-    """=== Update #052 — PO ikut SELESAI saat rantainya tuntas. ===
+    """=== Update #052 → #070 — PO ikut SELESAI saat rantainya tuntas. ===
 
     Dipanggil setelah titik yang mengubah kelengkapan rantai PO (penerimaan
-    selesai, invoice diposting/dibatalkan, pembayaran hutang diposting /
-    dibatalkan). Aturan:
+    selesai/dibatalkan, invoice diposting/dibatalkan, pembayaran hutang
+    diposting/dibatalkan). Aturan BARU (#070 — keputusan user: status PO =
+    penanda penyelesaian OPERASIONAL, TIDAK LAGI MENUNGGU PEMBAYARAN
+    supplier; pelunasan dilacak di invoice & modul ln hutang):
 
     - PO DIPROSES dinaikkan ke SELESAI bila SEMUA terpenuhi:
-      (1) barang diterima penuh (per baris, lewat penerimaan SELESAI)
-          ATAU invoice terhubung menutup nilai PO (Σ grand_total ≥
-          grand_total PO − 0,005 — menutup alur belanja jasa tanpa
-          penerimaan), dan
-      (2) ada minimal satu invoice aktif yang terhubung, dan
-      (3) SEMUA invoice terhubung sudah terpelunasi penuh
-          (status pembayaran LUNAS / LEBIH_BAYAR).
+      (1) PO ditagih penuh — Σ grand_total invoice aktif terhubung ≥
+          grand_total PO (toleransi 0,005) dan ada minimal satu invoice;
+          dan
+      (2) barang diterima penuh per baris (_po_fully_received, lewat
+          penerimaan SELESAI) ATAU PO memang berjalan TANPA alur
+          penerimaan (belanja jasa — _po_has_receipt_flow False;
+          invoice penuh saja cukup).
     - Sebaliknya PO yang sudah SELESAI dikembalikan ke DIPROSES bila
-      rantainya tidak lagi tuntas (invoice dibatalkan / pelunasan dibatalkan)
-      — selama PO belum DIBATALKAN.
+      rantainya tidak lagi tuntas (invoice dibatalkan / penerimaan
+      dibatalkan / penerimaan belum lengkap) — selama PO belum
+      DIBATALKAN.
+
+    (#052 dahulu juga mensyaratkan SEMUA invoice LUNAS/LEBIH_BAYAR —
+    dicabut di #070; lihat README-UPDATE-070.)
 
     Idempotent; tidak melakukan commit (pemanggil memiliki transaksi).
     """
-    from app.services import settlement_service as settlement
-
     for po_id in {p for p in po_ids if p}:
         po = db.get(PurchaseOrder, po_id)
         if po is None:
@@ -1817,11 +1840,9 @@ def sync_po_completion(db: Session, po_ids) -> None:
             and safe_decimal(po.grand_total or 0) - billed <= Decimal("0.005")
         )
         fully_received = _po_fully_received(db, po)
-        all_settled = bool(invoices) and all(
-            b["status_pembayaran"] in ("LUNAS", "LEBIH_BAYAR")
-            for b in settlement.balances(db, invoices).values()
+        complete = fully_billed and (
+            fully_received or not _po_has_receipt_flow(db, po_id)
         )
-        complete = (fully_received or fully_billed) and all_settled
         if complete:
             # Hanya DIPROSES yang dinaikkan (DRAFT belum difinalisasi —
             # tidak lompat ke SELESAI; SELESAI tetap).
@@ -1829,15 +1850,15 @@ def sync_po_completion(db: Session, po_ids) -> None:
                 po.status = StatusPenjualan.SELESAI
                 db.add(po)
                 logger.info(
-                    f"Update #052 — PO {po.no_pesanan} → SELESAI "
-                    f"(diterima/ditagih penuh & terpelunasi)"
+                    f"Update #070 — PO {po.no_pesanan} → SELESAI "
+                    f"(tertagih penuh & diterima penuh / tanpa alur penerimaan)"
                 )
         elif current == StatusPenjualan.SELESAI.value:
             po.status = StatusPenjualan.DIPROSES
             db.add(po)
             logger.info(
-                f"Update #052 — PO {po.no_pesanan} SELESAI → DIPROSES "
-                f"(rantai penerimaan/invoice/pelunasan tidak lagi tuntas)"
+                f"Update #070 — PO {po.no_pesanan} SELESAI → DIPROSES "
+                f"(rantai penerimaan/invoice tidak lagi tuntas)"
             )
 
 
@@ -2291,6 +2312,17 @@ def cancel_penerimaan(db: Session, db_obj: PenerimaanBarang, user_id: Optional[U
         reverse_journal(db, db_obj.jurnal_umum_id, user_id or db_obj.created_by)
     db_obj.status = StatusPenjualan.DIBATALKAN
     db.add(db_obj)
+    # === Update #070 — PO sumber ikut disinkronkan pasca-batal penerimaan
+    # (sinyal "PO memakai alur penerimaan" bisa berubah bila ini penerimaan
+    # satu-satunya; kelengkapan terima dihitung ulang). Tanpa commit —
+    # commit tetap milik alur ini di bawah. ===
+    if db_obj.purchase_order_id is not None:
+        try:
+            sync_po_completion(db, {db_obj.purchase_order_id})
+        except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan pembatalan
+            logger.warning(
+                f"Sync status PO pasca-batal penerimaan {db_obj.no_form} dilewati: {sync_exc}"
+            )
     db.commit()
     db.refresh(db_obj)
     logger.info(f"PenerimaanBarang cancelled: {db_obj.no_form}")
@@ -2380,8 +2412,9 @@ def finish_penerimaan(db: Session, db_obj: PenerimaanBarang) -> PenerimaanBarang
 
     db_obj.status = StatusPenjualan.SELESAI
     db.add(db_obj)
-    # === Update #052 — PO sumber ikut disinkronkan saat penerimaan selesai
-    # (bila invoice terhubung sudah ada & lunas → PO bisa naik SELESAI).
+    # === Update #052 → #070 — PO sumber ikut disinkronkan saat penerimaan
+    # selesai (bila PO juga sudah ditagih penuh oleh invoice → PO naik
+    # SELESAI — kriteria #070 tidak lagi menunggu pelunasan).
     # Tanpa commit — commit tetap milik alur ini di bawah. ===
     if db_obj.purchase_order_id is not None:
         try:
@@ -2598,10 +2631,10 @@ def post_purchase_invoice(db: Session, inv, created_by):
         inv.status = StatusPenjualan.SELESAI
     except Exception as e:
         raise ValueError(f"Jurnal PINV gagal diposting: {e}")
-    # === Update #052 — PO sumber ikut disinkronkan setelah invoice final
-    # (bila barang sudah diterima penuh / nilai PO tertutup dan semua invoice
-    # terhubung sudah lunas → PO DIPROSES naik SELESAI). Tanpa commit —
-    # pemanggil (workflow) yang memiliki transaksi. ===
+    # === Update #052 → #070 — PO sumber ikut disinkronkan setelah invoice final
+    # (bila PO ditagih penuh dan barang sudah diterima penuh / PO tanpa alur
+    # penerimaan → PO DIPROSES naik SELESAI — tanpa menunggu pelunasan).
+    # Tanpa commit — pemanggil (workflow) yang memiliki transaksi. ===
     try:
         sync_po_completion(db, po_ids_of_invoice(db, inv))
     except Exception as sync_exc:  # noqa: BLE001 — jangan gagalkan posting
