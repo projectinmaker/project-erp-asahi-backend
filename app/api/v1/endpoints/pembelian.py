@@ -132,9 +132,11 @@ def create_purchase_order(
             pic_supplier=data_in.pic_supplier,
             pic_supplier_telepon=data_in.pic_supplier_telepon,
         )
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Pembelian belum diekspos
+        # konfigurasinya → perilaku tetap seperti #043: langsung final
+        # untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -571,9 +573,11 @@ def update_purchase_order(
     update_data = _service_kwargs(svc.update_purchase_order, data_in.model_dump(exclude_unset=True))
     try:
         obj = svc.update_purchase_order(db, db_obj=item, **update_data)
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Pembelian belum diekspos
+        # konfigurasinya → perilaku tetap seperti #043: langsung final
+        # untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'purchase_order', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -660,9 +664,11 @@ def create_purchase_invoice(
             # ini diabaikan sehingga purchase_invoice.purchase_order_id selalu NULL.
             purchase_order_id=data_in.purchase_order_id,
         )
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'purchase_invoice', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Pembelian belum diekspos
+        # konfigurasinya → perilaku tetap seperti #043: langsung final
+        # untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'purchase_invoice', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -895,9 +901,11 @@ def create_purchase_retur(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'purchase_retur', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Pembelian belum diekspos
+        # konfigurasinya → perilaku tetap seperti #043: langsung final
+        # untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'purchase_retur', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -1007,9 +1015,11 @@ def create_penerimaan(
             created_by=current_user.id,
             purchase_invoice_id=data_in.purchase_invoice_id,
         )
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'penerimaan_barang', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Pembelian belum diekspos
+        # konfigurasinya → perilaku tetap seperti #043: langsung final
+        # untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'penerimaan_barang', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:

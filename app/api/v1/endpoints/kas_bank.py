@@ -116,7 +116,10 @@ def create_pembayaran(
             # === Update #02 — jenis transaksi ===
             jenis_transaksi=data_in.jenis_transaksi,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen ini (Preferensi ▸ Persetujuan): non-aktif → langsung final
+        # (posting jurnal); aktif → menunggu approver (1 tahap; approve =
+        # final) lewat kolom "Persetujuan" di daftar dokumen. ===
         workflow_service.direct_complete(db, current_user, 'pembayaran_kas', obj.id)
         db.refresh(obj)
         return obj
@@ -254,7 +257,10 @@ def create_penerimaan(
             # === Update #02 — jenis transaksi ===
             jenis_transaksi=data_in.jenis_transaksi,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen ini (Preferensi ▸ Persetujuan): non-aktif → langsung final
+        # (posting jurnal); aktif → menunggu approver (1 tahap; approve =
+        # final) lewat kolom "Persetujuan" di daftar dokumen. ===
         workflow_service.direct_complete(db, current_user, 'penerimaan_kas', obj.id)
         db.refresh(obj)
         return obj
@@ -378,7 +384,10 @@ def create_transfer(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen ini (Preferensi ▸ Persetujuan): non-aktif → langsung final
+        # (posting jurnal); aktif → menunggu approver (1 tahap; approve =
+        # final) lewat kolom "Persetujuan" di daftar dokumen. ===
         workflow_service.direct_complete(db, current_user, 'transfer_bank', obj.id)
         db.refresh(obj)
         return obj
@@ -538,9 +547,10 @@ def create_voucher_memorial(
 ):
     """Buat Voucher Memorial (Gagal Tagih) — penghapusan piutang non-kas.
 
-    Administrator (revisi tim akuntansi): langsung final tanpa langkah approval
-    (submit → approve → posting jurnal Dr Beban / Cr Piutang dalam satu transaksi).
-    Role lain: dokumen DRAFT menunggu workflow maker-checker.
+    === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+    voucher_memorial (Preferensi ▸ Persetujuan): non-aktif → langsung final
+    (posting jurnal Dr Beban / Cr Piutang dalam satu transaksi); aktif →
+    menunggu approver lewat kolom "Persetujuan" daftar Voucher Memorial. ===
     """
     try:
         obj = vm_svc.create_gagal_tagih(
@@ -552,7 +562,8 @@ def create_voucher_memorial(
             catatan=data_in.catatan,
             akun_beban_id=data_in.akun_beban_id,
         )
-        # Administrator: langsung final (mirror create_penerimaan / settlement).
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan
+        # (mirror create_penerimaan / settlement — lihat catatan create_pembayaran). ===
         workflow_service.direct_complete(db, current_user, 'voucher_memorial', obj.id)
         db.refresh(obj)
         return {

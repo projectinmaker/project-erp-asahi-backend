@@ -1759,7 +1759,7 @@ def barang_import_template(
         ["Satuan*", "Ya", "Teks", "NAMA satuan PERSIS seperti master satuan (huruf besar/kecil diabaikan). Contoh: PCS. Tidak ditemukan → baris ditolak."],
         ["Tipe Barang", "Tidak", "Pilihan", "BARANG_DAGANG / BARANG_JADI / BARANG_BAKU / BARANG_BANTU / JASA. Kosong = BARANG_DAGANG. Nilai lain → baris ditolak."],
         ["Gudang", "Wajib bila Stok > 0", "Teks", "NAMA atau KODE gudang PERSIS seperti master gudang (huruf besar/kecil diabaikan). Contoh: Gudang Utama. Bila Stok > 0 dan kolom kosong: otomatis dipakai bila hanya ada 1 gudang aktif; bila lebih dari 1 → baris ditolak."],
-        ["Stok", "Tidak", "Bilangan bulat ≥ 0", "Stok awal barang di gudang. Contoh: 100. Kosong / 0 = tidak dibuat penyesuaian. Stok diterapkan lewat dokumen Penyesuaian Stok (TAMBAH) otomatis: import oleh Administrator langsung disetujui (stok + jurnal tercatat); oleh role lain menjadi DIAJUKAN dan menunggu persetujuan. Tipe JASA tidak boleh mengisi Stok. Nilai stok memakai Harga Pokok sebagai biaya satuan."],
+        ["Stok", "Tidak", "Bilangan bulat ≥ 0", "Stok awal barang di gudang. Contoh: 100. Kosong / 0 = tidak dibuat penyesuaian. Stok diterapkan lewat dokumen Penyesuaian Stok (TAMBAH) otomatis: bila persetujuan Penyesuaian Stok non-aktif (default, Update #071) langsung disetujui (stok + jurnal tercatat); bila aktif menjadi DIAJUKAN dan menunggu persetujuan. Tipe JASA tidak boleh mengisi Stok. Nilai stok memakai Harga Pokok sebagai biaya satuan."],
         ["Stok Minimum", "Tidak", "Bilangan bulat", "Batas stok minimum. Contoh: 10. Kosong = 0."],
         ["Harga Pokok", "Tidak", "Angka desimal", "Harga pokok per satuan, angka TANPA pemisah ribuan. Contoh: 25000. Kosong = 0. Dipakai juga sebagai biaya satuan stok awal (jurnal otomatis bila stok > 0 dan nilai > 0)."],
         ["Harga Jual", "Tidak", "Angka desimal", "Harga jual per satuan, angka TANPA pemisah ribuan. Contoh: 35000. Kosong = 0."],
@@ -1944,6 +1944,12 @@ async def import_barang(
                         created_by=current_user.id,
                         gudang_id=gudang_tujuan.id,
                     )
+                    # === Update #071 — finalisasi mengikuti konfigurasi
+                    #     persetujuan penyesuaian_stok (Preferensi ▸
+                    #     Persetujuan): non-aktif → langsung final (stok +
+                    #     jurnal diterapkan); aktif → menunggu approver —
+                    #     cabang "menunggu persetujuan" di bawah menyapa
+                    #     dengan pesan yang jelas. ===
                     workflow_service.direct_complete(
                         db, current_user, "penyesuaian_stok", adj.id
                     )
@@ -1954,8 +1960,8 @@ async def import_barang(
                     if adj.status == StatusPersediaan.DIAJUKAN:
                         raise ValueError(
                             f"Barang tersimpan, tetapi penyesuaian stok awal {adj.no_adj} "
-                            "menunggu persetujuan — setujui di menu Persediaan ▸ "
-                            "Penyesuaian Stok agar stok masuk"
+                            "menunggu persetujuan — setujui lewat kolom Persetujuan "
+                            "pada daftar Penyesuaian Stok (modul Persediaan) agar stok masuk"
                         )
                     if adj.status != StatusPersediaan.DISETUJUI:
                         raise ValueError(

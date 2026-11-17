@@ -722,8 +722,10 @@ _EXPLICIT = {
     # dashboard
     'get_dashboard_summary': 'dashboard.operational.view',
     # workflow
-    'get_queue': 'workflow.queue.view',
-    'get_capabilities': 'workflow.queue.view',
+    # === Update #071 — GET /queue & GET / (capabilities) dihapus bersama
+    #     halaman Antrean Persetujuan; penggantinya badge lonceng di header
+    #     (endpoint ringan GET /workflow/pending-summary). ===
+    'get_pending_summary': 'workflow.queue.view',
     # pelunasan (jenis via path: piutang/hutang)
     'get_outstanding': None,       # dinamis via path
     'get_invoice_settlement': None,
@@ -774,7 +776,12 @@ def infer_permission(router_module: str, fn: str, method: str, path: str) -> Opt
     """Hitung permission code untuk sebuah endpoint. None = belum terpetakan
     (default deny untuk non-super-admin — RBAC-13)."""
     if router_module in _SERVICE_ENFORCED:
-        return 'workflow.queue.view' if fn in ('get_queue', 'get_capabilities') else None
+        # === Update #071 — endpoint workflow yang di-gate router HANYA
+        # pending-summary (badge lonceng). Konfigurasi persetujuan
+        # (get/update_approval_config) di-gate eksplisit SUPER ADMIN di
+        # endpoint-nya; get_workflow/act/states ditegakkan per-dokumen
+        # (can_read) di service. ===
+        return 'workflow.queue.view' if fn == 'get_pending_summary' else None
     if router_module == 'auth':
         return None  # login/init-admin publik; tidak lewat module_access
 

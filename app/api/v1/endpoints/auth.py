@@ -91,10 +91,17 @@ def get_my_permissions(db: Session = Depends(get_current_db),
     langsung efektif tanpa perlu login ulang (spesifikasi §7, UAT RBAC-09).
     """
     from app.services import access_service
+    from app.services import approval_config_service
     summary = access_service.user_access_summary(db, user)
     return {
         'permissions': summary['effectivePermissions'],
         'isSuperAdmin': summary['isSuperAdmin'],
         'roles': summary['roles'],
         'legacyRole': summary['legacyRole'],
+        # === Update #071 — jenis dokumen yang persetujuannya AKTIF (Preferensi
+        #     ▸ Persetujuan). Dipakai frontend untuk menampilkan kolom
+        #     "Persetujuan" di daftar dokumen secara kondisional. Ikut payload
+        #     izin (refresh 5 menit / saat window difokuskan) supaya perubahan
+        #     konfigurasi langsung menjalar tanpa endpoint/polling tambahan. ===
+        'approvalEnabled': approval_config_service.enabled_kinds(db),
     }

@@ -7,10 +7,14 @@ Revisi pemilik (21-i): SUPER_ADMIN dibebaskan dari maker-checker — boleh
 menyetujui dokumen yang dibuat/diajukannya sendiri agar bisa full akses solo.
 Role lain tetap terikat RBAC-07 (checker ≠ maker).
 
-Revisi tim akuntansi (28): role ADMINISTRATOR bebas dari LANGKAH approval —
-dokumen yang dibuat administrator langsung difinalisasi otomatis
-(ajukan → setujui → posting/eksekusi dalam satu transaksi) via direct_complete().
-Jejak audit tetap tercatat lengkap di workflow events.
+=== Update #071 — maker-checker kini DIKONFIGURASI per jenis dokumen ===
+(Preferensi ▸ Persetujuan; tabel approval_config/approval_approver).
+Menggantikan dua mekanisme lama sekaligus:
+- Bypass administrator (revisi tim akuntansi #28 — direct_complete admin),
+- force per-endpoint (Update #031/#043 pada Penjualan/Pembelian).
+Jenis dokumen non-aktif (default) → dokumen langsung final untuk SEMUA user;
+jenis aktif → menunggu approver yang dikonfigurasi (1 tahap; approve = final
++ posting/eksekusi otomatis). Jejak audit tetap lengkap di workflow events.
 """
 from fastapi import HTTPException
 from app.models import (
@@ -22,6 +26,7 @@ from app.models import (
 from app.models.transaksi.penjualan.sales_order import StatusPenjualan
 from app.models.transaksi.workflow import DocumentWorkflow, WorkflowEvent
 from app.services.accounting_control import atomic_accounting_write
+from app.services import approval_config_service
 from app.services.access_registry import KIND_RESOURCE
 from app.services.access_service import effective_permissions
 
@@ -54,7 +59,7 @@ EXECUTABLE = {
 
 
 # === Update #045 — sinkronisasi kolom status dokumen ORDER saat finalisasi ===
-# SO/PO yang dibuat lewat form langsung difinalisasi (direct_complete force=True /
+# SO/PO yang dibuat lewat form langsung difinalisasi (auto-final direct_complete /
 # approve manual) — kolom ``status`` ikut dinaikkan ke DIPROSES agar badge di
 # daftar dokumen tidak lagi "Draft" untuk dokumen yang sudah jadi. ROP → PO
 # draft (tanpa finalisasi) TETAP DRAFT sampai diedit & disimpan (Update #043).
@@ -174,7 +179,14 @@ def available_actions(db, user, obj, wf):
     def has(action):
         return is_super or f'{resource}.{action}' in perms
 
-    can_approve = has('approve')
+    # === Update #071 — jenis dokumen ber-persetujuan (diaktifkan di Preferensi
+    #     ▸ Persetujuan): approver = yang DIKONFIGURASI (user/role) + Super
+    #     Admin (fallback). Jenis non-aktif: perilaku lama (permission RBAC
+    #     *.approve) — hanya relevan bagi dokumen lama yang masih menggantung. ===
+    if approval_config_service.is_enabled(db, kind):
+        can_approve = is_super or approval_config_service.is_configured_approver(db, user, kind)
+    else:
+        can_approve = has('approve')
     if state in ('DRAFT', 'REJECTED') and has('submit') and (obj.created_by == user.id or can_approve):
         result.append('submit')
     if state == 'PENDING':
@@ -200,6 +212,14 @@ def available_actions(db, user, obj, wf):
 def describe(db, obj, user):
     wf = find_workflow(db, obj)
     events = [] if not wf else db.query(WorkflowEvent).filter_by(workflow_id=wf.id).order_by(WorkflowEvent.version).all()
+    # === Update #071 — riwayat persetujuan tampil dengan NAMA pelaku (bukan
+    #     UUID mentah): resolusi batch sekali query untuk semua actor. ===
+    actor_ids = {e.actor_id for e in events}
+    actors = {}
+    if actor_ids:
+        from app.models import Pengguna
+        for p in db.query(Pengguna).filter(Pengguna.id.in_(list(actor_ids))).all():
+            actors[str(p.id)] = p.nama_lengkap
     return {
         'documentType': obj.__tablename__, 'documentId': obj.id,
         'documentNumber': next((getattr(obj, name) for name in ('no_invoice', 'no_form', 'no_retur', 'no_bukti', 'no_transfer', 'no_pesanan', 'no_jurnal', 'no_surat_jalan', 'no_adj', 'no_pemindahan', 'no_permintaan') if hasattr(obj, name)), str(obj.id)),
@@ -213,37 +233,35 @@ def describe(db, obj, user):
         'journalId': obj.id if obj.__tablename__ == 'jurnal_umum' else getattr(obj, 'jurnal_umum_id', None),
         'availableActions': available_actions(db, user, obj, wf),
         'history': [{'version': e.version, 'action': e.action, 'fromState': e.from_state,
-                     'toState': e.to_state, 'actorId': e.actor_id, 'reason': e.reason, 'at': e.created_at} for e in events],
+                     'toState': e.to_state, 'actorId': e.actor_id, 'actorName': actors.get(str(e.actor_id)),
+                     'reason': e.reason, 'at': e.created_at} for e in events],
     }
 
 
-def direct_complete(db, user, kind, document_id, force: bool = False):
-    """ADMINISTRATOR bypass: finalisasi dokumen otomatis tanpa langkah approval.
+def direct_complete(db, user, kind, document_id):
+    """=== Update #071 — finalisasi create dokumen DIKENDALIKAN KONFIGURASI
+    persetujuan (Preferensi ▸ Persetujuan), menggantikan bypass administrator
+    (revisi tim akuntansi #28) sekaligus force per-endpoint (Update #031/#043):
 
-    Dipanggil endpoint create SETELAH dokumen tersimpan (DRAFT). Bila user bukan
-    administrator → no-op (workflow normal). Bila administrator → jalankan
-    submit → approve → post/execute dalam SATU transaksi (logika identik dengan
-    transition(), termasuk seluruh validasi bisnis), lalu catat event workflow
-    sehingga jejak audit tetap lengkap.
+    - Jenis dokumen NON-AKTIF (default) → submit + approve + posting/eksekusi
+      dalam SATU transaksi (auto-final) untuk SEMUA user.
+    - Jenis dokumen AKTIF → hanya submit (DRAFT → PENDING); dokumen menunggu
+      salah satu approver yang dikonfigurasi — approve = final (1 tahap).
 
-    Bila finalisasi gagal (mis. validasi posting), hanya transaksi ini yang
-    dibatalkan — dokumen tetap DRAFT dan bisa diselesaikan manual lewat tombol.
-
-    Update #031 — force=True: finalisasi untuk SEMUA user (bukan hanya
-    administrator). Dipakai alur dokumen yang memang tanpa workflow (mis.
-    Sales Order "langsung jadi"). Event submit/approve tetap dicatat atas
-    nama user pembuat sehingga jejak audit utuh.
+    Event workflow (submit/approve) tetap dicatat atas nama user pembuat
+    sehingga jejak audit utuh. Dipanggil endpoint create SETELAH dokumen
+    tersimpan. Bila finalisasi gagal (mis. validasi posting/periode), hanya
+    transaksi ini yang dibatalkan — dokumen tetap tersimpan sesuai commit
+    service masing-masing (perilaku identik dengan jalur lama).
     """
     # Idempotency-Key sudah dikonsumsi transaksi create; buang agar wrapper tidak
     # menganggap finalisasi ini sebagai replay request yang sama.
     db.info.pop('idempotency', None)
-    return _direct_complete_tx(db, user, kind, document_id, force=force)
+    return _auto_process_tx(db, user, kind, document_id)
 
 
 @atomic_accounting_write
-def _direct_complete_tx(db, user, kind, document_id, force: bool = False):
-    if not force and not is_administrator(db, user):
-        return None
+def _auto_process_tx(db, user, kind, document_id):
     obj = get_document(db, kind, document_id, lock=True)
     from app.services.penutupan_periode_service import validate_periode_not_closed
     validate_periode_not_closed(db, obj.tanggal)
@@ -269,7 +287,15 @@ def _direct_complete_tx(db, user, kind, document_id, force: bool = False):
     wf.approved_by = None
     append_event(db, wf, 'submit', 'PENDING', user.id)
 
-    # 2) Setujui (PENDING → APPROVED). Administrator boleh menyetujui sendiri (21-i).
+    # === Update #071 — persetujuan jenis dokumen ini diaktifkan di Preferensi
+    #     ▸ Persetujuan → berhenti di PENDING: menunggu approver yang
+    #     dikonfigurasi (approve = final + posting/eksekusi otomatis, lihat
+    #     transition 'approve'). ===
+    if approval_config_service.is_enabled(db, kind):
+        db.flush()
+        return obj
+
+    # 2) Setujui (PENDING → APPROVED) — atas nama pembuat (jejak audit utuh).
     wf.approved_by = user.id
     append_event(db, wf, 'approve', 'APPROVED', user.id)
 
@@ -277,19 +303,27 @@ def _direct_complete_tx(db, user, kind, document_id, force: bool = False):
     _sync_order_status(obj)
 
     # 3) Posting/Eksekusi (APPROVED → final). Order berhenti di APPROVED (terminal).
-    if kind in ('sales_retur', 'purchase_retur'):
-        post_existing(db, obj, user.id)
-        append_event(db, wf, 'post', 'POSTED', user.id)
-        execute_existing(db, obj)
-        append_event(db, wf, 'execute', 'POSTED', user.id)
-    elif kind in POSTABLE:
-        post_existing(db, obj, user.id)
-        append_event(db, wf, 'post', 'POSTED', user.id)
-    elif kind in EXECUTABLE:
-        execute_existing(db, obj)
-        append_event(db, wf, 'execute', 'EXECUTED', user.id)
+    _finalize_document(db, wf, obj, user.id)
     db.flush()
     return obj
+
+
+def _finalize_document(db, wf, obj, actor_id):
+    """Posting/eksekusi final + event workflow — dipakai bersama oleh
+    auto-final (direct_complete) dan approve manual jenis dokumen
+    ber-persetujuan (Update #071: approve = final)."""
+    kind = obj.__tablename__
+    if kind in ('sales_retur', 'purchase_retur'):
+        post_existing(db, obj, actor_id)
+        append_event(db, wf, 'post', 'POSTED', actor_id)
+        execute_existing(db, obj)
+        append_event(db, wf, 'execute', 'POSTED', actor_id)
+    elif kind in POSTABLE:
+        post_existing(db, obj, actor_id)
+        append_event(db, wf, 'post', 'POSTED', actor_id)
+    elif kind in EXECUTABLE:
+        execute_existing(db, obj)
+        append_event(db, wf, 'execute', 'EXECUTED', actor_id)
 
 
 @atomic_accounting_write
@@ -352,6 +386,14 @@ def transition(db, document_type, document_id, action, user, expected_version, r
         execute_existing(db, obj)
         target = 'POSTED' if document_type in ('sales_retur', 'purchase_retur') else 'EXECUTED'
     append_event(db, wf, action, target, user.id, reason)
+    # === Update #071 — jenis dokumen ber-persetujuan: approve = FINAL.
+    #     Setelah disetujui, langsung posting/eksekusi (perilaku yang sama
+    #     dengan auto-final direct_complete) — satu klik selesai, tanpa
+    #     tombol Posting/Eksekusi terpisah. Jenis non-aktif (dokumen lama
+    #     yang masih menggantung) tetap perilaku lama: berhenti di APPROVED
+    #     sampai aksi post/execute manual. ===
+    if action == 'approve' and approval_config_service.is_enabled(db, document_type):
+        _finalize_document(db, wf, obj, user.id)
     db.flush()
     return obj
 

@@ -169,7 +169,10 @@ def create_pelunasan(jenis: Jenis, data_in: SettlementCreate, db=Depends(get_cur
                                     no_cek=data_in.no_cek, tanggal_cek=data_in.tanggal_cek,
                                     jumlah_cek=data_in.jumlah_cek, mata_uang=data_in.mata_uang,
                                     nilai_tukar=data_in.nilai_tukar)
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen kas terkait (Preferensi ▸ Persetujuan): non-aktif → langsung
+        # final; aktif → menunggu approver lewat kolom "Persetujuan" di
+        # daftar Penerimaan/Pembayaran modul Kas & Bank. ===
         kind = 'penerimaan_kas' if jenis == 'piutang' else 'pembayaran_kas'
         workflow_service.direct_complete(db, user, kind, obj.id)
         db.refresh(obj)

@@ -189,7 +189,10 @@ def create_penyesuaian(
             created_by=current_user.id,
             tanggal_kedaluwarsa=data_in.tanggal_kedaluwarsa,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen ini (Preferensi ▸ Persetujuan): non-aktif → langsung final
+        # (approve + eksekusi stok); aktif → menunggu approver (1 tahap;
+        # approve = final) lewat kolom "Persetujuan" di daftar dokumen. ===
         workflow_service.direct_complete(db, current_user, 'penyesuaian_stok', obj.id)
         db.refresh(obj)
         return obj
@@ -331,7 +334,10 @@ def create_pemindahan(
             keterangan=data_in.keterangan,
             created_by=current_user.id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen ini (Preferensi ▸ Persetujuan): non-aktif → langsung final
+        # (approve + eksekusi stok); aktif → menunggu approver (1 tahap;
+        # approve = final) lewat kolom "Persetujuan" di daftar dokumen. ===
         workflow_service.direct_complete(db, current_user, 'pemindahan_barang', obj.id)
         db.refresh(obj)
         return obj
@@ -488,7 +494,10 @@ def create_permintaan(
             sales_order_id=data_in.sales_order_id,
             created_by=current_user.id,
         )
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen ini (Preferensi ▸ Persetujuan): non-aktif → langsung final
+        # (approve + eksekusi stok); aktif → menunggu approver (1 tahap;
+        # approve = final) lewat kolom "Persetujuan" di daftar dokumen. ===
         workflow_service.direct_complete(db, current_user, 'permintaan_barang', obj.id)
         db.refresh(obj)
         return obj

@@ -27,6 +27,8 @@ from app.models.master.rekening_bank import RekeningBank
 from app.models.master.access import (
     Role, Permission, RolePermission, UserRole, UserPermissionOverride, AccessAuditLog,
 )
+# === Update #071 — konfigurasi persetujuan per jenis dokumen ===
+from app.models.master.approval_config import ApprovalConfig, ApprovalApprover
 
 # Transaksi - Kas & Bank
 from app.models.transaksi.kas_bank.pembayaran import (
@@ -124,6 +126,8 @@ __all__ = [
     # === Update #044 — Voucher Memorial (penghapusan piutang / Gagal Tagih) ===
     "VoucherMemorial",
     "VoucherMemorialDetail",
+    "ApprovalConfig",
+    "ApprovalApprover",
     # Transaksi - Penjualan
     "SalesOrder",
     "PengirimanBarang",

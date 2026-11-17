@@ -15,7 +15,10 @@ def create_asset_event(data: AssetEventCreate, db=Depends(get_current_db), user=
     try:
         obj = svc.create_event(db, data.aset_id, data.jenis, data.tanggal,
             data.model_dump(mode='json', by_alias=True, exclude={'aset_id', 'jenis', 'tanggal'}), user.id)
-        # Administrator (revisi tim akuntansi): langsung final tanpa langkah approval.
+        # === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
+        # dokumen ini (Preferensi ▸ Persetujuan): non-aktif → langsung final
+        # (posting); aktif → menunggu approver (1 tahap; approve = final)
+        # lewat kolom "Persetujuan" di daftar Transaksi Aset. ===
         workflow_service.direct_complete(db, user, 'asset_event', obj.id)
         db.refresh(obj)
         return obj

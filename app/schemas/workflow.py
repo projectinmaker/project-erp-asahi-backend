@@ -10,6 +10,9 @@ class WorkflowEventResponse(BaseSchema):
     from_state: str
     to_state: str
     actor_id: UUID
+    # === Update #071 — nama pelaku untuk tampilan riwayat persetujuan
+    #     (frontend menampilkan nama, bukan UUID mentah). ===
+    actor_name: Optional[str] = None
     reason: Optional[str] = None
     at: datetime
 

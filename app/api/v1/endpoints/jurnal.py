@@ -99,9 +99,22 @@ def update_manual(jurnal_id: UUID, data_in: JurnalManualCreate, db: Session = De
     if not obj or obj.ref_module != RefModule.MANUAL or obj.reversal_of_id:
         raise HTTPException(404, 'Jurnal manual tidak ditemukan')
     try:
-        return _update_manual(db, obj, data_in, current_user)
+        result = _update_manual(db, obj, data_in, current_user)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # === Update #071 — setelah koreksi draft, coba finalisasi ulang:
+    #     dokumen DRAFT (finalisasi awal saat create gagal, mis. validasi
+    #     posting) langsung diposting begitu koreksi berhasil — mengikuti
+    #     konfigurasi persetujuan jurnal_umum (non-aktif → final; aktif →
+    #     diajukan ulang menunggu approver). Tanpa ini, draft yang dikoreksi
+    #     tidak punya jalur posting. No-op bila dokumen sudah final
+    #     (idempotent). ===
+    try:
+        workflow_service.direct_complete(db, current_user, 'jurnal_umum', obj.id)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return result
 
 
 @router.get("", response_model=PaginatedResponse[JurnalUmumListResponse])
@@ -326,8 +339,12 @@ def create_jurnal_manual(
         db.rollback()
         raise
 
-    # Administrator (revisi tim akuntansi): langsung diposting tanpa langkah approval.
-    # Gagal finalisasi → seluruh request dibatalkan (jurnal tidak tersimpan).
+    # === Update #071 — finalisasi mengikuti konfigurasi persetujuan
+    # jurnal_umum (Preferensi ▸ Persetujuan): non-aktif → langsung diposting
+    # untuk SEMUA user; aktif → menunggu approver (1 tahap; approve = final)
+    # lewat kolom "Persetujuan" di daftar Jurnal Umum.
+    # Gagal finalisasi (validasi posting) → seluruh request dibatalkan
+    # (jurnal tidak tersimpan). ===
     try:
         workflow_service.direct_complete(db, current_user, 'jurnal_umum', jurnal.id)
     except ValueError as e:

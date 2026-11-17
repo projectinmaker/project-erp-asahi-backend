@@ -287,9 +287,11 @@ def create_sales_order(
             # form SO; repeat order — satu penawaran boleh dipakai banyak SO) ===
             penawaran_id=data_in.penawaran_id,
         )
-        # Update #031 — SO langsung final tanpa langkah approval untuk SEMUA
-        # user (force=True); order berhenti di APPROVED (terminal, tanpa jurnal).
-        workflow_service.direct_complete(db, current_user, 'sales_order', obj.id, force=True)
+        # === Update #071 — SO final mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan); jenis sales_order belum diekspos
+        # konfigurasi → perilaku tetap seperti #031: langsung final untuk
+        # semua user; order berhenti di APPROVED (terminal, tanpa jurnal). ===
+        workflow_service.direct_complete(db, current_user, 'sales_order', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -502,8 +504,10 @@ def create_sales_order_terima_pembayaran(
             no_nukti=data_in.no_nukti,
             catatan=data_in.catatan,
         )
-        # Mirror endpoint POST /kas-bank/penerimaan: administrator langsung
-        # final (posting jurnal); user biasa menunggu approval workflow.
+        # === Update #071 — mengikuti konfigurasi persetujuan penerimaan_kas
+        # (Preferensi ▸ Persetujuan): non-aktif → langsung final (posting
+        # jurnal); aktif → menunggu approver — persetujuan lewat kolom
+        # "Persetujuan" pada daftar Penerimaan modul Kas & Bank. ===
         workflow_service.direct_complete(db, current_user, 'penerimaan_kas', penerimaan.id)
         db.refresh(penerimaan)
         return penerimaan
@@ -572,9 +576,11 @@ def create_sales_invoice(
             # invoice ini (None = auto-isi sisa tagihan SO bila ter-link). ===
             dp_pelunasan=data_in.dp_pelunasan,
         )
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'sales_invoice', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Penjualan/Pembelian belum
+        # diekspos konfigurasinya → perilaku tetap seperti #043: langsung
+        # final untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'sales_invoice', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -812,9 +818,11 @@ def create_sales_retur(
             auto_post_jurnal=False,  # Posting requires approved workflow.
             created_by=current_user.id,
         )
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'sales_retur', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Penjualan/Pembelian belum
+        # diekspos konfigurasinya → perilaku tetap seperti #043: langsung
+        # final untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'sales_retur', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:
@@ -920,9 +928,11 @@ def create_pengiriman(
             keterangan=data_in.keterangan,
             created_by=current_user.id,
         )
-        # Update #043 — langsung final tanpa langkah approval untuk SEMUA user
-        # (workflow maker-checker di modul penjualan/pembelian di-takedown).
-        workflow_service.direct_complete(db, current_user, 'pengiriman_barang', obj.id, force=True)
+        # === Update #071 — finalisasi kini mengikuti konfigurasi persetujuan
+        # (Preferensi ▸ Persetujuan). Jenis Penjualan/Pembelian belum
+        # diekspos konfigurasinya → perilaku tetap seperti #043: langsung
+        # final untuk semua user (direct_complete mengecek konfigurasi). ===
+        workflow_service.direct_complete(db, current_user, 'pengiriman_barang', obj.id)
         db.refresh(obj)
         return obj
     except ValueError as e:

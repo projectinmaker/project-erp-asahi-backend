@@ -664,10 +664,11 @@ def convert_to_so(db: Session, penawaran_id: UUID, user):
         penawaran_id=penawaran.id,
     )
 
-    # Finalisasi (Update #031): FORCE untuk semua user — SO langsung jadi
-    # tanpa langkah approval (submit → approve; order terminal APPROVED,
-    # tanpa posting jurnal).
-    workflow_service.direct_complete(db, user, "sales_order", so.id, force=True)
+    # === Update #071 — finalisasi mengikuti konfigurasi persetujuan
+    # (Preferensi ▸ Persetujuan); jenis sales_order belum diekspos
+    # konfigurasi → perilaku tetap seperti #031: SO langsung jadi untuk
+    # semua user (order terminal APPROVED, tanpa posting jurnal). ===
+    workflow_service.direct_complete(db, user, "sales_order", so.id)
 
     # Update #032 — status: DRAFT → SELESAI saat PERTAMA dipakai; SELESAI
     # tetap SELESAI (repeat order — pemakaian berikutnya tidak mengubah apa pun).
