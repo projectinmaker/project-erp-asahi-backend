@@ -1,11 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 import bcrypt
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.pengguna import Pengguna
 from app.schemas.pengguna import PenggunaCreate, PenggunaResponse, LoginRequest, TokenResponse
 from app.utils.auth import create_access_token
+
+# === Update #073 — event login dicatat ke access_audit_logs agar Admin IT
+# bisa memantau aktivitas login (sukses & gagal) di halaman Pengaturan ▸
+# Sistem ▸ Log Aktivitas. Username yang dicoba dicatat pada LOGIN_GAGAL;
+# password TIDAK PERNAH dicatat. ===
+from app.services.access_service import write_audit
 
 router = APIRouter()
 
@@ -29,6 +36,15 @@ def login(login_data: LoginRequest, db: Session = Depends(get_current_db)):
     if not user or not bcrypt.checkpw(
         login_data.password.encode("utf-8"), user.password_hash.encode("utf-8")
     ):
+        # === Update #073 — LOGIN_GAGAL: aktor tidak diketahui/tidak cocok →
+        # actor_id NULL; username yang dicoba disimpan di payload after DAN
+        # reason (supaya bisa dicari lewat pencarian bebas, mis. "root"). ===
+        write_audit(
+            db, None, 'LOGIN_GAGAL', None, None,
+            {'username': login_data.username},
+            f'Username atau password salah (username: {login_data.username})',
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Username atau password salah",
@@ -37,10 +53,24 @@ def login(login_data: LoginRequest, db: Session = Depends(get_current_db)):
 
     # Cek apakah user statusnya aktif
     if user.status != "AKTIF":
+        # === Update #073 — LOGIN_GAGAL: akun ditemukan tapi nonaktif. ===
+        write_audit(
+            db, user, 'LOGIN_GAGAL', user.id,
+            {'status': user.status}, {'username': user.username},
+            'Login ditolak — akun dinonaktifkan',
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Akun dinonaktifkan, hubungi administrator",
         )
+
+    # === Update #073 — LOGIN sukses dicatat + terakhir_login diisi (kolom
+    # ini sebelumnya tidak pernah di-set oleh endpoint mana pun). ===
+    user.terakhir_login = datetime.now(timezone.utc)
+    db.add(user)
+    write_audit(db, user, 'LOGIN', user.id, None, None, 'Login berhasil')
+    db.commit()
 
     # Buat token berisi ID user dan Role-nya
     access_token = create_access_token(data={"sub": str(user.id), "role": user.role.value})

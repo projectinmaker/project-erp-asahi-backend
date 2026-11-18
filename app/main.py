@@ -8,6 +8,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.database import check_database_connection
@@ -176,6 +177,37 @@ def create_application() -> FastAPI:
     async def add_noindex_header(request: Request, call_next):
         response = await call_next(request)
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+        return response
+
+    # === Update #073 — middleware Audit Aktivitas ERP ===
+    # Mencatat SETIAP permintaan yang mengubah data (POST/PUT/PATCH/DELETE)
+    # di semua modul ERP (Kas & Bank, Penjualan, Pembelian, Persediaan,
+    # Aset, Jurnal, Master Data, Workflow, Pelunasan, Periode, Produksi,
+    # Karyawan, COA) ke tabel access_audit_logs — tampil di halaman
+    # Pengaturan ▸ Sistem ▸ Log Aktivitas sebagai kategori "Aktivitas ERP"
+    # (kode aksi ERP_BUAT / ERP_UBAH / ERP_HAPUS / ERP_PROSES /
+    # ERP_DITOLAK). Aturan lengkap (pengecualian modul auth/access/pengguna
+    # yang sudah punya audit sendiri, filter kebisingan 400/404/422, dan
+    # privasi — body request tidak pernah disimpan) ada di
+    # app/services/activity_log_service.py.
+    #
+    # Ditulis via run_in_threadpool supaya operasi DB sinkron tidak
+    # memblokir event loop; kegagalan pencatatan tidak pernah menjatuhkan
+    # request utama.
+    from app.services import activity_log_service
+
+    @app.middleware("http")
+    async def audit_erp_activity(request: Request, call_next):
+        response = await call_next(request)
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            try:
+                await run_in_threadpool(
+                    activity_log_service.maybe_log_activity,
+                    request,
+                    response.status_code,
+                )
+            except Exception:  # noqa: BLE001 — audit tidak boleh menjatuhkan request
+                logger.warning("Audit aktivitas ERP gagal ditulis: {}", request.url.path)
         return response
 
     # ==========================================

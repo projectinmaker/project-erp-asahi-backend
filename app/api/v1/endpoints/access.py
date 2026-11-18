@@ -314,15 +314,49 @@ def update_user_access(user_id: UUID, data_in: UserAccessUpdateIn,
 @router.get('/audit-logs', response_model=PaginatedResponse[AuditLogOut])
 def get_audit_logs(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                    target_user_id: Optional[UUID] = Query(default=None, alias='targetUserId'),
+                   # === Update #073 — filter tambahan untuk halaman Log
+                   # Aktivitas (Pengaturan ▸ Sistem): aksi (mendukung beberapa,
+                   # dipisah koma), aktor, dan pencarian bebas (nama/username
+                   # aktor atau target, atau kode aksi). Param lama tetap
+                   # kompatibel — dialog Role & Akses tidak perlu berubah. ===
+                   action: Optional[str] = Query(default=None, description='Filter aksi, mis. LOGIN,LOGIN_GAGAL'),
+                   actor_user_id: Optional[UUID] = Query(default=None, alias='actorUserId'),
+                   search: Optional[str] = Query(default=None, description='Cari nama/username aktor-target atau kode aksi'),
                    db: Session = Depends(get_current_db),
                    user: Pengguna = Depends(get_current_user)):
     perms, is_super = access_service.effective_permissions(db, user)
     if not is_super and 'system.audit.view' not in perms:
         raise HTTPException(403, 'Tidak memiliki izin melihat audit akses')
+    from sqlalchemy import or_
     from app.models.master.access import AccessAuditLog
     query = db.query(AccessAuditLog)
     if target_user_id:
         query = query.filter(AccessAuditLog.target_user_id == target_user_id)
+    # === Update #073 — filter aksi (koma = OR) ===
+    if action:
+        actions = [a.strip().upper() for a in action.split(',') if a.strip()]
+        if actions:
+            query = query.filter(AccessAuditLog.action.in_(actions))
+    # === Update #073 — filter aktor ===
+    if actor_user_id:
+        query = query.filter(AccessAuditLog.actor_id == actor_user_id)
+    # === Update #073 — pencarian bebas: cocokkan nama/username aktor ATAU
+    # target ATAU kode aksi ATAU teks keterangan (reason — memuat username
+    # percobaan pada LOGIN_GAGAL, mis. cari "root" untuk melihat siapa
+    # mencoba masuk sebagai root). ===
+    if search:
+        term = f"%{search}%"
+        matched_ids = [
+            u.id for u in db.query(Pengguna).filter(
+                or_(Pengguna.nama_lengkap.ilike(term), Pengguna.username.ilike(term))
+            ).all()
+        ]
+        query = query.filter(or_(
+            AccessAuditLog.actor_id.in_(matched_ids),
+            AccessAuditLog.target_user_id.in_(matched_ids),
+            AccessAuditLog.action.ilike(term),
+            AccessAuditLog.reason.ilike(term),
+        ))
     total = query.count()
     rows = query.order_by(AccessAuditLog.created_at.desc()).offset(skip).limit(limit).all()
     actor_ids = {r.actor_id for r in rows if r.actor_id}
