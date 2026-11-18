@@ -102,6 +102,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:  # noqa: BLE001 — jangan blok startup bila sync gagal
         logger.warning(f"Sync saldo kas/bank dilewati: {exc}")
 
+    # === Update #074 — penjadwal pembersihan log retensi (tiap hari 02:00) ===
+    # Daemon thread ringan; otomatis skip bila kebijakan "Selamanya". Tabel kecil
+    # system_log_retention + index created_at dibuat otomatis saat pertama dipakai
+    # (tanpa alembic). Setiap pembersihan tercatat sebagai aksi LOG_PURGE di
+    # access_audit_logs — jejak audit tetap utuh.
+    try:
+        from app.services import log_retention_service
+        log_retention_service.start_scheduler(logger=logger)
+    except Exception as exc:  # noqa: BLE001 — jangan blok startup bila scheduler gagal
+        logger.warning(f"Penjadwal retensi log tidak dimulai: {exc}")
+
     logger.info("Application startup complete")
     logger.info("=" * 60)
 

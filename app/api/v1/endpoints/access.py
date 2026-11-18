@@ -7,14 +7,20 @@ Aturan anti-escalation (spesifikasi §7, UAT RBAC-11):
   (atau aktor super admin).
 - Setiap perubahan tercatat di access_audit_logs (before/after/actor/reason).
 """
+# === Update #074 — filter rentang tanggal log audit (dateFrom/dateTo). ===
+from datetime import datetime, time as dtime
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_db, get_current_user
 from app.models.master.access import Role, Permission, RolePermission, UserRole, UserPermissionOverride
+# === Update #074 — AccessAuditLog kini dipakai helper filter + endpoint
+# aktor & ekspor (sebelumnya diimpor lokal di dalam get_audit_logs). ===
+from app.models.master.access import AccessAuditLog
 from app.models.master.pengguna import Pengguna
 from app.schemas.access import (
     RoleOut, RoleDetailOut, RoleCreateIn, RolePermissionUpdateIn,
@@ -22,6 +28,8 @@ from app.schemas.access import (
 )
 from app.schemas.base import PaginatedResponse
 from app.services import access_service
+# === Update #074 — lama simpan log aktivitas (salinan CSV + purge). ===
+from app.services import log_retention_service
 from app.services.access_registry import REGISTRY_CODES, ROLE_TEMPLATES
 
 router = APIRouter()
@@ -311,24 +319,19 @@ def update_user_access(user_id: UUID, data_in: UserAccessUpdateIn,
 
 # ═════════════════════════ Audit log ═══════════════════════════════════════
 
-@router.get('/audit-logs', response_model=PaginatedResponse[AuditLogOut])
-def get_audit_logs(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
-                   target_user_id: Optional[UUID] = Query(default=None, alias='targetUserId'),
-                   # === Update #073 — filter tambahan untuk halaman Log
-                   # Aktivitas (Pengaturan ▸ Sistem): aksi (mendukung beberapa,
-                   # dipisah koma), aktor, dan pencarian bebas (nama/username
-                   # aktor atau target, atau kode aksi). Param lama tetap
-                   # kompatibel — dialog Role & Akses tidak perlu berubah. ===
-                   action: Optional[str] = Query(default=None, description='Filter aksi, mis. LOGIN,LOGIN_GAGAL'),
-                   actor_user_id: Optional[UUID] = Query(default=None, alias='actorUserId'),
-                   search: Optional[str] = Query(default=None, description='Cari nama/username aktor-target atau kode aksi'),
-                   db: Session = Depends(get_current_db),
-                   user: Pengguna = Depends(get_current_user)):
-    perms, is_super = access_service.effective_permissions(db, user)
-    if not is_super and 'system.audit.view' not in perms:
-        raise HTTPException(403, 'Tidak memiliki izin melihat audit akses')
+# === Update #074 — seluruh logika filter audit log dipusatkan di helper
+# privat ini supaya dipakai bersama oleh get_audit_logs (daftar) dan
+# export_audit_logs (ekspor). Filter #073 (target, aksi koma-OR, aktor,
+# pencarian bebas) dipertahankan; ditambah filter rentang tanggal
+# dateFrom/dateTo. ===
+def _audit_log_query(db: Session, *, search: Optional[str] = None,
+                     action: Optional[str] = None,
+                     actor_user_id: Optional[UUID] = None,
+                     target_user_id: Optional[UUID] = None,
+                     date_from: Optional[str] = None,
+                     date_to: Optional[str] = None):
+    """Query dasar audit log dengan seluruh filter opsional (dipakai daftar & ekspor)."""
     from sqlalchemy import or_
-    from app.models.master.access import AccessAuditLog
     query = db.query(AccessAuditLog)
     if target_user_id:
         query = query.filter(AccessAuditLog.target_user_id == target_user_id)
@@ -357,7 +360,93 @@ def get_audit_logs(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=2
             AccessAuditLog.action.ilike(term),
             AccessAuditLog.reason.ilike(term),
         ))
+    # === Update #074 — filter rentang tanggal 'YYYY-MM-DD' (inklusif):
+    # dateFrom → awal hari, dateTo → akhir hari. ===
+    if date_from:
+        try:
+            d = datetime.strptime(date_from, '%Y-%m-%d').date()
+        except ValueError:
+            raise HTTPException(400, 'Format tanggal harus YYYY-MM-DD')
+        query = query.filter(AccessAuditLog.created_at >= datetime.combine(d, dtime.min))
+    if date_to:
+        try:
+            d = datetime.strptime(date_to, '%Y-%m-%d').date()
+        except ValueError:
+            raise HTTPException(400, 'Format tanggal harus YYYY-MM-DD')
+        query = query.filter(AccessAuditLog.created_at <= datetime.combine(d, dtime.max))
+    return query
+
+
+# === Update #074 — parse parameter UUID opsional milik endpoint ekspor. ===
+def _optional_uuid(value: Optional[str], field: str) -> Optional[UUID]:
+    """Ubah parameter query string menjadi UUID; kosong → None; salah format → 400."""
+    if value is None or value == '':
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        raise HTTPException(400, f'Format {field} harus UUID')
+
+
+# === Update #074 — daftar aktor untuk dropdown filter Log Aktivitas. ===
+@router.get('/audit-logs/actors')
+def get_audit_log_actors(db: Session = Depends(get_current_db),
+                         user: Pengguna = Depends(get_current_user)):
+    """Pengguna yang pernah tercatat sebagai aktor di log audit (maks 500, urut nama)."""
+    perms, is_super = access_service.effective_permissions(db, user)
+    if not is_super and 'system.audit.view' not in perms:
+        raise HTTPException(403, 'Tidak memiliki izin melihat audit akses')
+    rows = (
+        db.query(Pengguna)
+        .join(AccessAuditLog, AccessAuditLog.actor_id == Pengguna.id)
+        .distinct()
+        .order_by(Pengguna.nama_lengkap)
+        .limit(500)
+        .all()
+    )
+    return {'data': [{'id': str(u.id), 'nama': u.nama_lengkap, 'username': u.username} for u in rows]}
+
+
+# === Update #074 — response_model=PaginatedResponse[AuditLogOut] DIHAPUS dari
+# dekorator supaya key baru `stats` tidak dibuang oleh schema (schema lama
+# tidak mengenal field tersebut). Bentuk response LAMA tetap kompatibel:
+# key data/total/skip/limit dan bentuk tiap baris TIDAK berubah — konsumen
+# lama tidak perlu penyesuaian. ===
+@router.get('/audit-logs')
+def get_audit_logs(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                   target_user_id: Optional[UUID] = Query(default=None, alias='targetUserId'),
+                   # === Update #073 — filter tambahan untuk halaman Log
+                   # Aktivitas (Pengaturan ▸ Sistem): aksi (mendukung beberapa,
+                   # dipisah koma), aktor, dan pencarian bebas (nama/username
+                   # aktor atau target, atau kode aksi). Param lama tetap
+                   # kompatibel — dialog Role & Akses tidak perlu berubah. ===
+                   action: Optional[str] = Query(default=None, description='Filter aksi, mis. LOGIN,LOGIN_GAGAL'),
+                   actor_user_id: Optional[UUID] = Query(default=None, alias='actorUserId'),
+                   search: Optional[str] = Query(default=None, description='Cari nama/username aktor-target atau kode aksi'),
+                   # === Update #074 — filter rentang tanggal (YYYY-MM-DD). ===
+                   date_from: Optional[str] = Query(default=None, alias='dateFrom', description='Tanggal mulai (YYYY-MM-DD)'),
+                   date_to: Optional[str] = Query(default=None, alias='dateTo', description='Tanggal akhir (YYYY-MM-DD)'),
+                   db: Session = Depends(get_current_db),
+                   user: Pengguna = Depends(get_current_user)):
+    """Daftar log audit akses (Update #074: filter tanggal + ringkasan `stats`).
+
+    Bentuk lama (data/total/skip/limit) tetap ada dan tidak berubah; key baru
+    `stats` berisi total, loginGagal, erp, dan penggunaAkses — dihitung dari
+    query filter yang sama TANPA offset/limit.
+    """
+    perms, is_super = access_service.effective_permissions(db, user)
+    if not is_super and 'system.audit.view' not in perms:
+        raise HTTPException(403, 'Tidak memiliki izin melihat audit akses')
+    query = _audit_log_query(db, search=search, action=action, actor_user_id=actor_user_id,
+                             target_user_id=target_user_id, date_from=date_from, date_to=date_to)
+    # === Update #074 — statistik dari query filter yang sama (tanpa paging). ===
     total = query.count()
+    login_gagal = query.filter(AccessAuditLog.action == 'LOGIN_GAGAL').count()
+    erp = query.filter(AccessAuditLog.action.like('ERP_%')).count()
+    pengguna_akses = query.filter(AccessAuditLog.action.in_([
+        'CREATE_USER', 'UPDATE_USER', 'DEACTIVATE_USER', 'ACTIVATE_USER',
+        'DELETE_USER', 'CREATE_ROLE', 'UPDATE_ROLE', 'UPDATE_USER_ACCESS',
+    ])).count()
     rows = query.order_by(AccessAuditLog.created_at.desc()).offset(skip).limit(limit).all()
     actor_ids = {r.actor_id for r in rows if r.actor_id}
     target_ids = {r.target_user_id for r in rows if r.target_user_id}
@@ -371,4 +460,109 @@ def get_audit_logs(skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=2
         'action': r.action, 'before': r.before, 'after': r.after,
         'reason': r.reason, 'createdAt': r.created_at,
     } for r in rows]
-    return {'data': data, 'total': total, 'skip': skip, 'limit': limit}
+    # === Update #074 — key `stats` baru; key lama tetap utuh (kompatibel). ===
+    return {
+        'data': data, 'total': total, 'skip': skip, 'limit': limit,
+        'stats': {
+            'total': total,
+            'loginGagal': login_gagal,
+            'erp': erp,
+            'penggunaAkses': pengguna_akses,
+        },
+    }
+
+
+# === Update #074 — unduh hasil filter log audit (tombol "Unduh CSV").
+# Batas aman supaya response ekspor tidak membengkak; bila hasil filter
+# lebih besar dari batas, data dipotong dan `truncated: true` dikirim. ===
+EXPORT_MAX_ROWS = 10000
+
+
+@router.get('/audit-logs/export')
+def export_audit_logs(search: Optional[str] = Query(default=None, description='Cari nama/username aktor-target atau kode aksi'),
+                      action: Optional[str] = Query(default=None, description='Filter aksi, mis. LOGIN,LOGIN_GAGAL'),
+                      actor_user_id: Optional[str] = Query(default=None, alias='actorUserId', description='ID aktor (UUID)'),
+                      target_user_id: Optional[str] = Query(default=None, alias='targetUserId', description='ID target (UUID)'),
+                      date_from: Optional[str] = Query(default=None, alias='dateFrom', description='Tanggal mulai (YYYY-MM-DD)'),
+                      date_to: Optional[str] = Query(default=None, alias='dateTo', description='Tanggal akhir (YYYY-MM-DD)'),
+                      db: Session = Depends(get_current_db),
+                      user: Pengguna = Depends(get_current_user)):
+    """Ekspor hasil filter log audit sebagai JSON (maksimum EXPORT_MAX_ROWS baris).
+
+    Untuk tombol "Unduh CSV" di frontend — frontend menyusun CSV di sisi
+    klien dari JSON ini supaya memakai klien `api` yang sama (token
+    otentikasi terikut otomatis). Bentuk tiap baris SAMA persis dengan
+    get_audit_logs; `total` = jumlah seluruh baris yang cocok filter
+    (sebelum dipotong), `truncated` = true bila hasil melebihi batas.
+    """
+    perms, is_super = access_service.effective_permissions(db, user)
+    if not is_super and 'system.audit.view' not in perms:
+        raise HTTPException(403, 'Tidak memiliki izin melihat audit akses')
+    query = _audit_log_query(db, search=search, action=action,
+                             actor_user_id=_optional_uuid(actor_user_id, 'actorUserId'),
+                             target_user_id=_optional_uuid(target_user_id, 'targetUserId'),
+                             date_from=date_from, date_to=date_to)
+    total = query.count()
+    rows = query.order_by(AccessAuditLog.created_at.desc()).limit(EXPORT_MAX_ROWS + 1).all()
+    truncated = len(rows) > EXPORT_MAX_ROWS
+    if truncated:
+        rows = rows[:EXPORT_MAX_ROWS]
+    actor_ids = {r.actor_id for r in rows if r.actor_id}
+    target_ids = {r.target_user_id for r in rows if r.target_user_id}
+    users = {u.id: u for u in db.query(Pengguna).filter(Pengguna.id.in_(actor_ids | target_ids)).all()}
+    data = [{
+        'id': r.id,
+        'actorId': r.actor_id,
+        'actorNama': users[r.actor_id].nama_lengkap if r.actor_id in users else None,
+        'targetUserId': r.target_user_id,
+        'targetNama': users[r.target_user_id].nama_lengkap if r.target_user_id in users else None,
+        'action': r.action, 'before': r.before, 'after': r.after,
+        'reason': r.reason, 'createdAt': r.created_at,
+    } for r in rows]
+    return {'data': data, 'total': total, 'truncated': truncated, 'maxRows': EXPORT_MAX_ROWS}
+
+
+# === Update #074 — lama simpan log aktivitas: GET/PUT /audit-logs/
+# retention + POST /audit-logs/purge (arsip dulu, hapus kemudian). ===
+class RetentionPolicyIn(BaseModel):
+    """Payload ubah lama simpan log aktivitas."""
+    retentionDays: int
+    archiveEnabled: bool
+
+
+@router.get('/audit-logs/retention')
+def get_log_retention(db: Session = Depends(get_current_db),
+                      user: Pengguna = Depends(get_current_user)):
+    """Info lama simpan log: label, batas tanggal, catatan lama, hapus terakhir & berikutnya."""
+    perms, is_super = access_service.effective_permissions(db, user)
+    if not is_super and 'system.audit.view' not in perms:
+        raise HTTPException(403, 'Tidak memiliki izin melihat audit akses')
+    return log_retention_service.retention_info(db, user)
+
+
+@router.put('/audit-logs/retention')
+def update_log_retention(body: RetentionPolicyIn, db: Session = Depends(get_current_db),
+                         user: Pengguna = Depends(get_current_user)):
+    """Ubah lama simpan log (tercatat sebagai aksi audit RETENSI_UBAH)."""
+    perms, is_super = access_service.effective_permissions(db, user)
+    if not is_super and 'system.access.edit' not in perms:
+        raise HTTPException(403, 'Hanya Super Admin (atau pemegang izin system.access.edit) yang boleh mengubah lama simpan log')
+    if body.retentionDays not in log_retention_service.RETENTION_CHOICES:
+        raise HTTPException(422, 'Lama simpan harus salah satu dari: Selamanya, 30, 60, 90, 180, atau 365 hari')
+    log_retention_service.set_policy(db, body.retentionDays, body.archiveEnabled, user)
+    return log_retention_service.retention_info(db, user)
+
+
+@router.post('/audit-logs/purge')
+def purge_audit_logs(db: Session = Depends(get_current_db),
+                     user: Pengguna = Depends(get_current_user)):
+    """Jalankan penghapusan log lama SEKARANG (tercatat sebagai aksi audit LOG_PURGE)."""
+    perms, is_super = access_service.effective_permissions(db, user)
+    if not is_super and 'system.access.edit' not in perms:
+        raise HTTPException(403, 'Hanya Super Admin (atau pemegang izin system.access.edit) yang boleh menghapus log lama')
+    try:
+        return log_retention_service.purge_now(db, user)
+    except RuntimeError as exc:
+        # Gagal menulis salinan CSV → penghapusan dibatalkan, TIDAK ADA baris
+        # yang terhapus (prinsip: salinan dulu, hapus kemudian).
+        raise HTTPException(500, str(exc))
