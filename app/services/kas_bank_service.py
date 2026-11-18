@@ -796,14 +796,14 @@ def create_transfer(
 
     try:
         # Phase G: validate banks different
-        validate_transfer_banks_different(dari_kas_bank_id, ke_kas_bank_id, "Transfer Bank")
+        validate_transfer_banks_different(dari_kas_bank_id, ke_kas_bank_id, "Pindah Buku")
 
         # Phase G: validate both banks ACTIVE
-        dari_kb = validate_active_kas_bank(db, dari_kas_bank_id, "Transfer Bank (asal)")
-        ke_kb = validate_active_kas_bank(db, ke_kas_bank_id, "Transfer Bank (tujuan)")
+        dari_kb = validate_active_kas_bank(db, dari_kas_bank_id, "Pindah Buku (asal)")
+        ke_kb = validate_active_kas_bank(db, ke_kas_bank_id, "Pindah Buku (tujuan)")
 
         # Phase G: validate amount > 0 and fee >= 0
-        validate_transfer_amount(nilai_transfer, biaya_transfer, "Transfer Bank")
+        validate_transfer_amount(nilai_transfer, biaya_transfer, "Pindah Buku")
 
         # Update ASAHI: pola penomoran seragam "TRF ASI/YYYY/NNN" (reset tahunan).
         # === Update ASAHI #019 — prefix & kode perusahaan via Preferensi ===
@@ -1221,7 +1221,8 @@ def post_transfer(db: Session, transfer, created_by):
         ref_module=RefModule.BANK_TRANSFER,
         ref_no=no_transfer,
         entries=entries,
-        keterangan=f"Transfer Bank {no_transfer}",
+        # === Update #072 — rename keterangan jurnal (label dokumen). ===
+        keterangan=f"Pindah Buku {no_transfer}",
         ref_id=transfer.id,
         tanggal=tanggal,
         created_by=created_by,

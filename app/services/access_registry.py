@@ -64,9 +64,11 @@ RESOURCE_NAMES = {
     'request_order_part': 'Request Order Part',
     # finance
     'cash_payment': 'Pembayaran Kas', 'cash_receipt': 'Penerimaan Kas',
-    'bank_transfer': 'Transfer Bank', 'bank_reconciliation': 'Rekonsiliasi Bank',
+    # === Update #072 — rename label (kode permission tetap). ===
+    'bank_transfer': 'Pindah Buku', 'bank_reconciliation': 'Rekonsiliasi',
     # === Update #044 — Voucher Memorial (Gagal Tagih / penghapusan piutang) ===
-    'voucher_memorial': 'Voucher Memorial (Gagal Tagih)',
+    # === Update #072 — modul Voucher Memorial diganti Outstanding Memorial. ===
+    'voucher_memorial': 'Outstanding Memorial (Dokumen Memorial)',
     # accounting
     'coa': 'Akun Perkiraan (COA)', 'opening_balance': 'Saldo Awal', 'journal': 'Jurnal Umum',
     'period': 'Periode Akuntansi',
@@ -470,6 +472,13 @@ LEGACY_TEMPLATE = {
     # Pembelian/Engineering bisa dipilih langsung di form Pengguna.
     'STAFF_PEMBELIAN': 'PURCHASING_STAFF',
     'STAFF_ENGINEERING': 'ENGINEERING_STAFF',
+    # === Update #072 — enum baru (migration rbac00000003): 3 template RBAC
+    # yang kini bisa dipilih langsung di form Pengguna (sebelumnya hanya
+    # bisa di-assign lewat UI Role & Akses). Kode template identik dengan
+    # nama enum sehingga mapping 1:1. ===
+    'IT_ADMIN': 'IT_ADMIN',
+    'HR_ADMIN': 'HR_ADMIN',
+    'MANAGEMENT_VIEWER': 'MANAGEMENT_VIEWER',
 }
 
 
@@ -540,6 +549,11 @@ _ROUTER_PREFIXES = {
         # === Update #044 — Voucher Memorial (Gagal Tagih): endpoint baru di
         # router kas_bank (create/get/cancel_voucher_memorial*). ===
         ('voucher_memorial', 'finance.voucher_memorial'),
+        # === Update #072 — Outstanding Memorial (uraian hutang & piutang):
+        # GET /outstanding-memorial digating izin modul yang sama dengan
+        # Voucher Memorial (halaman penggantinya); aksi penerimaan/pembayaran
+        # tetap lewat endpoint pelunasan (ar/ap_settlement.create). ===
+        ('outstanding_memorial', 'finance.voucher_memorial'),
     ],
     'rekonsiliasi_bank': [
         ('rekonsiliasi', 'finance.bank_reconciliation'),

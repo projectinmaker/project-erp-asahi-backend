@@ -1,6 +1,6 @@
 """
 Kas & Bank Endpoints.
-Pembayaran Kas, Penerimaan Kas, Transfer Bank.
+Pembayaran Kas, Penerimaan Kas, Pindah Buku (ex-Transfer Bank, #072).
 """
 
 from datetime import date
@@ -22,6 +22,8 @@ from app.schemas.kas_bank import (
 # === Update #044 — Voucher Memorial (Gagal Tagih / penghapusan piutang) ===
 from app.schemas.voucher_memorial import (
     VoucherMemorialCreate, VoucherMemorialResponse, VoucherMemorialSummaryResponse,
+    # === Update #072 — Outstanding Memorial (uraian hutang & piutang). ===
+    OutstandingMemorialResponse, OutstandingMemorialRow,
 )
 from app.schemas.workflow import HardDeleteRequest
 from app.services import kas_bank_service as svc
@@ -356,7 +358,7 @@ def get_transfer_list(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Ambil daftar Transfer Bank dengan filter dan pagination."""
+    """Ambil daftar Pindah Buku (ex-Transfer Bank — rename #072) dengan filter dan pagination."""
     data, total = svc.get_transfer_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter,
@@ -371,7 +373,7 @@ def create_transfer(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat Transfer Bank baru (auto-generate no transfer + auto-post jurnal)."""
+    """Buat Pindah Buku baru (auto-generate no transfer + auto-post jurnal)."""
     try:
         obj = svc.create_transfer(
             db=db,
@@ -401,10 +403,10 @@ def get_transfer_detail(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Ambil detail 1 Transfer Bank."""
+    """Ambil detail 1 Pindah Buku."""
     item = svc.get_transfer_by_id(db, transfer_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Transfer Bank tidak ditemukan")
+        raise HTTPException(status_code=404, detail="Pindah Buku tidak ditemukan")
     return item
 
 
@@ -415,10 +417,10 @@ def update_transfer(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Update data Transfer Bank."""
+    """Update data Pindah Buku."""
     item = svc.get_transfer_by_id(db, transfer_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Transfer Bank tidak ditemukan")
+        raise HTTPException(status_code=404, detail="Pindah Buku tidak ditemukan")
     if item.status == "BATAL":
         raise HTTPException(status_code=400, detail="Transfer sudah dibatalkan, tidak bisa diupdate")
 
@@ -436,7 +438,7 @@ def cancel_transfer(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Hapus permanen Transfer Bank (hard delete).
+    """Hapus permanen Pindah Buku (hard delete).
 
     Dokumen + rincian + jurnal terkait dihapus dari database;
     jejak lengkap tersimpan di log dokumen terhapus (modul Histori).
@@ -457,7 +459,7 @@ def reverse_transfer(
     current_user: Pengguna = Depends(get_current_user),
     reason: Optional[str] = Query(None, description="Alasan reversal (optional)"),
 ):
-    """Reverse Transfer Bank yang sudah SELESAI.
+    """Reverse Pindah Buku yang sudah SELESAI.
 
     Phase 6 — Master Roadmap §23: "Void reconciliation creates controlled reversal".
 
@@ -492,16 +494,131 @@ def reverse_transfer(
 # Penerimaan Penuh / Sebagian → Voucher Penerimaan Bank/Kas (PenerimaanKas);
 # Gagal Tagih → Voucher Memorial (Adjustment) — dokumen non-kas ini.
 # Jurnal sistem: Dr Beban Penghapusan Piutang, Cr Piutang Usaha (kontrol).
+# === Update #072 — jenis HUTANG (Outstanding Memorial): Dr Hutang Usaha
+# (kontrol), Cr Pendapatan Penghapusan Hutang. Gagal Tagih kini berlaku
+# untuk hutang juga (permintaan user), dibuat lewat aksi daftar
+# Outstanding Memorial. ===
 
 def _voucher_response(item):
-    """Bangun response + no_invoice per baris rincian (relasi sales_invoice
-    di-eager-load get_voucher_by_id / get_voucher_list)."""
+    """Bangun response + no_invoice per baris rincian (relasi sales_invoice /
+    purchase_invoice di-eager-load get_voucher_by_id / get_voucher_list)."""
     resp = VoucherMemorialResponse.model_validate(item)
     for r, d in zip(item.rincian, resp.rincian):
-        inv = r.sales_invoice
+        # === Update #072 — rincian jenis HUTANG memuat invoice pembelian. ===
+        inv = r.purchase_invoice if (item.jenis or 'PIUTANG') == 'HUTANG' else r.sales_invoice
         if inv is not None:
-            d.no_invoice = inv.no_invoice
+            d.no_invoice = inv.no_form if (item.jenis or 'PIUTANG') == 'HUTANG' else inv.no_invoice
     return resp
+
+
+# === Update #072 — Outstanding Memorial: uraian HUTANG & PIUTANG (per
+# invoice outstanding) + aksi Penerimaan/Pembayaran Penuh, Sebagian, dan
+# Gagal Tagih (diproses frontend lewat endpoint pelunasan & voucher
+# memorial). Kolom daftar (permintaan user): no dokumen, tanggal, nama
+# pelanggan/supplier, inv, nominal, status, aksi. ===
+@router.get("/outstanding-memorial", response_model=OutstandingMemorialResponse)
+def get_outstanding_memorial_list(
+    jenis: Optional[str] = Query(None, description="Filter jenis: PIUTANG | HUTANG (kosong = keduanya)"),
+    status_pembayaran: Optional[str] = Query(None, alias="statusPembayaran", description="BELUM_DIBAYAR / PARSIAL / LUNAS / LEBIH_BAYAR"),
+    pihak_id: Optional[UUID] = Query(None, alias="pihakId", description="Filter pelanggan/supplier"),
+    as_of: Optional[date] = Query(None, alias="asOf"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    db: Session = Depends(get_current_db),
+    current_user: Pengguna = Depends(get_current_user),
+):
+    """Daftar outstanding hutang & piutang per invoice (Outstanding Memorial).
+
+    Default hanya menampilkan invoice dengan sisa > 0 (BELUM_DIBAYAR/PARSIAL);
+    ``statusPembayaran=LUNAS`` diterima untuk keperluan penelusuran.
+    Nominal = sisa tagihan/hutang (net setelah bayar, retur, DP, dan
+    penghapusan gagal tagih aktif).
+    """
+    from app.models import Pelanggan, Supplier
+    from app.services import settlement_service as settlement
+
+    jenis_list = ['PIUTANG', 'HUTANG']
+    if jenis:
+        jenis = jenis.upper()
+        if jenis not in jenis_list:
+            raise HTTPException(400, "Jenis harus PIUTANG atau HUTANG")
+        jenis_list = [jenis]
+
+    rows: list = []
+    totals = {'PIUTANG': settlement.ZERO, 'HUTANG': settlement.ZERO}
+    for j in jenis_list:
+        ar = j == 'PIUTANG'
+        model = settlement.invoice_model('piutang' if ar else 'hutang')
+        query = db.query(model).filter(model.id.in_(
+            settlement.active_documents(db, model, as_of).scalar_subquery()))
+        if pihak_id:
+            query = query.filter((model.pelanggan_id if ar else model.supplier_id) == pihak_id)
+        invoices = query.order_by(model.tanggal, model.id).all()
+        summaries = settlement.balances(db, invoices, as_of)
+
+        # Nama pihak (pelanggan/supplier) + referensi eksternal.
+        pihak_ids = {s['pihak_id'] for s in summaries.values() if s['pihak_id']}
+        pihak_model = Pelanggan if ar else Supplier
+        pihak_names = {}
+        if pihak_ids:
+            pihak_names = {p.id: p.nama for p in db.query(pihak_model).filter(pihak_model.id.in_(pihak_ids)).all()}
+
+        # Referensi SO untuk piutang (invoice dari SO).
+        so_map = {}
+        if ar:
+            from app.models import SalesOrder
+            so_ids = {i.sales_order_id for i in invoices if getattr(i, 'sales_order_id', None)}
+            if so_ids:
+                so_map = {s.id: s.no_pesanan for s in db.query(SalesOrder).filter(SalesOrder.id.in_(so_ids)).all()}
+
+        for obj in invoices:
+            s = summaries[obj.id]
+            if not s['aktif']:
+                continue
+            # Default (tanpa filter status): hanya yang masih ada sisanya —
+            # uraian hutang/piutang. Filter eksplisit dihormati.
+            if status_pembayaran is None and s['sisa_tagihan'] <= 0:
+                continue
+            if status_pembayaran is not None and s['status_pembayaran'] != status_pembayaran:
+                continue
+            inv_ref = None
+            if ar:
+                inv_ref = so_map.get(getattr(obj, 'sales_order_id', None)) or '-'
+            else:
+                inv_ref = getattr(obj, 'no_faktur', None) or '-'
+            row = OutstandingMemorialRow(
+                jenis=j,
+                invoice_id=obj.id,
+                pihak_id=s['pihak_id'],
+                no_dokumen=s['no_dokumen'],
+                tanggal=obj.tanggal,
+                pihak_nama=pihak_names.get(s['pihak_id'], '-') or '-',
+                inv=inv_ref,
+                nilai_tagihan=s['nilai_tagihan'],
+                total_bayar=s['total_bayar'],
+                total_retur=s['total_retur'],
+                uang_muka=s.get('uang_muka', settlement.ZERO),
+                total_gagal_tagih=s.get('total_gagal_tagih', settlement.ZERO),
+                nominal=s['sisa_tagihan'],
+                kelebihan=s['kelebihan'],
+                status=s['status_pembayaran'],
+                jatuh_tempo=s['jatuh_tempo'],
+                aktif=True,
+            )
+            rows.append(row)
+            totals[j] += s['sisa_tagihan']
+
+    # Urut: tanggal terlama dulu (kronologis uraian hutang/piutang).
+    rows.sort(key=lambda r: (r.tanggal, r.jenis))
+    total = len(rows)
+    return {
+        'total_piutang': totals['PIUTANG'],
+        'total_hutang': totals['HUTANG'],
+        'data': rows[skip:skip + limit],
+        'total': total,
+        'skip': skip,
+        'limit': limit,
+    }
 
 
 @router.get("/voucher-memorial", response_model=PaginatedResponse[VoucherMemorialResponse])
@@ -513,6 +630,8 @@ def get_voucher_memorial_list(
     pelanggan_id: Optional[UUID] = Query(None, description="Filter pelanggan"),
     tanggal_from: Optional[date] = Query(None, description="Filter tanggal mulai"),
     tanggal_to: Optional[date] = Query(None, description="Filter tanggal sampai"),
+    # === Update #072 — filter jenis (PIUTANG/HUTANG) daftar dokumen. ===
+    jenis: Optional[str] = Query(None, description="Filter jenis: PIUTANG | HUTANG"),
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
@@ -521,6 +640,7 @@ def get_voucher_memorial_list(
         db, skip=skip, limit=limit, search=search,
         status=status_filter, pelanggan_id=pelanggan_id,
         tanggal_from=tanggal_from, tanggal_to=tanggal_to,
+        jenis=jenis,
     )
     return {"data": [_voucher_response(i) for i in data], "total": total, "skip": skip, "limit": limit}
 
@@ -545,22 +665,35 @@ def create_voucher_memorial(
     db: Session = Depends(get_current_db),
     current_user: Pengguna = Depends(get_current_user),
 ):
-    """Buat Voucher Memorial (Gagal Tagih) — penghapusan piutang non-kas.
+    """Buat Voucher Memorial (Gagal Tagih) — penghapusan non-kas.
+
+    === Update #072 — jenis HUTANG: penghapusan HUTANG atas supplier
+    (aksi Gagal Tagih baris hutang di Outstanding Memorial; pihak dikirim
+    lewat supplierId). Jurnal: Dr Hutang Usaha (kontrol), Cr Pendapatan
+    Penghapusan Hutang. ===
 
     === Update #071 — finalisasi mengikuti konfigurasi persetujuan jenis
     voucher_memorial (Preferensi ▸ Persetujuan): non-aktif → langsung final
     (posting jurnal Dr Beban / Cr Piutang dalam satu transaksi); aktif →
     menunggu approver lewat kolom "Persetujuan" daftar Voucher Memorial. ===
     """
+    jenis = (data_in.jenis or "PIUTANG").upper()
+    if jenis not in ("PIUTANG", "HUTANG"):
+        raise HTTPException(status_code=400, detail="Jenis Voucher Memorial harus PIUTANG atau HUTANG")
+    pihak_id = data_in.pelanggan_id if jenis == "PIUTANG" else data_in.supplier_id
+    if pihak_id is None:
+        field = "pelangganId" if jenis == "PIUTANG" else "supplierId"
+        raise HTTPException(status_code=400, detail=f"{field} wajib diisi untuk Voucher Memorial jenis {jenis}")
     try:
         obj = vm_svc.create_gagal_tagih(
             db=db,
-            pihak_id=data_in.pelanggan_id,
+            pihak_id=pihak_id,
             tanggal=data_in.tanggal,
             allocation_data=[r.model_dump() for r in data_in.alokasi],
             created_by=current_user.id,
             catatan=data_in.catatan,
             akun_beban_id=data_in.akun_beban_id,
+            jenis=jenis,
         )
         # === Update #071 — finalisasi mengikuti konfigurasi persetujuan
         # (mirror create_penerimaan / settlement — lihat catatan create_pembayaran). ===
@@ -568,11 +701,17 @@ def create_voucher_memorial(
         db.refresh(obj)
         return {
             'id': obj.id, 'no_bukti': obj.no_bukti, 'tanggal': obj.tanggal,
+            'jenis': jenis,
             'total_nilai': obj.total_nilai,
             'status': getattr(obj.status, 'value', obj.status),
-            'jurnal_umum_id': obj.jurnal_umum_id, 'pelanggan_id': obj.pelanggan_id,
+            'jurnal_umum_id': obj.jurnal_umum_id,
+            'pelanggan_id': obj.pelanggan_id,
+            'supplier_id': obj.supplier_id,
             'akun_beban_id': obj.akun_beban_id,
-            'alokasi': [{'invoice_id': r.sales_invoice_id, 'nilai': r.nilai} for r in obj.rincian],
+            'alokasi': [
+                {'invoice_id': (r.sales_invoice_id or r.purchase_invoice_id), 'nilai': r.nilai}
+                for r in obj.rincian
+            ],
         }
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

@@ -99,6 +99,12 @@ KEY_HUTANG_PPH23 = "HUTANG_PPH23"
 # default ini dikonfigurasi lewat Pengaturan → Setting Akun.
 KEY_BEBAN_PENGHAPUSAN_PIUTANG = "BEBAN_PENGHAPUSAN_PIUTANG"
 
+# === Update #072 — akun pendapatan penghapusan hutang (Gagal Tagih hutang,
+# fitur Outstanding Memorial): jurnal sistem Dr Hutang Usaha (kontrol),
+# Cr akun ini. Bisa dioverride per transaksi; default dikonfigurasi lewat
+# Pengaturan → Setting Akun (fallback kandidat: 421004 Pendapatan Lain-lain). ===
+KEY_PENDAPATAN_PENGHAPUSAN_HUTANG = "PENDAPATAN_PENGHAPUSAN_HUTANG"
+
 # === Update ASAHI #019 — Preferensi: Akun Default & Pembayaran Pesanan ===
 # Akun-akun tambahan yang dikelola lewat halaman Preferensi (halaman
 # "Akun Default" & picker "Biaya Pesanan"). Baris setting dibuat otomatis
@@ -158,6 +164,8 @@ KNOWN_SETTING_LABELS = {
     KEY_UANG_MUKA_PENJUALAN: "Uang Muka Penjualan (Termin SO)",
     # === Update #044 — Gagal Tagih → Voucher Memorial (penghapusan piutang) ===
     KEY_BEBAN_PENGHAPUSAN_PIUTANG: "Beban Penghapusan Piutang (Gagal Tagih)",
+    # === Update #072 — Gagal Tagih hutang → Voucher Memorial jenis HUTANG ===
+    KEY_PENDAPATAN_PENGHAPUSAN_HUTANG: "Pendapatan Penghapusan Hutang (Gagal Tagih)",
 }
 
 # Mapping key -> expected system_account_type (untuk validasi konfigurasi)
@@ -245,7 +253,7 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
     # Memorial). Dicocokkan longgar terhadap COA beban umum; user bisa
     # meng-override lewat Setting Akun bila kandidat tidak cocok. ===
     KEY_BEBAN_PENGHAPUSAN_PIUTANG: {
-        "kode": ["520104", "5201", "521000", "5200004"],
+        "kode": ["520104", "5201", "521000", "5200004", "600100010"],
         "nama_exact": [
             "Beban Penghapusan Piutang",
             "Beban Piutang Tak Tertagih",
@@ -257,6 +265,28 @@ SETTING_KEY_FALLBACK_CANDIDATES: dict[str, dict[str, list[str]]] = {
             "%piutang tak tertagih%",
             "%kerugian piutang%",
             "%bad debt%",
+            # === Update #072 — COA ASAHI v2 tidak punya akun beban penghapusan
+            # khusus; "Beban Lain-lain" (600100010) jadi kandidat terakhir
+            # supaya Gagal Tagih tetap jalan di COA default (user bisa
+            # meng-override lewat Setting Akun). ===
+            "%beban lain-lain%",
+        ],
+    },
+    # === Update #072 — Pendapatan Penghapusan Hutang (Gagal Tagih hutang,
+    # Voucher Memorial jenis HUTANG). Dicocokkan longgar terhadap COA
+    # pendapatan lain-lain (ASAHI COA v2 kode 421004); user bisa meng-override
+    # lewat Setting Akun bila kandidat tidak cocok. ===
+    KEY_PENDAPATAN_PENGHAPUSAN_HUTANG: {
+        "kode": ["421004", "4210", "419000002"],
+        "nama_exact": [
+            "Pendapatan Penghapusan Hutang",
+            "Pendapatan Lain-lain",
+            "Pendapatan Lain Lain",
+        ],
+        "nama_like": [
+            "%pendapatan lain-lain%",
+            "%pendapatan lain lain%",
+            "%penghapusan hutang%",
         ],
     },
 }

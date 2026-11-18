@@ -16,6 +16,14 @@ class RolePengguna(str, enum.Enum):
     # ENGINEERING_STAFF; kini bisa dipilih langsung saat membuat pengguna).
     STAFF_PEMBELIAN = "STAFF_PEMBELIAN"
     STAFF_ENGINEERING = "STAFF_ENGINEERING"
+    # === Update #072 — enum role untuk 3 template RBAC yang selama ini tidak
+    # bisa dipilih di form Pengguna (hanya bisa di-assign lewat UI Role &
+    # Akses): IT_ADMIN, HR_ADMIN, MANAGEMENT_VIEWER. Migration
+    # rbac00000003 menambahkan nilai enum di PostgreSQL; LEGACY_TEMPLATE
+    # (access_registry) meng-auto-link user ke template RBAC terkait. ===
+    IT_ADMIN = "IT_ADMIN"
+    HR_ADMIN = "HR_ADMIN"
+    MANAGEMENT_VIEWER = "MANAGEMENT_VIEWER"
 
 
 class Pengguna(BaseModel, BaseMixin):

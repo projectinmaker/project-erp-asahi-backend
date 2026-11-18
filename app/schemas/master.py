@@ -415,26 +415,25 @@ class GudangBase(BaseSchema):
     kode: str
     nama: str
     alamat: Optional[str] = None
-    # NEW Phase 2 — organization scope
-    company_id: Optional[UUID] = None
-    branch_id: Optional[UUID] = None
+    # === Update #072 — field organisasi (company_id/branch_id) DIHAPUS
+    # bersama kolomnya di model & tabel (refactor organisasi): sisa field
+    # di schema ini membuat Model(**data) di create_master gagal
+    # "'company_id' is an invalid keyword argument for Gudang" (500) —
+    # bug "Tambah Gudang" di form Pengiriman/quick-add. ===
 
 class GudangCreate(GudangBase): pass
 
 class GudangUpdate(BaseSchema):
     nama: Optional[str] = None
     alamat: Optional[str] = None
-    # NEW Phase 2
-    company_id: Optional[UUID] = None
-    branch_id: Optional[UUID] = None
+    # === Update #072 — company_id/branch_id dihapus (paritas GudangBase). ===
     status: Optional[str] = None
 
 class GudangResponse(GudangBase):
     id: UUID
     total_barang: int
     status: str
-    company: Optional[OrganizationSimpleResponse] = None  # NEW Phase 2
-    branch: Optional[OrganizationSimpleResponse] = None  # NEW Phase 2
+    # === Update #072 — relasi company/branch dihapus (kolom sudah tidak ada). ===
     created_at: datetime
     updated_at: datetime
 
@@ -501,8 +500,9 @@ class KasBankAkunBase(BaseSchema):
     akun_perkiraan_id: UUID
     # NEW Phase 2 — currency (P0)
     currency: str = "IDR"  # ISO 4217, default IDR (Phase-1 IDR-only per Roadmap §7)
-    # AUD-17 (update #05): akun milik satu perusahaan (None = GLOBAL)
-    company_id: Optional[UUID] = None
+    # === Update #072 — company_id DIHAPUS (kolom sudah tidak ada di model
+    # kas_bank_akun; sisa field ini membuat create/update kas-bank gagal 500,
+    # keluarga bug yang sama dengan Tambah Gudang). ===
 
 class KasBankAkunCreate(KasBankAkunBase): pass
 
@@ -512,8 +512,7 @@ class KasBankAkunUpdate(BaseSchema):
     akun_perkiraan_id: Optional[UUID] = None
     currency: Optional[str] = None  # NEW Phase 2
     status: Optional[str] = None
-    # AUD-17: pindahkan kepemilikan akun ke perusahaan lain / global
-    company_id: Optional[UUID] = None
+    # === Update #072 — company_id dihapus (paritas KasBankAkunBase). ===
 
 class KasBankAkunResponse(KasBankAkunBase):
     id: UUID
@@ -528,15 +527,15 @@ class KasBankAkunResponse(KasBankAkunBase):
 # ==========================================
 class SettingAkunUpdate(BaseSchema):
     akun_perkiraan_id: UUID
-    # AUD-17 (update #05): override per perusahaan (bila kosong = baris GLOBAL)
-    company_id: Optional[UUID] = None
+    # === Update #072 — company_id DIHAPUS (kolom sudah tidak ada; override
+    # per perusahaan tidak relevan lagi pasca-refactor organisasi). ===
 
 class SettingAkunResponse(BaseSchema):
     id: UUID
     key: str
     label: str
     akun_perkiraan_id: UUID
-    company_id: Optional[UUID] = None  # AUD-17: None = global
+    # === Update #072 — company_id dihapus (paritas SettingAkunUpdate). ===
     akun_perkiraan: Optional[COASimpleResponse] = None
     created_at: datetime
     updated_at: datetime

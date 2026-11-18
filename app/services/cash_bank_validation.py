@@ -57,7 +57,7 @@ def validate_active_kas_bank(
 def validate_transfer_banks_different(
     dari_kas_bank_id: UUID,
     ke_kas_bank_id: UUID,
-    context: str = "Transfer Bank",
+    context: str = "Pindah Buku",
 ) -> None:
     """Cek apakah bank asal != bank tujuan.
 
@@ -82,7 +82,7 @@ def validate_transfer_banks_different(
 def validate_transfer_amount(
     nilai_transfer: Decimal,
     biaya_transfer: Decimal = Decimal("0"),
-    context: str = "Transfer Bank",
+    context: str = "Pindah Buku",
 ) -> None:
     """Cek apakah nilai transfer valid.
 

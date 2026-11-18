@@ -199,7 +199,7 @@ _PREFS: list[PrefDef] = [
     PrefDef("PREFIX_PEMBAYARAN_LAIN", "penomoran", "Pembayaran Lain (Voucher)", "text", "VC"),
     PrefDef("PREFIX_PENERIMAAN", "penomoran", "Penerimaan (Pelunasan Invoice)", "text", "REC"),
     PrefDef("PREFIX_PENERIMAAN_LAIN", "penomoran", "Penerimaan Lain", "text", "PB"),
-    PrefDef("PREFIX_TRANSFER_BANK", "penomoran", "Transfer Bank", "text", "TRF"),
+    PrefDef("PREFIX_TRANSFER_BANK", "penomoran", "Pindah Buku", "text", "TRF"),
     PrefDef("PREFIX_JURNAL_MANUAL", "penomoran", "Jurnal Umum (manual)", "text", "JV"),
 ]
 

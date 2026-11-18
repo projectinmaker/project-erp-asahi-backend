@@ -80,14 +80,26 @@ def balances(db, invoices, as_of=None):
     ).group_by(return_fk).all())
     # === Update #044 — Gagal Tagih: total penghapusan piutang aktif per
     # invoice (Voucher Memorial). Sisa tagihan berkurang sebesar nilai
-    # penghapusan sehingga invoice yang dihapusbukukan penuh berstatus LUNAS
-    # (hanya sisi piutang; hutang tidak punya Voucher Memorial). ===
+    # penghapusan sehingga invoice yang dihapusbukukan penuh berstatus LUNAS.
+    # === Update #072 — penghapusan HUTANG (Voucher Memorial jenis HUTANG,
+    # fitur Outstanding Memorial): sisa hutang ikut dipotong penghapusan
+    # aktif — mirror perilaku piutang (kolom total_gagal_tagih). ===
     written_off = {}
+    from app.models.transaksi.kas_bank.voucher_memorial import VoucherMemorial, VoucherMemorialDetail
     if ar:
-        from app.models.transaksi.kas_bank.voucher_memorial import VoucherMemorial, VoucherMemorialDetail
         writeoff_fk = VoucherMemorialDetail.sales_invoice_id
-        written_off = dict(db.query(writeoff_fk, func.sum(VoucherMemorialDetail.nilai)).filter(
-            writeoff_fk.in_(ids),
+        written_off = dict(db.query(writeoff_fk, func.sum(VoucherMemorialDetail.nilai)).join(
+            VoucherMemorial, VoucherMemorialDetail.voucher_id == VoucherMemorial.id
+        ).filter(
+            writeoff_fk.in_(ids), VoucherMemorial.jenis == 'PIUTANG',
+            VoucherMemorialDetail.voucher_id.in_(active_documents(db, VoucherMemorial, as_of).scalar_subquery())
+        ).group_by(writeoff_fk).all())
+    else:
+        writeoff_fk = VoucherMemorialDetail.purchase_invoice_id
+        written_off = dict(db.query(writeoff_fk, func.sum(VoucherMemorialDetail.nilai)).join(
+            VoucherMemorial, VoucherMemorialDetail.voucher_id == VoucherMemorial.id
+        ).filter(
+            writeoff_fk.in_(ids), VoucherMemorial.jenis == 'HUTANG',
             VoucherMemorialDetail.voucher_id.in_(active_documents(db, VoucherMemorial, as_of).scalar_subquery())
         ).group_by(writeoff_fk).all())
     active = {row[0] for row in active_documents(db, model, as_of).filter(model.id.in_(ids)).all()}
@@ -102,8 +114,10 @@ def balances(db, invoices, as_of=None):
         # Invoice lama / tanpa termin / PI (hutang) → 0 (perilaku lama).
         uang_muka = Decimal(getattr(obj, 'dp_teraplikasi', 0) or 0)
         # === Update #044 — sisa tagihan juga dipotong penghapusan gagal
-        # tagih aktif (paritas total_retur; kolom total_gagal_tagih). ===
-        gagal_tagih = Decimal(written_off.get(obj.id, 0)) if ar else ZERO
+        # tagih aktif (paritas total_retur; kolom total_gagal_tagih).
+        # === Update #072 — berlaku untuk KEDUA jenis: piutang (penghapusan
+        # piutang) maupun hutang (penghapusan hutang, Outstanding Memorial). ===
+        gagal_tagih = Decimal(written_off.get(obj.id, 0))
         saldo = obj.grand_total - bayar - retur - uang_muka - gagal_tagih
         is_active = obj.id in active
         if not is_active:

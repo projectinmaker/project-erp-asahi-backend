@@ -31,8 +31,9 @@ SUPPORTED_KINDS: dict[str, dict] = {
     # Kas & Bank
     'pembayaran_kas': {'label': 'Pembayaran Kas', 'moduleGroup': 'Kas & Bank'},
     'penerimaan_kas': {'label': 'Penerimaan Kas', 'moduleGroup': 'Kas & Bank'},
-    'transfer_bank': {'label': 'Transfer Bank', 'moduleGroup': 'Kas & Bank'},
-    'voucher_memorial': {'label': 'Voucher Memorial', 'moduleGroup': 'Kas & Bank'},
+    # === Update #072 — rename label (kode jenis dokumen tetap). ===
+    'transfer_bank': {'label': 'Pindah Buku', 'moduleGroup': 'Kas & Bank'},
+    'voucher_memorial': {'label': 'Outstanding Memorial (Dokumen Memorial)', 'moduleGroup': 'Kas & Bank'},
     # Persediaan
     'penyesuaian_stok': {'label': 'Penyesuaian Stok', 'moduleGroup': 'Persediaan'},
     'pemindahan_barang': {'label': 'Pemindahan Barang', 'moduleGroup': 'Persediaan'},
