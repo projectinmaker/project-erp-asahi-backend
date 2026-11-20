@@ -203,6 +203,18 @@ Efek setelah reset (yang diharapkan):
       (supplier-from-coa) — tetap ada dan bebas dipakai ulang.
 
 Changelog:
+    2026-11-19  + AUTO_WIPE_WITH_MASTER: approval_approver ikut dihapus
+                         otomatis bila --reset-master menyentuh master yang
+                         ditunjuk FK-nya (mis. karyawan). Hanya tabel di
+                         daftar eksplisit itu; pengguna/roles tidak pernah
+                         ikut. Pesan error FK NOT NULL juga tidak lagi
+                         menyebut --keep-stok saja.
+    2026-11-19  + KEEP : approval_config, approval_approver (konfigurasi
+                         approval: aturan dan daftar approver). Ini
+                         pengaturan, bukan transaksi, jadi dipertahankan;
+                         histori approval per dokumen tetap terhapus lewat
+                         document_workflow/workflow_event. Sebelumnya belum
+                         terklasifikasi sehingga script menolak jalan.
     2026-11-10  + WIPE : voucher_memorial, voucher_memorial_detail (Voucher
                          Memorial / jurnal memorial beserta rinciannya);
                          sebelumnya belum terklasifikasi sehingga script
@@ -345,6 +357,9 @@ KEEP_TABLES = frozenset({
     "user_roles",
     "user_permission_overrides",
     "access_audit_logs",
+    # Konfigurasi approval (siapa yang menyetujui dokumen apa)
+    "approval_config",
+    "approval_approver",
 })
 
 # Transaksi — dikosongkan saat reset
@@ -454,6 +469,7 @@ KEEP_GROUPS = [
     ("Pengaturan Perusahaan", [
         "company_profile", "mata_uang", "rekening_bank", "alamat_pengiriman",
     ]),
+    ("Konfigurasi Approval", ["approval_config", "approval_approver"]),
     ("Kas/Bank Akun & Pengguna", ["kas_bank_akun", "pengguna"]),
     ("RBAC (role & permission)", [
         "roles", "permissions", "role_permissions", "user_roles",
@@ -491,7 +507,16 @@ MASTER_RESET_LABELS = [
     ("Karyawan", "karyawan"),
     ("Barang", "barang"),
     ("Konversi Satuan", "barang_satuan"),
+    ("Approver Approval", "approval_approver"),
 ]
+
+# Tabel konfigurasi (normalnya KEEP) yang ikut dihapus otomatis HANYA bila
+# salah satu FK-nya menunjuk master yang sedang direset (mis. approval_approver
+# -> karyawan). Tanpa ini, reset karyawan gagal (FK NOT NULL) atau
+# meninggalkan approver kosong (FK nullable di-NULL-kan). Daftar ini sengaja
+# eksplisit: tabel KEEP lain (pengguna, roles, dst.) TIDAK pernah ikut
+# terhapus otomatis.
+AUTO_WIPE_WITH_MASTER = frozenset({"approval_approver"})
 
 # Master yang otomatis di-backup ke JSON sebelum dihapus (update #13).
 # Data pelanggan/supplier (kontak, NPWP, info bank, credit limit) terlalu
@@ -812,8 +837,10 @@ def _fk_keep_to_wipe(metadata, keep: frozenset[str], wipe: frozenset[str]) -> li
                 if not col.nullable:
                     raise SystemExit(
                         f"[ERROR] Kolom {t}.{col.name} NOT NULL dan menunjuk tabel transaksi "
-                        f"({fk.column.table.name}) yang akan dihapus. Mode --keep-stok tidak aman "
-                        "untuk schema ini — jalankan tanpa --keep-stok."
+                        f"({fk.column.table.name}) yang akan dihapus, sehingga data yang "
+                        "dipertahankan akan menggantung. Jalankan tanpa --keep-stok / kurangi "
+                        "pilihan --reset-master, atau daftarkan tabel itu ke "
+                        "AUTO_WIPE_WITH_MASTER bila memang konfigurasi yang boleh ikut dihapus."
                     )
                 out.append((t, col.name))
     return out
@@ -1251,7 +1278,7 @@ def _print_plan(
         print("\n  MASTER DATA YANG IKUT DIHAPUS (--reset-master):")
         for label, t in MASTER_RESET_LABELS:
             if t in master_tables:
-                tag = "  [otomatis — FK NOT NULL]" if t in master_auto else ""
+                tag = "  [otomatis — bergantung pada master yang dihapus]" if t in master_auto else ""
                 print(f"    {label:<34}{t} ({wipe_counts[t]}){tag}")
         print(f"    TOTAL master: {master_rows} baris di {len(master_tables)} tabel "
               "(hard delete, termasuk status NONAKTIF)")
@@ -1435,6 +1462,22 @@ def main() -> int:
             return 2
         keep = keep - master_tables
         wipe = wipe | master_tables
+
+        # Konfigurasi yang bergantung pada master yang direset ikut dihapus
+        # (hanya yang tercantum di AUTO_WIPE_WITH_MASTER & benar-benar punya
+        # FK ke master terpilih). Contoh: approval_approver -> karyawan.
+        dependen = frozenset(
+            t for t in AUTO_WIPE_WITH_MASTER
+            if t in keep and any(
+                fk.column.table.name in master_tables
+                for fk in metadata.tables[t].foreign_keys
+            )
+        )
+        if dependen:
+            master_tables = master_tables | dependen
+            master_auto = master_auto + sorted(dependen)
+            keep = keep - dependen
+            wipe = wipe | dependen
 
     # ---------- Akun subledger otomatis (update #14) ----------
     families = _subledger_families(args, master_tables)
